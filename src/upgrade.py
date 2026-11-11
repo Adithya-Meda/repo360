@@ -609,6 +609,39 @@ def _restore_windows_binaries(renamed: List[Tuple[Path, Path]], success: bool) -
                     pass
 
 
+def _invalidate_package_bytecache() -> None:
+    """Delete all __pycache__ directories under the installed repo360 package tree.
+
+    After a git-based pip/pipx upgrade the installer extracts new .py source
+    files but Python's import machinery may still load stale .pyc bytecode from
+    the old version cached in __pycache__ directories.  Removing them forces
+    fresh compilation on the next invocation, guaranteeing the upgraded code is
+    actually executed — which is especially critical when running on a machine
+    that previously had an older version installed.
+    """
+    import importlib
+    import shutil as _shutil
+
+    pkg_dir = Path(__file__).resolve().parent
+    removed: List[str] = []
+    for cache_dir in pkg_dir.rglob("__pycache__"):
+        if cache_dir.is_dir():
+            try:
+                _shutil.rmtree(cache_dir)
+                removed.append(str(cache_dir))
+            except OSError:
+                pass
+
+    # Notify the import system that the filesystem has changed.
+    try:
+        importlib.invalidate_caches()
+    except Exception:
+        pass
+
+    if removed:
+        logger.debug("Invalidated %d __pycache__ director(ies) after upgrade.", len(removed))
+
+
 def execute_upgrade(candidates: List[Tuple[str, List[str]]], dry_run: bool = False) -> UpgradeResult:
     """Execute the upgrade process via subprocess with resilient fallback across strategies."""
     local_version, local_commit = get_local_version_info()
@@ -648,6 +681,11 @@ def execute_upgrade(candidates: List[Tuple[str, List[str]]], dry_run: bool = Fal
             last_error = str(exc)
 
     _restore_windows_binaries(renamed, success=success)
+
+    # Invalidate stale .pyc bytecache so the next process invocation loads the
+    # freshly installed source rather than cached bytecode from the old version.
+    if success and not already_up_to_date:
+        _invalidate_package_bytecache()
 
     post_version, post_commit = get_local_version_info()
 
@@ -895,15 +933,27 @@ def run_upgrade_cli(argv: Optional[List[str]] = None) -> int:
             print(f"\033[92m[SUCCESS]\033[0m Repo360 is already on the latest version ({display_ver}{commit_suffix}).")
         else:
             print(f"\033[92m[SUCCESS]\033[0m Repo360 upgraded successfully ({display_ver}{commit_suffix}).")
-            remote_sha = get_remote_commit_sha(args.source)
+            # Fetch remote SHA now (may already be cached from the pre-flight check above).
+            if not remote_sha:
+                remote_sha = get_remote_commit_sha(args.source)
             if remote_sha and post_commit:
                 if _commits_match(post_commit, remote_sha):
-                    print(f"\033[92m[VERIFIED]\033[0m Confirmed commit {post_commit[:7]} matches remote main HEAD.")
+                    print(
+                        f"\033[92m[VERIFIED]\033[0m Installed commit {post_commit[:7]} matches "
+                        f"remote main HEAD ({remote_sha[:7]}). Latest changes are live locally."
+                    )
                 else:
                     print(
-                        f"\033[93m[WARN]\033[0m Installed commit ({post_commit[:7]}) does not match remote main "
-                        f"({remote_sha[:7]}). Run 'repo360 upgrade --force' to refresh cached artifacts."
+                        f"\033[93m[WARN]\033[0m Installed commit ({post_commit[:7]}) does not match "
+                        f"remote main ({remote_sha[:7]}). Run 'repo360 upgrade --force' to refresh "
+                        "cached artifacts."
                     )
+            elif remote_sha and not post_commit:
+                print(
+                    f"\033[93m[WARN]\033[0m Could not resolve installed commit SHA. "
+                    f"Remote main is at {remote_sha[:7]}. "
+                    "Run 'repo360 version --check' to confirm sync status."
+                )
     elif exit_code != 0:
         print(f"\033[91m[FAIL]\033[0m Upgrade failed with exit code {exit_code}.\n")
 
