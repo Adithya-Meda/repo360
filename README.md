@@ -43,9 +43,9 @@ Platform governance, compliance, engineering intelligence, and infrastructure me
 | Command | Description |
 | :--- | :--- |
 | `setup` | Register the GitHub App, configure credentials, and store keys under `~/.repo360/`. |
-| `upgrade` | Upgrade to the latest version and verify the installed commit matches remote HEAD. |
+| `upgrade` | Upgrade Repo360 to the latest version. |
 | `health` | Check GitHub App authentication, organization installations, and AI engine status. |
-| `version` | Show the installed version and commit SHA, with optional remote sync check. |
+| `version` | Show the installed Repo360 version. |
 | `uninstall` | Remove the package, virtual environment, and config while preserving generated reports. |
 
 ---
@@ -116,9 +116,8 @@ repo360 dora --org <your-org>
 repo360 bypass
 repo360 bypass --org <your-org>
 
-# Verify Installed Version & Latest Commit Sync
+# Verify Installed Version
 repo360 version
-repo360 version --check
 
 # Verify GitHub App Auth, Installations & AI Engine Health
 repo360 health
@@ -129,8 +128,6 @@ All reports are written to `./repo360-output/`.
 #### 4. Upgrade
 ```bash
 repo360 upgrade
-repo360 upgrade --check
-repo360 upgrade --force
 ```
 Stored credentials and GitHub App private keys in `~/.repo360/` are automatically preserved across upgrades.
 

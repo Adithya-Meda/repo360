@@ -583,18 +583,70 @@ Analytics & Intelligence Commands:
 
 Configuration & Lifecycle Commands:
   setup       Register the GitHub App and configure credentials
-  upgrade     Upgrade to the latest version and verify the installed commit matches remote HEAD
+  upgrade     Upgrade Repo360 to the latest version
   health      Check GitHub App authentication, organization installations, and AI engine status
-  version     Show installed version and commit SHA, with optional remote sync check
+  version     Show installed Repo360 version
   uninstall   Remove the package, virtual environment, and config while preserving reports
 
 Options:
-  -h, --help     Show this help message or help for a specific command
-  -V, --version  Show installed Repo360 version and commit SHA
+  -h, --help  Show this help message or help for a specific command
 
 Run 'repo360 <command> --help' for details on a specific command (e.g. 'repo360 audit -h').
 """)
     return 0
+
+
+def _run_health_cli() -> int:
+    """CLI handler for 'repo360 health' subcommand."""
+    import json
+    from .credentials import resolve_runtime_credentials
+    from .auth.github_app_auth import GitHubAppAuth
+    from .ai import init_ai_engine
+    from .upgrade import get_installation_details
+
+    parser = argparse.ArgumentParser(
+        prog="repo360 health",
+        description="Check GitHub App authentication, organization installations, and AI engine status.",
+    )
+    parser.parse_args()
+
+    install_details = get_installation_details()
+    version_meta = {
+        "version": install_details.get("version"),
+        "installed_commit": install_details.get("commit_short"),
+        "commit_source": install_details.get("commit_source"),
+    }
+
+    creds = resolve_runtime_credentials()
+    app_id = creds.get("app_id")
+    private_key = creds.get("private_key")
+    if not app_id or not private_key:
+        print(json.dumps({"status": "UNHEALTHY", "error": "Credentials unconfigured", **version_meta}, indent=2))
+        return 1
+    try:
+        auth = GitHubAppAuth(
+            app_id=app_id,
+            private_key=private_key,
+            api_base_url=creds.get("api_base_url", "https://api.github.com"),
+        )
+        installs = auth.discover_installations()
+        ai_eng = init_ai_engine()
+        health_data = {
+            "status": "HEALTHY" if installs else "DEGRADED",
+            "app_id": app_id,
+            "installations_count": len(installs),
+            "ai_engine": (
+                "ONLINE"
+                if is_ai_live(ai_eng)
+                else ("RATE_LIMITED" if ai_eng.is_circuit_active() else "OFFLINE")
+            ),
+            **version_meta,
+        }
+        print(json.dumps(health_data, indent=2))
+        return 0 if installs else 1
+    except Exception as exc:
+        print(json.dumps({"status": "UNHEALTHY", "error": str(exc), **version_meta}, indent=2))
+        return 1
 
 
 def _run_interruptible_command(
@@ -614,7 +666,7 @@ def _run_interruptible_command(
 
 
 def main() -> int:
-    """CLI entrypoint with strict subcommand routing.
+    """CLI entrypoint with strict one-command-per-function routing.
 
     Running bare 'repo360' prints available commands and does NOT invoke any operation.
     """
@@ -630,13 +682,12 @@ def main() -> int:
     if subcmd in ("-h", "--help"):
         return _print_root_help()
 
-    # 3. Version command and flags (-V / -v / --version / version)
-    if subcmd in ("version", "--version", "-v"):
+    # 3. Single canonical command per functionality
+    if subcmd == "version":
         sys.argv.pop(1)
         from .upgrade import run_version_cli
         return _run_interruptible_command(run_version_cli, "\nVersion check cancelled by user (Ctrl+C). Exiting...")
 
-    # 4. Route recognized subcommands
     if subcmd == "audit":
         sys.argv.pop(1)
         return _run_interruptible_command(
@@ -644,91 +695,49 @@ def main() -> int:
             on_cancel=lambda: _print_failure_banner("Audit cancelled by user (Ctrl+C). No final reports generated."),
         )
 
-    if subcmd in ("setup", "install-app"):
+    if subcmd == "setup":
         sys.argv.pop(1)
         from .setup_app import main as setup_main
         return _run_interruptible_command(setup_main, "\nSetup cancelled by user (Ctrl+C). Exiting...")
 
-    if subcmd in ("activity", "users", "user-activity"):
+    if subcmd == "activity":
         sys.argv.pop(1)
         from .activity.cli import run_activity_cli
         return _run_interruptible_command(run_activity_cli)
 
-    if subcmd in ("runners", "metrics", "runner-metrics"):
+    if subcmd == "runners":
         sys.argv.pop(1)
         from .runners.cli import run_runners_cli
         return _run_interruptible_command(run_runners_cli)
 
-    if subcmd in ("finops", "storage", "artifacts"):
+    if subcmd == "finops":
         sys.argv.pop(1)
         from .finops.cli import run_finops_cli
         return _run_interruptible_command(run_finops_cli)
 
-    if subcmd in ("dora", "flow", "dora-metrics"):
+    if subcmd == "dora":
         sys.argv.pop(1)
         from .dora.cli import run_dora_cli
         return _run_interruptible_command(run_dora_cli)
 
-    if subcmd in ("bypass", "bypasses", "push-protection"):
+    if subcmd == "bypass":
         sys.argv.pop(1)
         from .bypass.cli import run_bypass_cli
         return _run_interruptible_command(run_bypass_cli)
 
-    if subcmd in ("upgrade", "update"):
+    if subcmd == "upgrade":
         sys.argv.pop(1)
         from .upgrade import run_upgrade_cli
         return _run_interruptible_command(run_upgrade_cli, "\nUpgrade cancelled by user (Ctrl+C). Exiting...")
 
-    if subcmd in ("uninstall", "remove"):
+    if subcmd == "uninstall":
         sys.argv.pop(1)
         from .uninstall import run_uninstall_cli
         return _run_interruptible_command(run_uninstall_cli, "\nUninstall cancelled by user (Ctrl+C). Exiting...")
 
-    if subcmd in ("health", "healthcheck", "status"):
+    if subcmd == "health":
         sys.argv.pop(1)
-        import json
-        from .credentials import resolve_runtime_credentials
-        from .auth.github_app_auth import GitHubAppAuth
-        from .ai import init_ai_engine
-        from .upgrade import get_installation_details
-
-        install_details = get_installation_details()
-        version_meta = {
-            "version": install_details.get("version"),
-            "installed_commit": install_details.get("commit_short"),
-            "commit_source": install_details.get("commit_source"),
-        }
-
-        creds = resolve_runtime_credentials()
-        app_id = creds.get("app_id")
-        private_key = creds.get("private_key")
-        if not app_id or not private_key:
-            print(json.dumps({"status": "UNHEALTHY", "error": "Credentials unconfigured", **version_meta}, indent=2))
-            return 1
-        try:
-            auth = GitHubAppAuth(
-                app_id=app_id,
-                private_key=private_key,
-                api_base_url=creds.get("api_base_url", "https://api.github.com"),
-            )
-            installs = auth.discover_installations()
-            ai_eng = init_ai_engine()
-            health_data = {
-                "status": "HEALTHY" if installs else "DEGRADED",
-                "app_id": app_id,
-                "installations_count": len(installs),
-                "ai_engine": (
-                    "ONLINE"
-                    if is_ai_live(ai_eng)
-                    else ("RATE_LIMITED" if ai_eng.is_circuit_active() else "OFFLINE")
-                ),
-                **version_meta,
-            }
-            print(json.dumps(health_data, indent=2))
-            return 0 if installs else 1
-        except Exception as exc:
-            print(json.dumps({"status": "UNHEALTHY", "error": str(exc), **version_meta}, indent=2))
-            return 1
+        return _run_interruptible_command(_run_health_cli, "\nHealth check cancelled by user (Ctrl+C). Exiting...")
 
     # 4. Unknown subcommand or misplaced option
     print(f"Error: Unknown command '{sys.argv[1]}'. Run 'repo360 --help' for available commands.\n")
@@ -736,47 +745,11 @@ def main() -> int:
 
 
 def run_audit_cli() -> int:
-    """Dedicated entrypoint for repo360-audit standalone shortcut."""
+    """Dedicated entrypoint for programmatic governance audit execution."""
     return _run_interruptible_command(
         _run_cli,
         on_cancel=lambda: _print_failure_banner("Audit cancelled by user (Ctrl+C). No final reports generated."),
     )
-
-
-def run_activity_cli() -> int:
-    """Dedicated entrypoint for repo360 activity standalone execution."""
-    from .activity.cli import run_activity_cli as _run_act
-    return _run_interruptible_command(_run_act)
-
-
-def run_runners_cli() -> int:
-    """Dedicated entrypoint for repo360 runners standalone execution."""
-    from .runners.cli import run_runners_cli as _run_run
-    return _run_interruptible_command(_run_run)
-
-
-def run_finops_cli() -> int:
-    """Dedicated entrypoint for repo360 finops standalone execution."""
-    from .finops.cli import run_finops_cli as _run_fin
-    return _run_interruptible_command(_run_fin)
-
-
-def run_dora_cli() -> int:
-    """Dedicated entrypoint for repo360 dora standalone execution."""
-    from .dora.cli import run_dora_cli as _run_dor
-    return _run_interruptible_command(_run_dor)
-
-
-def run_bypass_cli() -> int:
-    """Dedicated entrypoint for repo360 bypass standalone execution."""
-    from .bypass.cli import run_bypass_cli as _run_byp
-    return _run_interruptible_command(_run_byp)
-
-
-def run_upgrade_cli() -> int:
-    """Dedicated entrypoint for repo360 upgrade standalone execution."""
-    from .upgrade import run_upgrade_cli as _run_up
-    return _run_interruptible_command(_run_up)
 
 
 def _run_cli() -> int:

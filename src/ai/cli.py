@@ -36,22 +36,12 @@ def add_ai_cli_arguments(
             "Falls back to deterministic policy rules if AI is offline or unconfigured."
         ),
     )
-    # Hidden backward-compatible alias for legacy '--no-ai' callers.
-    parser.add_argument(
-        "--no-ai",
-        action="store_true",
-        default=False,
-        help=argparse.SUPPRESS,
-    )
 
 
 def resolve_ai_cli_flag(
     args: argparse.Namespace,
-    parser: argparse.ArgumentParser,
+    parser: Optional[argparse.ArgumentParser] = None,
 ) -> bool:
-    """Resolve effective AI enablement from parsed CLI options and reject conflicts."""
-    require_ai = bool(getattr(args, "require_ai", False))
-    no_ai = bool(getattr(args, "no_ai", False))
-    if no_ai and require_ai:
-        parser.error("argument --no-ai: not allowed with --require-ai yes")
-    return require_ai and not no_ai
+    """Resolve effective AI enablement from parsed '--require-ai' CLI option."""
+    del parser
+    return bool(getattr(args, "require_ai", False))

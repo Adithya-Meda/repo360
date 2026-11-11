@@ -683,7 +683,8 @@ def test_run_dora_cli_passes_production_scope_flags(monkeypatch, tmp_path: Path)
         "--prod-envs", "prod,live-eu",
         "--incident-labels", "sev0,outage",
         "--include-non-prod",
-        "--no-ai",
+        "--require-ai",
+        "no",
     ])
     assert rc == 0
     cfg = captured["cfg"]
@@ -1188,7 +1189,7 @@ def test_run_dora_cli_forwards_permission_and_api_failures(monkeypatch, tmp_path
         return orig_write(**kwargs)
 
     monkeypatch.setattr("src.dora.cli.write_dora_workbook", _spy_write)
-    rc = run_dora_cli(["--output-dir", str(tmp_path), "--lookback-days", "30", "--no-ai"])
+    rc = run_dora_cli(["--output-dir", str(tmp_path), "--lookback-days", "30", "--require-ai", "no"])
     assert rc == 0
     assert len(captured["failures"]) == 2
     assert any("deployments: read" in reason for _, reason in captured["failures"])

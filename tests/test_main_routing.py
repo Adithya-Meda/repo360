@@ -74,17 +74,15 @@ def test_main_route_bypass():
 
 
 def test_main_route_upgrade():
-    with patch.object(sys, "argv", ["repo360", "upgrade", "--dry-run"]):
+    with patch.object(sys, "argv", ["repo360", "upgrade"]):
         with patch("src.upgrade.run_upgrade_cli", return_value=0) as mock_up:
             ret = main()
             assert ret == 0
             assert mock_up.called
 
-    with patch.object(sys, "argv", ["repo360", "update", "--dry-run"]):
-        with patch("src.upgrade.run_upgrade_cli", return_value=0) as mock_up:
-            ret = main()
-            assert ret == 0
-            assert mock_up.called
+    with patch.object(sys, "argv", ["repo360", "update"]):
+        ret = main()
+        assert ret == 1
 
 
 def test_main_route_health(capsys):
@@ -281,17 +279,51 @@ def test_run_audit_parallel_ai_enrichment_decoupled():
 
 
 
-def test_main_route_version_flags(monkeypatch) -> None:
-    """Verify 'version', '--version', and '-V' route to run_version_cli cleanly."""
+def test_main_route_version_and_reject_aliases(monkeypatch, capsys) -> None:
+    """Verify only canonical commands are accepted and extra aliases/flags are rejected."""
     from unittest.mock import MagicMock
     from src import main as main_mod
 
-    for flag in ("version", "--version", "-V"):
-        monkeypatch.setattr(sys, "argv", ["repo360", flag, "--check"])
-        mock_version = MagicMock(return_value=0)
-        monkeypatch.setattr("src.upgrade.run_version_cli", mock_version)
-        assert main_mod.main() == 0
-        assert mock_version.called
+    monkeypatch.setattr(sys, "argv", ["repo360", "version"])
+    mock_version = MagicMock(return_value=0)
+    monkeypatch.setattr("src.upgrade.run_version_cli", mock_version)
+    assert main_mod.main() == 0
+    assert mock_version.called
+
+    removed_cmds = (
+        "--version",
+        "-V",
+        "-v",
+        "install-app",
+        "users",
+        "user-activity",
+        "metrics",
+        "runner-metrics",
+        "storage",
+        "artifacts",
+        "flow",
+        "dora-metrics",
+        "bypasses",
+        "push-protection",
+        "update",
+        "remove",
+        "healthcheck",
+        "status",
+    )
+    for alias in removed_cmds:
+        monkeypatch.setattr(sys, "argv", ["repo360", alias])
+        assert main_mod.main() == 1
+        assert f"Unknown command '{alias}'" in capsys.readouterr().out
+
+
+def test_main_route_health_help(monkeypatch) -> None:
+    """Verify 'repo360 health --help' displays help and exits cleanly."""
+    from src import main as main_mod
+
+    monkeypatch.setattr(sys, "argv", ["repo360", "health", "--help"])
+    with pytest.raises(SystemExit) as exc:
+        main_mod.main()
+    assert exc.value.code == 0
 
 
 def test_main_route_health_includes_commit_metadata(monkeypatch, capsys) -> None:
@@ -319,17 +351,19 @@ def test_main_route_health_includes_commit_metadata(monkeypatch, capsys) -> None
     assert payload["commit_source"] == "direct_url.json"
 
 
-def test_main_route_uninstall_and_remove(monkeypatch) -> None:
-    """Verify 'uninstall' and 'remove' route cleanly to run_uninstall_cli."""
+def test_main_route_uninstall_only(monkeypatch) -> None:
+    """Verify 'uninstall' routes cleanly to run_uninstall_cli while 'remove' is rejected."""
     from unittest.mock import MagicMock
     from src import main as main_mod
 
-    for subcmd in ("uninstall", "remove"):
-        monkeypatch.setattr(sys, "argv", ["repo360", subcmd, "--dry-run"])
-        mock_uninstall = MagicMock(return_value=0)
-        monkeypatch.setattr("src.uninstall.run_uninstall_cli", mock_uninstall)
-        assert main_mod.main() == 0
-        assert mock_uninstall.called
+    monkeypatch.setattr(sys, "argv", ["repo360", "uninstall", "--dry-run"])
+    mock_uninstall = MagicMock(return_value=0)
+    monkeypatch.setattr("src.uninstall.run_uninstall_cli", mock_uninstall)
+    assert main_mod.main() == 0
+    assert mock_uninstall.called
+
+    monkeypatch.setattr(sys, "argv", ["repo360", "remove"])
+    assert main_mod.main() == 1
 
 
 @pytest.mark.parametrize(

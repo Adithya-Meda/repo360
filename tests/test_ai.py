@@ -739,7 +739,7 @@ def test_recommended_max_workers_and_run_concurrent_ai_throttling(monkeypatch):
 
 
 def test_parse_yes_no_and_cli_helper_flags():
-    """Verify --require-ai yes/no parsing, default 'no', legacy '--no-ai', and conflict rejection."""
+    """Verify --require-ai yes/no parsing, default 'no', and rejection of removed --no-ai alias."""
     import argparse
     import pytest
     from src.ai import add_ai_cli_arguments, parse_yes_no, resolve_ai_cli_flag
@@ -769,16 +769,14 @@ def test_parse_yes_no_and_cli_helper_flags():
     assert _parse(["--require-ai", "YES"]) is True
     assert _parse(["--require-ai=yes"]) is True
     assert _parse(["--require-ai"]) is True
-    assert _parse(["--no-ai"]) is False
-    assert _parse(["--require-ai", "no", "--no-ai"]) is False
 
     with pytest.raises(SystemExit) as exc_invalid:
         _parse(["--require-ai", "invalid"])
     assert exc_invalid.value.code == 2
 
-    with pytest.raises(SystemExit) as exc_conflict:
-        _parse(["--require-ai", "yes", "--no-ai"])
-    assert exc_conflict.value.code == 2
+    with pytest.raises(SystemExit) as exc_removed:
+        _parse(["--no-ai"])
+    assert exc_removed.value.code == 2
 
 
 @patch("google.genai.Client")

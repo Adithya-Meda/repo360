@@ -14,15 +14,16 @@ from src.upgrade import (
     _prepare_windows_binaries,
     _restore_windows_binaries,
     build_upgrade_command,
-    check_remote_status,
     detect_installer,
     execute_upgrade,
     find_uv_executable,
+    format_version_output,
     get_local_version_info,
     get_remote_commit_sha,
     get_upgrade_commands,
     is_output_already_up_to_date,
     run_upgrade_cli,
+    run_version_cli,
     verify_local_state,
 )
 
@@ -72,40 +73,6 @@ def test_execute_upgrade_subprocess_success():
         ret = execute_upgrade([("pip", ["pip", "install", "pkg"])], dry_run=False)
         assert ret == 0
         assert mock_run.called
-
-
-def test_check_remote_status():
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.json.return_value = {
-        "sha": "abcdef123456",
-        "commit": {
-            "committer": {"date": "2026-11-04T12:00:00Z"},
-            "message": "feat: release v1.1.0\n\nFull changelog",
-        },
-    }
-    with patch("requests.get", return_value=mock_resp):
-        ok, msg = check_remote_status("https://github.com/Adithya-Meda/repo360.git")
-        assert ok is True
-        assert "abcdef12" in msg
-        assert "release v1.1.0" in msg
-
-
-def test_run_upgrade_cli_dry_run(capsys):
-    ret = run_upgrade_cli(["--dry-run"])
-    assert ret == 0
-    captured = capsys.readouterr()
-    assert "[DRY-RUN]" in captured.out
-    assert "git+https://github.com/Adithya-Meda/repo360.git" in captured.out
-
-
-def test_run_upgrade_cli_check(capsys):
-    with patch("src.upgrade.check_remote_status", return_value=(True, "Latest version on main: 12345678")):
-        ret = run_upgrade_cli(["--check"])
-        assert ret == 0
-        captured = capsys.readouterr()
-        assert "[PASS]" in captured.out
-        assert "Latest version on main: 12345678" in captured.out
 
 
 def test_verify_local_state(capsys, tmp_path):
@@ -215,10 +182,8 @@ def test_run_upgrade_cli_already_up_to_date_via_preflight(capsys):
         with patch("src.upgrade.get_remote_commit_sha", return_value="abcdef123456"):
             ret = run_upgrade_cli([])
             assert ret == 0
-            captured = capsys.readouterr()
-            assert "[SUCCESS]" in captured.out
-            assert "already on the latest version" in captured.out
-            assert "abcdef1" in captured.out
+            captured = capsys.readouterr().out.strip()
+            assert captured == "Repo360 1.0.0 (abcdef1) is already up to date."
 
 
 def test_run_upgrade_cli_already_up_to_date_via_installer(capsys):
@@ -227,9 +192,8 @@ def test_run_upgrade_cli_already_up_to_date_via_installer(capsys):
         with patch("src.upgrade.execute_upgrade", return_value=up_to_date_result):
             ret = run_upgrade_cli([])
             assert ret == 0
-            captured = capsys.readouterr()
-            assert "[SUCCESS]" in captured.out
-            assert "already on the latest version" in captured.out
+            captured = capsys.readouterr().out
+            assert "Repo360 1.0.0 (abcdef1) is already up to date." in captured
 
 
 def test_run_upgrade_cli_fresh_upgrade(capsys):
@@ -238,9 +202,8 @@ def test_run_upgrade_cli_fresh_upgrade(capsys):
         with patch("src.upgrade.execute_upgrade", return_value=fresh_result):
             ret = run_upgrade_cli([])
             assert ret == 0
-            captured = capsys.readouterr()
-            assert "[SUCCESS]" in captured.out
-            assert "upgraded successfully" in captured.out
+            captured = capsys.readouterr().out
+            assert "Repo360 upgraded to 1.1.0 (fedcba9)." in captured
 
 
 def test_is_output_already_up_to_date_uv_markers() -> None:
@@ -268,41 +231,6 @@ def test_get_installation_details_and_force_commands() -> None:
 
     cmds_pip = get_upgrade_commands(installer_override="pip", force=True)
     assert "--force-reinstall" in cmds_pip[0][1]
-
-
-def test_check_installation_against_remote_match_and_mismatch(capsys) -> None:
-    """Verify commit verification against origin/main handles match, outdated, and --strict mode."""
-    from unittest.mock import patch
-    from src.upgrade import check_installation_against_remote, run_version_cli
-
-    with patch("src.upgrade.get_installation_details", return_value={
-        "version": "1.0.0",
-        "commit": "cdfeb8143bd88aa17a02d03d47175c52d251002e",
-        "commit_short": "cdfeb814",
-        "commit_source": "direct_url.json",
-        "installer": "uv",
-        "source_url": "https://github.com/org/repo.git",
-        "package_path": "C:/env/repo360",
-    }), patch("src.upgrade.get_remote_commit_sha", return_value="cdfeb8143bd88aa17a02d03d47175c52d251002e"):
-        rc = run_version_cli(["--check", "--strict"])
-        out = capsys.readouterr().out
-        assert rc == 0
-        assert "UP-TO-DATE" in out
-        assert "cdfeb814" in out
-
-    with patch("src.upgrade.get_installation_details", return_value={
-        "version": "1.0.0",
-        "commit": "228a2fe606fb904c0b475bde69da3ee95a7fd39c",
-        "commit_short": "228a2fe6",
-        "commit_source": "direct_url.json",
-        "installer": "uv",
-        "source_url": "https://github.com/org/repo.git",
-        "package_path": "C:/env/repo360",
-    }), patch("src.upgrade.get_remote_commit_sha", return_value="cdfeb8143bd88aa17a02d03d47175c52d251002e"):
-        assert check_installation_against_remote(strict=False) == 0
-        out_warn = capsys.readouterr().out
-        assert "OUTDATED" in out_warn
-        assert check_installation_against_remote(strict=True) == 1
 
 
 def test_compare_installed_tree_and_stale_local_snapshot(tmp_path) -> None:
@@ -351,62 +279,44 @@ def test_compare_installed_tree_and_stale_local_snapshot(tmp_path) -> None:
         assert "STALE local snapshot" in details_stale["commit_source"]
 
 
-def test_run_version_cli_shows_commit_details_and_offline_mode(capsys) -> None:
-    """Verify bare 'repo360 version' prints commit message/date & remote sync and respects --offline."""
-    from src.upgrade import check_installation_against_remote, run_version_cli
-
+def test_run_version_cli_minimal_standard_output_without_network(capsys) -> None:
+    """Verify 'repo360 version' prints one clean minimal line and makes zero network requests."""
     details_vcs = {
         "version": "v1.0.0",
         "commit": "79098e85192fdb486d4dc6c6c55e7540f374612a",
-        "commit_short": "79098e8",
-        "commit_source": "direct_url.json (vcs_info)",
-        "commit_subject": "",
-        "commit_date": "",
-        "branch": "main",
-        "is_dirty": False,
         "is_stale_snapshot": False,
-        "installer": "uv",
-        "source_url": "https://github.com/Adithya-Meda/repo360.git",
-        "package_path": "C:/env/repo360",
-    }
-    summary = {
-        "sha": "79098e85192fdb486d4dc6c6c55e7540f374612a",
-        "date": "2026-11-11T07:35:22Z",
-        "subject": "feat: fixed exit command time execution",
     }
     with patch("src.upgrade.get_installation_details", return_value=details_vcs), \
-         patch("src.upgrade._fetch_commit_summary", return_value=summary), \
-         patch("src.upgrade.get_remote_commit_sha", return_value="79098e85192fdb486d4dc6c6c55e7540f374612a"):
-        rc = run_version_cli([])
-        out = capsys.readouterr().out
-        assert rc == 0
-        assert "79098e85192fdb486d4dc6c6c55e7540f374612a" in out
-        assert "feat: fixed exit command time execution" in out
-        assert "2026-11-11T07:35:22Z" in out
-        assert "UP-TO-DATE" in out
+         patch("src.upgrade.get_remote_commit_sha") as mock_remote, \
+         patch("requests.get") as mock_get:
+        assert run_version_cli([]) == 0
+        assert capsys.readouterr().out.strip() == "repo360 1.0.0 (79098e8)"
+        mock_remote.assert_not_called()
+        mock_get.assert_not_called()
 
-    with patch("src.upgrade.get_installation_details", return_value={**details_vcs, "commit_subject": "local msg"}), \
-         patch("src.upgrade._fetch_commit_summary") as mock_fetch:
-        rc_off = run_version_cli(["--offline"])
-        out_off = capsys.readouterr().out
-        assert rc_off == 0
-        mock_fetch.assert_not_called()
-        assert "local msg" in out_off
-        assert "--offline" in out_off
+    assert format_version_output({"version": "1.2.0", "commit": None, "is_stale_snapshot": False}) == "repo360 1.2.0"
+    assert format_version_output({"version": "v1.0.0", "commit": None, "is_stale_snapshot": True}) == "repo360 1.0.0 (stale)"
 
-    stale_details = {
-        **details_vcs,
-        "commit": None,
-        "commit_short": "stale",
-        "commit_source": "STALE local snapshot (1 file(s) out of sync)",
-        "is_stale_snapshot": True,
-        "local_repo_head": "79098e85192fdb486d4dc6c6c55e7540f374612a",
-    }
-    with patch("src.upgrade.get_installation_details", return_value=stale_details), \
-         patch("src.upgrade._fetch_commit_summary", return_value=summary), \
-         patch("src.upgrade.get_remote_commit_sha", return_value="79098e85192fdb486d4dc6c6c55e7540f374612a"):
-        assert check_installation_against_remote(strict=True) == 1
-        assert "[STALE]" in capsys.readouterr().out
+
+@pytest.mark.parametrize(
+    "runner,bad_args",
+    [
+        (run_version_cli, ["--check"]),
+        (run_version_cli, ["--offline"]),
+        (run_version_cli, ["--strict"]),
+        (run_version_cli, ["--source", "https://example.com"]),
+        (run_upgrade_cli, ["--check"]),
+        (run_upgrade_cli, ["--force"]),
+        (run_upgrade_cli, ["--pip"]),
+        (run_upgrade_cli, ["--dry-run"]),
+        (run_upgrade_cli, ["--source", "https://example.com"]),
+    ],
+)
+def test_version_and_upgrade_reject_removed_flags(runner, bad_args) -> None:
+    """Verify removed CLI flags fail cleanly with argparse exit code 2."""
+    with pytest.raises(SystemExit) as exc:
+        runner(bad_args)
+    assert exc.value.code == 2
 
 
 def test_run_upgrade_cli_forces_reinstall_when_stale_or_outdated() -> None:

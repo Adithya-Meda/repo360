@@ -26,7 +26,6 @@ from .credentials import get_credentials_path, get_secrets_dir
 logger = logging.getLogger("repo360.upgrade")
 
 DEFAULT_REPO_URL = "https://github.com/Adithya-Meda/repo360.git"
-GITHUB_API_COMMITS = "https://api.github.com/repos/Adithya-Meda/repo360/commits/main"
 
 
 def find_pipx_executable() -> Optional[str]:
@@ -314,37 +313,6 @@ def _fetch_commit_summary(
     except Exception:
         pass
     return None
-
-
-def check_remote_status(repo_url: str = DEFAULT_REPO_URL) -> Tuple[bool, str]:
-    """Check remote GitHub repository for the latest commit/release on main.
-
-    Returns:
-        Tuple of (success_bool, message_or_commit_info).
-    """
-    summary = _fetch_commit_summary(repo_url, "HEAD", timeout=5.0)
-    if summary and summary.get("sha"):
-        sha = summary["sha"][:8]
-        date = summary.get("date", "")
-        msg = summary.get("subject", "")
-        return True, f"Latest version on main: {sha} ({date}) - '{msg}'"
-
-    # Protocol-level fallback via 'git ls-remote' when GitHub REST API rate limit is exceeded
-    try:
-        res = run_interruptible_subprocess(
-            ["git", "ls-remote", repo_url, "HEAD"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=8,
-        )
-        if res.returncode == 0 and res.stdout.strip():
-            sha = res.stdout.strip().splitlines()[0].split()[0][:8]
-            return True, f"Latest version on main: {sha} (via git remote)"
-    except Exception:
-        pass
-
-    return False, "Could not query remote GitHub repository."
 
 
 def get_remote_commit_sha(repo_url: str = DEFAULT_REPO_URL) -> Optional[str]:
@@ -914,242 +882,73 @@ def verify_local_state() -> None:
         print(f"  GitHub App keys    : \033[93m[NOTICE]\033[0m No stored private keys found in {secrets_dir}")
 
 
-def _extract_remote_sha_from_status(msg: str) -> Optional[str]:
-    """Extract commit SHA prefix from check_remote_status() text when available."""
-    match = re.search(r"Latest version on main:\s*([0-9a-fA-F]{7,40})", msg or "")
-    return match.group(1) if match else None
-
-
-def _resolve_commit_metadata(details: Dict[str, Any], repo_url: str) -> Dict[str, Any]:
-    """Enrich installed commit details with subject/date from GitHub API when absent locally."""
-    enriched = dict(details)
-    commit_sha = enriched.get("commit")
-    if commit_sha and (not enriched.get("commit_subject") or not enriched.get("commit_date")):
-        source_url = str(enriched.get("source_url") or "")
-        lookup_url = source_url if _parse_github_owner_repo(source_url) else repo_url
-        summary = _fetch_commit_summary(lookup_url, str(commit_sha), timeout=3.0)
-        if summary:
-            if not enriched.get("commit_subject") and summary.get("subject"):
-                enriched["commit_subject"] = summary["subject"]
-            if not enriched.get("commit_date") and summary.get("date"):
-                enriched["commit_date"] = summary["date"]
-    return enriched
-
-
-def _print_installed_details(details: Dict[str, Any]) -> None:
-    """Print standardized local installation and commit metadata cleanly."""
-    version_display = details.get("version", "v1.0.0")
-    source_display = details.get("commit_source", "unknown")
-    installer_display = details.get("installer", "")
-    source_suffix = f" via {installer_display}" if installer_display else ""
-
-    print(f"Repo360 {version_display}")
+def format_version_output(details: Dict[str, Any]) -> str:
+    """Format a minimal standard CLI version string (e.g. 'repo360 1.0.0 (79098e8)')."""
+    raw_ver = str(details.get("version") or "1.0.0").strip().lstrip("v") or "1.0.0"
     if details.get("is_stale_snapshot"):
-        print(f"  Installed Commit : stale (source: {source_display}{source_suffix})")
-        if details.get("local_repo_head"):
-            print(f"  Local Repo HEAD  : {details['local_repo_head']} (installed site-packages files differ)")
-    else:
-        commit_sha = details.get("commit") or "unknown"
-        branch = details.get("branch")
-        branch_tag = f" [{branch}]" if branch else ""
-        dirty_tag = " [uncommitted edits]" if details.get("is_dirty") else ""
-        print(f"  Installed Commit : {commit_sha}{branch_tag}{dirty_tag} (source: {source_display}{source_suffix})")
-
-    if details.get("commit_subject"):
-        print(f"  Commit Message   : {details['commit_subject']}")
-    if details.get("commit_date"):
-        print(f"  Commit Date      : {details['commit_date']}")
-    print(f"  Package Path     : {details.get('package_path', 'unknown')}")
-
-
-def check_installation_against_remote(
-    repo_url: str = DEFAULT_REPO_URL,
-    strict: bool = False,
-) -> int:
-    """Print local version/commit details and compare against remote main HEAD."""
-    details = _resolve_commit_metadata(get_installation_details(), repo_url)
-    local_sha = details.get("commit")
-    is_stale = bool(details.get("is_stale_snapshot"))
-
-    _print_installed_details(details)
-
-    print(f"\n\033[96m[INFO]\033[0m Checking {repo_url} for latest commit...")
-    ok, msg = check_remote_status(repo_url)
-    if ok:
-        print(f"\033[92m[PASS]\033[0m {msg}")
-    else:
-        print(f"\033[93m[WARN]\033[0m {msg}")
-
-    remote_sha = get_remote_commit_sha(repo_url) or _extract_remote_sha_from_status(msg)
-    if is_stale:
-        remote_hint = f" Latest main is {remote_sha[:7]}." if remote_sha else ""
-        print(
-            f"\033[93m[STALE]\033[0m Installed package copy in site-packages does not match the local git checkout.{remote_hint} "
-            "Reinstall with 'uv pip install --python <env> --reinstall .' or 'repo360 upgrade --force'.\n"
-        )
-        return 1 if strict else 0
-
-    if not remote_sha:
-        print("\033[93m[WARN]\033[0m Unable to verify remote commit SHA right now.")
-        return 1 if strict else 0
-
-    if not local_sha:
-        print(
-            f"\033[93m[WARN]\033[0m Local commit SHA is unavailable (latest main is {remote_sha[:7]}). "
-            "Run 'repo360 upgrade --force' for a tracked VCS install."
-        )
-        return 1 if strict else 0
-
-    if _commits_match(local_sha, remote_sha):
-        print(f"\033[92m[UP-TO-DATE]\033[0m Installed commit ({local_sha[:7]}) matches latest main ({remote_sha[:7]}).\n")
-        return 0
-
-    print(
-        f"\033[93m[OUTDATED]\033[0m Installed commit ({local_sha[:7]}) is behind latest main ({remote_sha[:7]}). "
-        "Run 'repo360 upgrade --force' to install the latest commit.\n"
-    )
-    return 1 if strict else 0
+        return f"repo360 {raw_ver} (stale)"
+    commit_sha = str(details.get("commit") or "").strip()
+    if commit_sha:
+        return f"repo360 {raw_ver} ({commit_sha[:7]})"
+    return f"repo360 {raw_ver}"
 
 
 def run_version_cli(argv: Optional[List[str]] = None) -> int:
-    """CLI handler for 'repo360 version' / '--version' / '-V'."""
+    """CLI handler for 'repo360 version'."""
     parser = argparse.ArgumentParser(
         prog="repo360 version",
-        description="Display installed Repo360 version, commit details, and remote sync status.",
+        description="Show installed Repo360 version.",
     )
-    parser.add_argument(
-        "--check",
-        action="store_true",
-        help="Verify whether the installed commit matches the latest commit on GitHub main.",
-    )
-    parser.add_argument(
-        "--offline",
-        action="store_true",
-        help="Show local installation and commit details without querying GitHub.",
-    )
-    parser.add_argument(
-        "--strict",
-        action="store_true",
-        help="Exit with code 1 if the installed commit is outdated, stale, or unknown.",
-    )
-    parser.add_argument(
-        "--source",
-        default=DEFAULT_REPO_URL,
-        help=f"Custom Git repository source URL (default: {DEFAULT_REPO_URL}).",
-    )
-    args = parser.parse_args(argv)
-
-    if args.offline and not args.check:
-        details = get_installation_details()
-        _print_installed_details(details)
-        print("  Remote Check     : Skipped (--offline mode).\n")
-        return 1 if (args.strict and (details.get("is_stale_snapshot") or not details.get("commit"))) else 0
-
-    return check_installation_against_remote(args.source, strict=args.strict)
+    parser.parse_args(argv)
+    print(format_version_output(get_installation_details()))
+    return 0
 
 
 def run_upgrade_cli(argv: Optional[List[str]] = None) -> int:
     """CLI orchestrator for 'repo360 upgrade' subcommand."""
     parser = argparse.ArgumentParser(
         prog="repo360 upgrade",
-        description="Upgrade Repo360 CLI to the latest version directly from GitHub.",
+        description="Upgrade Repo360 to the latest version.",
     )
-    parser.add_argument(
-        "--source",
-        default=DEFAULT_REPO_URL,
-        help=f"Custom Git repository source URL (default: {DEFAULT_REPO_URL}).",
-    )
-    parser.add_argument(
-        "--pip",
-        action="store_true",
-        help="Force using standard 'python -m pip' instead of auto-detecting pipx.",
-    )
-    parser.add_argument(
-        "--check",
-        action="store_true",
-        help="Check local commit vs remote repository status without installing.",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Force clean package reinstallation from remote source, bypassing caches.",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Print the planned upgrade command without executing it.",
-    )
-
-    args = parser.parse_args(argv)
-
-    installer_override = "pip" if args.pip else None
-
-    # Handle --check
-    if args.check:
-        code = check_installation_against_remote(args.source, strict=False)
-        installer, cmd = build_upgrade_command(args.source, installer_override)
-        print(f"Run 'repo360 upgrade' to install via {installer}: {' '.join(cmd)}\n")
-        return code
+    parser.parse_args(argv)
 
     local_ver, local_sha = get_local_version_info()
-    remote_sha: Optional[str] = None
+    remote_sha = get_remote_commit_sha(DEFAULT_REPO_URL)
 
-    # Pre-flight check: resolve remote default branch HEAD so we can short-circuit
-    # when already synced, or pin @<remote_sha> to bypass stale 1.0.0 caches.
-    if not args.dry_run:
-        remote_sha = get_remote_commit_sha(args.source)
-        if not args.force and local_sha and remote_sha and _commits_match(local_sha, remote_sha):
-            print(f"\033[92m[SUCCESS]\033[0m Repo360 is already on the latest version ({local_ver} @ {remote_sha[:7]}).\n")
-            return 0
+    if local_sha and remote_sha and _commits_match(local_sha, remote_sha):
+        ver_display = local_ver.lstrip("v")
+        print(f"Repo360 {ver_display} ({remote_sha[:7]}) is already up to date.")
+        return 0
 
-    # Because package version stays 1.0.0 across commits, force reinstall when updating commits,
-    # refreshing stale/unknown snapshots, or when remote status could not be confirmed pre-flight.
-    effective_force = bool(
-        args.force
-        or (not args.dry_run and (local_sha is None or not remote_sha or not _commits_match(local_sha, remote_sha)))
-    )
+    # Package version stays fixed across commits between tagged releases, so reinstall
+    # whenever local commit differs, is stale, or remote commit could not be pre-verified.
+    force = bool(local_sha is None or not remote_sha or not _commits_match(local_sha, remote_sha))
     candidates = get_upgrade_commands(
-        args.source,
-        installer_override,
-        force=effective_force,
-        target_ref=remote_sha if not args.dry_run else None,
+        DEFAULT_REPO_URL,
+        force=force,
+        target_ref=remote_sha,
     )
-    print("\033[96m[INFO]\033[0m Upgrading Repo360 to the latest version...")
+    print("Upgrading Repo360...")
 
-    res = execute_upgrade(candidates, dry_run=args.dry_run)
+    res = execute_upgrade(candidates)
     exit_code = int(res)
-    if exit_code == 0 and not args.dry_run:
-        display_ver = getattr(res, "version", "") or local_ver
+    if exit_code == 0:
+        display_ver = (getattr(res, "version", "") or local_ver).lstrip("v")
         post_commit = getattr(res, "commit", None)
-        commit_suffix = f" @ {post_commit[:7]}" if post_commit else ""
+        commit_suffix = f" ({post_commit[:7]})" if post_commit else ""
         if not remote_sha:
-            remote_sha = get_remote_commit_sha(args.source)
+            remote_sha = get_remote_commit_sha(DEFAULT_REPO_URL)
 
         if getattr(res, "already_up_to_date", False):
-            print(f"\033[92m[SUCCESS]\033[0m Repo360 is already on the latest version ({display_ver}{commit_suffix}).")
+            print(f"Repo360 {display_ver}{commit_suffix} is already up to date.")
         else:
-            print(f"\033[92m[SUCCESS]\033[0m Repo360 upgraded successfully ({display_ver}{commit_suffix}).")
+            print(f"Repo360 upgraded to {display_ver}{commit_suffix}.")
 
-        if remote_sha and post_commit:
-            if _commits_match(post_commit, remote_sha):
-                if not getattr(res, "already_up_to_date", False):
-                    print(
-                        f"\033[92m[VERIFIED]\033[0m Installed commit {post_commit[:7]} matches "
-                        f"remote main HEAD ({remote_sha[:7]}). Latest changes are live locally."
-                    )
-            else:
-                print(
-                    f"\033[93m[WARN]\033[0m Installed commit ({post_commit[:7]}) does not match "
-                    f"remote main ({remote_sha[:7]}). Run 'repo360 upgrade --force' to refresh "
-                    "cached artifacts."
-                )
-        elif remote_sha and not post_commit:
+        if remote_sha and post_commit and not _commits_match(post_commit, remote_sha):
             print(
-                f"\033[93m[WARN]\033[0m Could not resolve installed commit SHA. "
-                f"Remote main is at {remote_sha[:7]}. "
-                "Run 'repo360 version --check' to confirm sync status."
+                f"Warning: Installed commit ({post_commit[:7]}) differs from remote HEAD ({remote_sha[:7]})."
             )
-    elif exit_code != 0:
-        print(f"\033[91m[FAIL]\033[0m Upgrade failed with exit code {exit_code}.\n")
+    else:
+        print(f"Upgrade failed with exit code {exit_code}.")
 
     return exit_code
