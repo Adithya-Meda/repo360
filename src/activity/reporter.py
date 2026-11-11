@@ -13,6 +13,7 @@ from openpyxl.formatting.rule import DataBarRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+from ..common.concurrency import is_ai_live
 from .models import (
     DATE_FMT,
     IST,
@@ -289,7 +290,12 @@ def write_activity_workbook(
     ]
     curr_row = write_table(summary, 4, ("Metric", "Value"), kpis) + 2
 
-    curr_row = section_title(summary, curr_row, "AI Contributor Cadence & Collaboration Summary")
+    advisory_title = (
+        "AI Contributor Cadence & Collaboration Summary"
+        if is_ai_live(ai_engine)
+        else "Contributor Cadence & Collaboration Summary (Deterministic Policy)"
+    )
+    curr_row = section_title(summary, curr_row, advisory_title)
     summary.cell(curr_row, 1, advisory_text)
     summary.cell(curr_row, 1).font = Font(name="Calibri", size=10, italic=True)
     summary.row_dimensions[curr_row].height = 28

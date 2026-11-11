@@ -313,15 +313,20 @@ class ExcelReporter(BaseReporter):
 
         org_end_row = max(13, org_start_row + len(org_metrics))
 
-        # Section 3: Executive AI Narrative
+        # Section 3: Executive AI / Policy Narrative
+        is_det_summary = model_name == "Deterministic Policy Engine"
         if executive_summary:
-            active_model = model_name or self.infer_ai_model(results, "Gemini")
+            if is_det_summary:
+                narrative_title = "Executive Risk & Governance Narrative (Deterministic Policy Summary)"
+            else:
+                active_model = model_name or self.infer_ai_model(results, "Configured LLM")
+                narrative_title = f"AI Executive Risk & Governance Narrative (Synthesized via {active_model})"
             narrative_banner_row = org_end_row + 2
 
             header_cell = ws.cell(
                 row=narrative_banner_row,
                 column=2,
-                value=f"AI Executive Risk & Governance Narrative (Synthesized via {active_model})",
+                value=narrative_title,
             )
             header_cell.font = self.font_header
             header_cell.fill = self.fill_ai_header
@@ -345,7 +350,11 @@ class ExcelReporter(BaseReporter):
             narrative_start_row = narrative_banner_row + 1
             narrative_end_row = narrative_start_row + needed_rows - 1
 
-            c_narrative = ws.cell(row=narrative_start_row, column=2, value=executive_summary)
+            c_narrative = ws.cell(
+                row=narrative_start_row,
+                column=2,
+                value=self.sanitize_spreadsheet_value(executive_summary),
+            )
             c_narrative.font = self.font_data
             c_narrative.alignment = Alignment(wrap_text=True, vertical="top")
             ws.merge_cells(f"B{narrative_start_row}:M{narrative_end_row}")
@@ -359,7 +368,7 @@ class ExcelReporter(BaseReporter):
         else:
             notice_row = org_end_row + 2
 
-        if ai_count > 0 or executive_summary:
+        if ai_count > 0 or (executive_summary and not is_det_summary):
             c_notice = ws.cell(
                 row=notice_row,
                 column=2,
@@ -488,9 +497,17 @@ class ExcelReporter(BaseReporter):
             cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
         ai_findings = [r for r in results if self.is_ai_result(r)]
-        is_fallback = False
-
-        if not ai_findings:
+        if ai_findings:
+            eligible_fallback = [
+                r
+                for r in results
+                if not self.is_ai_result(r)
+                and r.status in (CheckStatus.WARN, CheckStatus.FAIL)
+                and r.check_id in AIEngine.SUPPORTED_REMEDIATION_CHECKS
+                and (r.remediation_snippet_after or r.recommended_state)
+            ]
+            ai_findings = ai_findings + eligible_fallback
+        else:
             actionable = [
                 r
                 for r in results
@@ -499,7 +516,6 @@ class ExcelReporter(BaseReporter):
             ]
             scoped = [r for r in actionable if r.check_id in AIEngine.SUPPORTED_REMEDIATION_CHECKS]
             ai_findings = scoped if scoped else actionable
-            is_fallback = True
 
         if not ai_findings:
             ws.cell(
@@ -514,18 +530,20 @@ class ExcelReporter(BaseReporter):
             self._auto_adjust_columns(ws)
             return
 
-        # Consolidate by (check_id, normalized snippet) so identical remediations merge cleanly
-        # while distinct stack-specific AI snippets remain distinct.
-        grouped_ai: Dict[tuple[str, str], Dict[str, Any]] = {}
+        # Consolidate by (check_id, normalized snippet, is_ai) so identical remediations merge cleanly
+        # while distinct stack-specific AI snippets remain distinct from deterministic fallback rows.
+        grouped_ai: Dict[tuple[str, str, bool], Dict[str, Any]] = {}
         for f in ai_findings:
             raw_code = f.remediation_snippet_after or f.recommended_state or ""
             norm_code = " ".join(raw_code.split())
-            key = (f.check_id, norm_code)
+            f_is_ai = self.is_ai_result(f)
+            key = (f.check_id, norm_code, f_is_ai)
             if key not in grouped_ai:
                 grouped_ai[key] = {
                     "repos": [],
                     "finding": f,
                     "stacks": [],
+                    "is_ai": f_is_ai,
                 }
             if f.repo_name and f.repo_name not in grouped_ai[key]["repos"]:
                 grouped_ai[key]["repos"].append(f.repo_name)
@@ -543,6 +561,7 @@ class ExcelReporter(BaseReporter):
         sorted_items = sorted(
             grouped_ai.values(),
             key=lambda item: (
+                0 if item["is_ai"] else 1,
                 severity_order.get(item["finding"].severity, 9),
                 item["finding"].category,
                 item["finding"].check_name,
@@ -553,20 +572,26 @@ class ExcelReporter(BaseReporter):
         seen_explanations: set[tuple[str, str]] = set()
         seen_docs: set[tuple[str, str]] = set()
         row_values_cache: List[tuple[int, List[Any]]] = []
+        has_any_ai = False
 
         for row_idx, item in enumerate(sorted_items, start=2):
             f = item["finding"]
+            row_is_ai = bool(item["is_ai"])
+            if row_is_ai:
+                has_any_ai = True
             repos_display = self.format_repo_list(item["repos"], max_display=5)
-            stack_fallback = "Detected Framework" if not is_fallback else "General Platform"
+            stack_fallback = "Detected Framework" if row_is_ai else "General Platform"
             stack_display = self.format_detected_stacks(
                 item["stacks"] or f.extra_details.get("detected_stack", ""),
                 fallback=stack_fallback,
                 max_items=6,
             )
-            model_name = f.extra_details.get("ai_model") or (
-                "gemini-3.5-flash" if not is_fallback else "Deterministic Policy Engine"
+            model_name = (
+                (f.extra_details.get("ai_model") or "Configured LLM")
+                if row_is_ai
+                else "Deterministic Policy Engine"
             )
-            source_label = "AI Tailored" if not is_fallback else "Standard Policy (Offline Fallback)"
+            source_label = "AI Tailored" if row_is_ai else "Standard Policy (Fallback)"
             target_file = self.infer_target_file(f.check_id)
             remediation_code = f.remediation_snippet_after or f.recommended_state
 
@@ -617,8 +642,12 @@ class ExcelReporter(BaseReporter):
                 elif col_idx == 5:  # Status
                     self._apply_status_style(cell, f.status)
                 elif col_idx == 8:  # Recommendation Source badge
-                    cell.fill = self.fill_ai_badge
-                    cell.font = self.font_ai_badge
+                    if row_is_ai:
+                        cell.fill = self.fill_ai_badge
+                        cell.font = self.font_ai_badge
+                    else:
+                        cell.fill = self.fill_warn
+                        cell.font = self.font_bold
                     cell.alignment = Alignment(horizontal="center", vertical="top")
                 elif col_idx == 10:  # Code block
                     cell.font = self.font_code
@@ -637,10 +666,15 @@ class ExcelReporter(BaseReporter):
         ws.auto_filter.ref = f"A1:L{len(sorted_items) + 1}"
 
         safety_row = len(sorted_items) + 3
+        notice_msg = (
+            "AI Safety Notice: AI-synthesized remediation snippets and configuration files are advisory only. Validate in a lower environment prior to production merge."
+            if has_any_ai
+            else "Policy Advisory Notice: Generated using built-in deterministic GitHub governance templates because live LLM synthesis was unavailable or rate-limited."
+        )
         c_safe = ws.cell(
             row=safety_row,
             column=1,
-            value="AI Safety Notice: AI-synthesized remediation snippets and configuration files are advisory only. Validate in a lower environment prior to production merge.",
+            value=notice_msg,
         )
         c_safe.font = self.font_italic
         c_safe.alignment = Alignment(vertical="center")

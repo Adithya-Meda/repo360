@@ -20,6 +20,7 @@ from ..activity.reporter import (
     write_empty_table,
     write_table,
 )
+from ..common.concurrency import is_ai_live
 from .models import ORG_RUNNER_HEADERS, RUNNER_HEADERS, RunnerInfo, RunnersConfig
 
 
@@ -173,7 +174,12 @@ def write_runners_workbook(
     ]
     curr_row = write_table(summary, 4, ("Metric", "Fleet Aggregate"), kpis) + 2
 
-    curr_row = section_title(summary, curr_row, "AI Fleet Advisory & Autoscaling Guidance")
+    advisory_title = (
+        "AI Fleet Advisory & Autoscaling Guidance"
+        if is_ai_live(ai_engine)
+        else "Fleet Advisory & Autoscaling Guidance (Deterministic Policy)"
+    )
+    curr_row = section_title(summary, curr_row, advisory_title)
     summary.cell(curr_row, 1, advisory_text)
     summary.cell(curr_row, 1).font = Font(name="Calibri", size=10, italic=True)
     summary.row_dimensions[curr_row].height = 28

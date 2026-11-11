@@ -247,6 +247,8 @@ class AIEngine:
     def recommended_max_workers(self, requested: int = 8) -> int:
         """Return safe LLM worker concurrency based on provider limits and active rate-limit pacing."""
         requested_safe = max(1, int(requested))
+        if self.is_circuit_active():
+            return 1
         env_cap = os.getenv("LLM_MAX_WORKERS", "").strip()
         if env_cap:
             try:
@@ -355,10 +357,21 @@ class AIEngine:
                 return True, "OK"
             except Exception as err:
                 err_msg = str(err)
+                lower_msg = err_msg.lower()
                 last_error = err_msg
                 if "API_KEY_INVALID" in err_msg or "UNAUTHENTICATED" in err_msg:
                     self.enabled = False
-                    return False, "API Key Invalid or Expired"
+                    self.init_error = "API Key Invalid or Expired"
+                    return False, self.init_error
+                if (
+                    "RESOURCE_EXHAUSTED" in err_msg
+                    or "429" in err_msg
+                    or "503" in err_msg
+                    or "rate limit" in lower_msg
+                    or "quota exceeded" in lower_msg
+                ):
+                    retry_after = self._extract_retry_after(err_msg=err_msg)
+                    self._mark_model_rate_limited(candidate, retry_after or 60.0)
                 continue
 
         if "429" in last_error or "RESOURCE_EXHAUSTED" in last_error:
@@ -367,6 +380,7 @@ class AIEngine:
             reason = f"Models {candidate_models} not found or inaccessible"
         else:
             reason = f"Connection error ({last_error[:60]})"
+        self.init_error = reason
         self.enabled = False
         return False, reason
 
@@ -381,9 +395,7 @@ class AIEngine:
             "api-key": self.api_key,
             "Content-Type": "application/json",
         }
-        candidate_models = [self.model_name] + [
-            m for m in self.FALLBACK_MODELS_BY_PROVIDER["openai"] if m != self.model_name
-        ]
+        candidate_models = self._candidate_models("openai")
         last_error = ""
 
         for candidate in candidate_models:
@@ -405,8 +417,14 @@ class AIEngine:
                     return True, "OK"
                 elif resp.status_code in (401, 403):
                     self.enabled = False
-                    return False, "API Key Invalid or Expired"
-                elif resp.status_code == 429:
+                    self.init_error = "API Key Invalid or Expired"
+                    return False, self.init_error
+                elif resp.status_code in (429, 503):
+                    retry_after = self._extract_retry_after(
+                        getattr(resp, "headers", None),
+                        getattr(resp, "text", "") or "",
+                    )
+                    self._mark_model_rate_limited(candidate, retry_after or 60.0)
                     last_error = "Quota exhausted / Rate limit reached on candidate models"
                     continue
                 elif resp.status_code == 404:
@@ -418,8 +436,10 @@ class AIEngine:
                 last_error = str(err)
                 continue
 
+        reason = last_error or "OpenAI connection failed"
+        self.init_error = reason
         self.enabled = False
-        return False, last_error or "OpenAI connection failed"
+        return False, reason
 
     def _verify_anthropic(self) -> tuple[bool, str]:
         """Verify Anthropic connection and active model quota via REST API."""
@@ -432,9 +452,7 @@ class AIEngine:
             "anthropic-version": "2023-06-01",
             "Content-Type": "application/json",
         }
-        candidate_models = [self.model_name] + [
-            m for m in self.FALLBACK_MODELS_BY_PROVIDER["anthropic"] if m != self.model_name
-        ]
+        candidate_models = self._candidate_models("anthropic")
         last_error = ""
 
         for candidate in candidate_models:
@@ -456,8 +474,14 @@ class AIEngine:
                     return True, "OK"
                 elif resp.status_code in (401, 403):
                     self.enabled = False
-                    return False, "API Key Invalid or Expired"
-                elif resp.status_code == 429:
+                    self.init_error = "API Key Invalid or Expired"
+                    return False, self.init_error
+                elif resp.status_code in (429, 503, 529):
+                    retry_after = self._extract_retry_after(
+                        getattr(resp, "headers", None),
+                        getattr(resp, "text", "") or "",
+                    )
+                    self._mark_model_rate_limited(candidate, retry_after or 60.0)
                     last_error = "Quota exhausted / Rate limit reached on candidate models"
                     continue
                 elif resp.status_code == 404:
@@ -469,8 +493,10 @@ class AIEngine:
                 last_error = str(err)
                 continue
 
+        reason = last_error or "Anthropic connection failed"
+        self.init_error = reason
         self.enabled = False
-        return False, last_error or "Anthropic connection failed"
+        return False, reason
 
     def sanitize_text(self, text: str) -> str:
         """Redact sensitive tokens and key patterns before sending to LLM."""
@@ -754,9 +780,56 @@ class AIEngine:
                 self._prompt_cond.notify_all()
         return result
 
+    @staticmethod
+    def build_deterministic_executive_summary(results: List[CheckResult], org_name: str) -> str:
+        """Build a concise, grounded executive governance summary without live LLM calls."""
+        if not results:
+            return ""
+
+        total = len(results)
+        passed = sum(1 for r in results if r.status == CheckStatus.PASS)
+        warned = sum(1 for r in results if r.status == CheckStatus.WARN)
+        failed = sum(1 for r in results if r.status == CheckStatus.FAIL)
+        skipped = sum(1 for r in results if r.status == CheckStatus.SKIPPED)
+        effective = total - skipped
+        score_str = f"{(passed / effective) * 100:.1f}%" if effective > 0 else "N/A (All Skipped)"
+
+        critical_high_fails = [
+            r
+            for r in results
+            if r.status == CheckStatus.FAIL and str(getattr(r.severity, "value", r.severity)).upper() in ("CRITICAL", "HIGH")
+        ]
+        top_controls: List[str] = []
+        seen_checks: set[str] = set()
+        for r in critical_high_fails:
+            if r.check_name not in seen_checks:
+                seen_checks.add(r.check_name)
+                top_controls.append(r.check_name)
+            if len(top_controls) >= 3:
+                break
+
+        scope_label = org_name or "audited organizations"
+        p1 = (
+            f"1. Executive Posture Summary: Across {scope_label}, {total} governance checks were evaluated "
+            f"({passed} passed, {failed} failed, {warned} warnings, {skipped} skipped; compliance score {score_str})."
+        )
+        if top_controls:
+            p2 = (
+                f"2. Priority Remediation Focus: {len(critical_high_fails)} high/critical control gaps were identified, "
+                f"led by {', '.join(top_controls)}. Standardize branch rulesets, push protection, and pinned workflow dependencies across affected repositories."
+            )
+        elif failed > 0 or warned > 0:
+            p2 = (
+                f"2. Priority Remediation Focus: {failed} failed and {warned} warning controls require platform engineering follow-up; "
+                f"consult the Fleet_Playbook and AI_Recommendations sheets for verified configuration baselines."
+            )
+        else:
+            p2 = "2. Priority Remediation Focus: All evaluated controls passed baseline governance standards with zero critical gaps detected."
+        return f"{p1}\n\n{p2}"
+
     def generate_executive_summary(self, results: List[CheckResult], org_name: str) -> str:
         """Synthesize a high-level executive risk and governance narrative."""
-        if not self.is_available():
+        if not self.is_available() or self.is_circuit_active():
             return ""
 
         total = len(results)
@@ -783,14 +856,14 @@ HIGH RISK / FAILED CHECKS:
 WARNINGS:
 {chr(10).join(warned_checks) if warned_checks else 'None'}
 
-FORMAT YOUR RESPONSE IN 2-3 CONCISE MARKDOWN PARAGRAPHS:
+FORMAT YOUR RESPONSE AS 3 CONCISE PLAIN-TEXT PARAGRAPHS (NO Markdown **bold**, NO ### headers, NO backticks):
 1. Executive Risk Summary: Overall posture, score evaluation, and primary governance gaps.
 2. Supply-Chain & Critical Vulnerability Vectors: Specifically calling out risks from unpinned actions, missing rulesets, or exposed secrets.
 3. Strategic 30-Day Remediation Plan: High-priority immediate fixes for the platform team.
 Keep it factual, authoritative, professional, and actionable. Do not use filler or platitudes."""
 
         summary = self._generate_text(prompt)
-        return summary or ""
+        return self._to_plain_narrative(summary) if summary else ""
 
     def _apply_remediation(self, result: CheckResult, snippet: str, detected_stack: str) -> None:
         """Apply synthesized remediation and metadata to CheckResult, preserving canonical baseline."""
@@ -942,23 +1015,40 @@ ADVISORY: <1 concise sentence specifying verification action for SecOps>"""
                             risk = valid
                             break
                 elif line_str.upper().startswith("ADVISORY:"):
-                    advisory = line_str.split(":", 1)[1].strip()
+                    raw_adv = line_str.split(":", 1)[1].strip()
+                    cleaned_adv = self._to_plain_advisory(raw_adv)
+                    if cleaned_adv:
+                        advisory = cleaned_adv
             return risk, advisory
         except Exception:
             return default_risk, default_advisory
 
     @staticmethod
-    def _to_plain_advisory(text: str) -> str:
-        """Strip Markdown emphasis, inline code ticks, and list prefixes for clean Excel cells."""
+    def _strip_inline_markdown(text: str) -> str:
+        """Remove Markdown code ticks, bold/italic markers, and leading heading hashes."""
         cleaned = (text or "").strip()
         cleaned = re.sub(r"```[\s\S]*?```", " ", cleaned)
         cleaned = re.sub(r"`([^`]+)`", r"\1", cleaned)
         cleaned = re.sub(r"\*\*([^*]+)\*\*", r"\1", cleaned)
         cleaned = re.sub(r"__([^_]+)__", r"\1", cleaned)
         cleaned = re.sub(r"(?<!\w)\*([^*]+)\*(?!\w)", r"\1", cleaned)
-        cleaned = re.sub(r"(?m)^\s*(?:[-*•]+|\d+\.)\s+", "", cleaned)
         cleaned = re.sub(r"(?m)^\s*#{1,6}\s+", "", cleaned)
+        return cleaned
+
+    @classmethod
+    def _to_plain_advisory(cls, text: str) -> str:
+        """Strip Markdown emphasis, inline code ticks, and list prefixes for single-cell Excel advisories."""
+        cleaned = cls._strip_inline_markdown(text)
+        cleaned = re.sub(r"(?m)^\s*(?:[-*•]+|\d+\.)\s+", "", cleaned)
         return re.sub(r"\s+", " ", cleaned).strip()
+
+    @classmethod
+    def _to_plain_narrative(cls, text: str) -> str:
+        """Strip Markdown tokens while preserving paragraph line breaks for multi-paragraph briefings."""
+        cleaned = cls._strip_inline_markdown(text)
+        lines = [re.sub(r"[ \t]+", " ", ln).strip() for ln in cleaned.splitlines()]
+        normalized = "\n".join(lines)
+        return re.sub(r"\n{3,}", "\n\n", normalized).strip()
 
     _NO_PIPELINE_HALLUCINATION_RE = re.compile(
         r"\b(?:complete\s+absence\s+of|absence\s+of|zero|no|lack(?:ing)?)\s+(?:automated\s+)?(?:deployment\s+)?(?:pipelines?|deployment\s+automation|ci/cd)\b",
@@ -1121,7 +1211,7 @@ Strict Grounding & Output Rules:
 Provide ONLY 1-2 concise sentences prescribing precise configuration fixes (.github/workflows YAML retention settings or cache purging). No conversational filler."""
 
         res = self._generate_text(prompt)
-        return res.strip() if res else default_rec
+        return (self._to_plain_advisory(res) or default_rec) if res else default_rec
 
     def generate_runner_fleet_advisory(
         self,
@@ -1141,7 +1231,7 @@ Provide ONLY 1-2 concise sentences prescribing precise configuration fixes (.git
         else:
             default_rec = "Runner fleet capacity is well-provisioned. Availability and queue latency remain within target SLAs."
 
-        if not self.is_available():
+        if not self.is_available() or self.is_circuit_active():
             return default_rec
 
         prompt = f"""You are a Principal CI/CD Infrastructure Architect. Analyze this GitHub Actions self-hosted runner fleet:
@@ -1152,10 +1242,10 @@ Provide ONLY 1-2 concise sentences prescribing precise configuration fixes (.git
 - Jobs Breaching 60s Queue SLA: {sla_breaches}
 - Ephemeral Runners: {ephemeral_count} / {total_runners}
 
-Provide ONLY 2 concise sentences with clear architectural recommendations on autoscaling policies (ARC, KEDA) and runner pool sizing."""
+Provide ONLY 2 concise plain-text sentences with clear architectural recommendations on autoscaling policies (ARC, KEDA) and runner pool sizing."""
 
         res = self._generate_text(prompt)
-        return res.strip() if res else default_rec
+        return (self._to_plain_advisory(res) or default_rec) if res else default_rec
 
     def generate_activity_insights(
         self,
@@ -1170,7 +1260,7 @@ Provide ONLY 2 concise sentences with clear architectural recommendations on aut
         """Synthesize engineering activity trends and contributor cadence."""
         default_rec = f"Engineering activity across {org_name}: {active_contributors} active contributors ({total_activities} actions, {prs_merged} PRs merged). Maintain balanced code review assignments to prevent reviewer fatigue."
 
-        if not self.is_available():
+        if not self.is_available() or self.is_circuit_active():
             return default_rec
 
         prompt = f"""You are an Engineering Operations Director. Analyze contributor activity for '{self.sanitize_text(org_name)}':
@@ -1180,10 +1270,10 @@ Provide ONLY 2 concise sentences with clear architectural recommendations on aut
 - Commits: {total_commits}
 - PRs Opened / Merged: {prs_opened} / {prs_merged}
 
-Provide ONLY 2 concise sentences summarizing development cadence and workload distribution. No chat or filler."""
+Provide ONLY 2 concise plain-text sentences summarizing development cadence and workload distribution. No chat, Markdown, or filler."""
 
         res = self._generate_text(prompt)
-        return res.strip() if res else default_rec
+        return (self._to_plain_advisory(res) or default_rec) if res else default_rec
 
 
 def init_ai_engine(

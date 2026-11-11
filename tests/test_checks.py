@@ -28,6 +28,7 @@ from src.checks.contributor_checks import (
     PullRequestTemplatesCheck,
     SetupDocumentationCheck,
 )
+from src.collector.repo_inspector import RepoInspector
 
 
 # --- Org Checks ---
@@ -342,3 +343,79 @@ def test_contributor_checks() -> None:
     assert doc_check.evaluate(inspector, "org", "repo", "main", {}).status == CheckStatus.PASS
     inspector.check_file_exists.return_value = False
     assert doc_check.evaluate(inspector, "org", "repo", "main", {}).status == CheckStatus.WARN
+
+
+def _make_403_error(
+    body: bytes = b"", headers: dict | None = None
+) -> requests.exceptions.HTTPError:
+    """Create a realistic HTTP 403 HTTPError with optional JSON payload and headers."""
+    resp = requests.Response()
+    resp.status_code = 403
+    resp._content = body
+    if headers:
+        resp.headers.update(headers)
+    return requests.exceptions.HTTPError("403 Forbidden", response=resp)
+
+
+@pytest.mark.parametrize(
+    "permissions,body,headers,expected_snippets,unexpected_snippets",
+    [
+        (
+            {"organization_administration": "read", "actions": "read"},
+            b'{"message": "Resource not accessible by integration"}',
+            {"X-Accepted-GitHub-Permissions": "organization_administration=write"},
+            ["organization_administration=read", "organization_administration=write", "Enterprise"],
+            ["grant Organization Administration (Read)"],
+        ),
+        (
+            {"organization_administration": "read"},
+            b'{"message": "Upgrade to GitHub Enterprise or contact sales to enable this feature"}',
+            {},
+            ["Upgrade to GitHub Enterprise", "plan tier", "not a missing App permission"],
+            ["grant Organization Administration"],
+        ),
+        (
+            {"actions": "read", "metadata": "read"},
+            b'{"message": "Resource not accessible by integration"}',
+            {},
+            ["Accept new permissions", "organization_administration"],
+            [],
+        ),
+        (
+            {"organization_administration": "read"},
+            b'{"message": "Resource protected by organization SAML enforcement"}',
+            {"X-GitHub-SSO": "required; url=https://github.com/orgs/Playground/sso"},
+            ["SAML SSO", "Resource protected by organization SAML enforcement"],
+            ["grant Organization Administration"],
+        ),
+        (
+            None,
+            b"",
+            {},
+            ["/orgs/{org}/rulesets", "Organization Administration (Write) permission or GitHub Enterprise plan"],
+            ["grant Organization Administration (Read)"],
+        ),
+    ],
+)
+def test_org_rulesets_403_diagnostics(
+    permissions: dict | None,
+    body: bytes,
+    headers: dict,
+    expected_snippets: list[str],
+    unexpected_snippets: list[str],
+) -> None:
+    """RepoInspector surfaces exact 403 root causes instead of misleading Read hints."""
+    client = MagicMock()
+    client.auth = MagicMock() if permissions is not None else None
+    if permissions is not None:
+        client.auth.get_installation_permissions.return_value = permissions
+    client.get.side_effect = _make_403_error(body=body, headers=headers)
+
+    inspector = RepoInspector(client)
+    res = OrgRulesetsCheck().evaluate(inspector, "Playground", {})
+
+    assert res.status == CheckStatus.SKIPPED
+    for snippet in expected_snippets:
+        assert snippet in res.current_state
+    for snippet in unexpected_snippets:
+        assert snippet not in res.current_state

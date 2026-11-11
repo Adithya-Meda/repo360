@@ -820,3 +820,111 @@ def test_init_ai_engine_enable_ai_flag_and_fallback(mock_client_cls: MagicMock) 
     online_eng = init_ai_engine(enable_ai=True, creds=creds_with_key)
     assert online_eng.enabled is True
     assert online_eng.is_available()
+
+
+def test_verify_connection_marks_rate_limited_primary_and_promotes_fallback():
+    from unittest.mock import MagicMock
+
+    engine = AIEngine(provider="gemini", api_key="test-key", model_name="gemini-3.5-flash", enabled=True)
+    mock_client = MagicMock()
+
+    def _verify_side_effect(model, **_kwargs):
+        if model == "gemini-3.5-flash":
+            raise Exception("429 RESOURCE_EXHAUSTED: Please retry in 40s")
+        resp = MagicMock()
+        resp.text = "ok"
+        return resp
+
+    mock_client.models.generate_content.side_effect = _verify_side_effect
+    engine._client = mock_client
+
+    ok, reason = engine.verify_connection()
+    assert ok is True
+    assert reason == "OK"
+    assert engine.model_name == "gemini-3.5-flash-lite"
+    assert "gemini-3.5-flash" in engine._model_cooldown_until
+
+    all_429_engine = AIEngine(provider="gemini", api_key="test-key", model_name="gemini-3.5-flash", enabled=True)
+    mock_fail = MagicMock()
+    mock_fail.models.generate_content.side_effect = Exception("429 RESOURCE_EXHAUSTED: quota exceeded")
+    all_429_engine._client = mock_fail
+    ok2, reason2 = all_429_engine.verify_connection()
+    assert ok2 is False
+    assert all_429_engine.enabled is False
+    assert all_429_engine.init_error == reason2
+
+
+def test_executive_summary_and_advisories_strip_markdown_cleanly(monkeypatch):
+    from src.checks.base import CheckResult, CheckSeverity, CheckStatus, Persona
+
+    results = [
+        CheckResult(
+            check_id="branch_rulesets",
+            check_name="Branch Rulesets",
+            persona=Persona.REPO_ADMIN,
+            category="Governance",
+            status=CheckStatus.FAIL,
+            severity=CheckSeverity.CRITICAL,
+            current_state="Missing",
+            recommended_state="Enable",
+            explanation="Require PR reviews.",
+            org_name="acme",
+            repo_name="api",
+        ),
+        CheckResult(
+            check_id="codeowners_validation",
+            check_name="CODEOWNERS",
+            persona=Persona.REPO_ADMIN,
+            category="Governance",
+            status=CheckStatus.PASS,
+            severity=CheckSeverity.HIGH,
+            current_state="OK",
+            recommended_state="OK",
+            explanation="Verified.",
+            org_name="acme",
+            repo_name="api",
+        ),
+    ]
+
+    det = AIEngine.build_deterministic_executive_summary(results, "acme")
+    assert "50.0%" in det
+    assert "Branch Rulesets" in det
+
+    online = AIEngine(provider="openai", api_key="sk-test", enabled=True)
+    monkeypatch.setattr(
+        online,
+        "_generate_text",
+        lambda *_args, **_kwargs: "### 1. Risk Summary\n**High risk** in `branch_rulesets`.\n\n2. Plan\nFix *now*.",
+    )
+    summary = online.generate_executive_summary(results, "acme")
+    assert "**" not in summary
+    assert "`" not in summary
+    assert "###" not in summary
+    assert "\n\n" in summary
+
+    monkeypatch.setattr(
+        online,
+        "_generate_text",
+        lambda *_args, **_kwargs: "- Use **`retention-days: 7`** across `.github/workflows`.",
+    )
+    fin_adv = online.generate_finops_advisory("acme/api", 10.0, 20.0, 2, 0, "Moderate")
+    assert "**" not in fin_adv and "`" not in fin_adv and not fin_adv.startswith("-")
+
+
+def test_is_ai_live_and_run_concurrent_ai_circuit_short_circuit():
+    from concurrent.futures import ThreadPoolExecutor
+    from src.common.concurrency import is_ai_live, run_concurrent_ai
+    from src.main import _resolve_ai_pool_size
+
+    engine = AIEngine(provider="gemini", api_key="test-key", enabled=True)
+    assert is_ai_live(engine) is True
+    assert _resolve_ai_pool_size(engine, 8) == 3
+
+    engine.trip_circuit_breaker(60.0, reason="429")
+    assert is_ai_live(engine) is False
+    assert _resolve_ai_pool_size(engine, 8) == 1
+
+    # Should run cleanly in deterministic path without ThreadPoolExecutor overhead
+    with ThreadPoolExecutor(max_workers=1) as _unused:
+        out = run_concurrent_ai(["x", "y"], lambda s: f"det:{s}", ai_engine=engine, max_workers=8)
+    assert out == ["det:x", "det:y"]

@@ -31,7 +31,7 @@ from .checks import (
 )
 from .collector.client import Repo360Client
 from .collector.repo_inspector import RepoInspector
-from .common.concurrency import map_concurrent, resolve_worker_count
+from .common.concurrency import is_ai_live, map_concurrent, resolve_worker_count
 from .common.interrupts import (
     finalize_interrupt_exit,
     install_signal_handlers,
@@ -178,8 +178,11 @@ def print_terminal_scorecard(
     else:
         score_str = f"{Y}N/A (All Skipped){X}"
 
+    ai_enriched_count = sum(1 for r in results if r.extra_details.get("ai_enriched"))
     ai_status = (
-        f"{G}ONLINE ({ai_engine.model_name}){X}"
+        f"{Y}RATE LIMITED / FALLBACK ({ai_engine.model_name} - {ai_enriched_count} AI, remainder deterministic){X}"
+        if (ai_engine and ai_engine.is_available() and ai_engine.is_circuit_active())
+        else f"{G}ONLINE ({ai_engine.model_name}){X}"
         if (ai_engine and ai_engine.is_available())
         else f"{Y}DISABLED (Deterministic Policy){X}"
         if (ai_engine and getattr(ai_engine, "disabled_by_cli", False))
@@ -285,6 +288,19 @@ def _log_repo_banner(
     logger.info(separator)
 
 
+def _resolve_ai_pool_size(ai_engine: Optional[AIEngine], requested: int = 8) -> int:
+    """Resolve provider-safe AI worker pool size consistent with concurrent collectors."""
+    requested_safe = max(1, int(requested))
+    if not is_ai_live(ai_engine):
+        return 1
+    rec_fn = getattr(ai_engine, "recommended_max_workers", None)
+    if callable(rec_fn):
+        candidate = rec_fn(requested_safe)
+        if isinstance(candidate, int) and not isinstance(candidate, bool):
+            return max(1, min(requested_safe, candidate))
+    return min(requested_safe, 4)
+
+
 def run_audit(
     inspector: RepoInspector,
     targets: List[RepoTarget],
@@ -345,8 +361,8 @@ def run_audit(
     # Dedicated background AI worker pool for non-blocking asynchronous remediation
     ai_futures: List[concurrent.futures.Future] = []
     ai_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
-    if ai_engine and ai_engine.is_available() and not ai_engine.is_circuit_active():
-        ai_pool_size = min(10, max(4, (os.cpu_count() or 4)))
+    if is_ai_live(ai_engine):
+        ai_pool_size = _resolve_ai_pool_size(ai_engine, requested=8)
         ai_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=ai_pool_size, thread_name_prefix="ai-enricher"
         )
@@ -461,7 +477,7 @@ def run_audit(
                 _log_finding(r)
 
             # Asynchronously dispatch background AI remediation for eligible findings
-            if ai_executor and not stop_event.is_set():
+            if ai_executor and not stop_event.is_set() and is_ai_live(ai_engine):
                 for res_item, stack_item in pending_ai_items:
                     fut = ai_executor.submit(ai_engine.enrich_remediation, res_item, stack_item)
                     ai_futures.append(fut)
@@ -520,13 +536,26 @@ def run_audit(
                         len(pending),
                         X,
                     )
+                    wait_budget = min(180.0, max(60.0, len(pending) * 5.0))
                     start_wait = time.time()
                     while not stop_event.is_set() and not is_shutting_down() and any(not f.done() for f in pending):
                         concurrent.futures.wait(pending, timeout=0.2)
-                        if time.time() - start_wait > 60.0:
+                        if time.time() - start_wait > wait_budget:
                             break
                     if is_shutting_down():
                         raise KeyboardInterrupt
+                    unfinished = [f for f in pending if not f.done()]
+                    if unfinished:
+                        for f in unfinished:
+                            f.cancel()
+                        still_running = [f for f in unfinished if not f.done() and not f.cancelled()]
+                        if still_running:
+                            concurrent.futures.wait(still_running, timeout=5.0)
+                        logger.warning(
+                            "%d background AI remediation task(s) did not complete within %ds; deterministic templates preserved.",
+                            len(unfinished),
+                            int(wait_budget),
+                        )
         finally:
             ai_executor.shutdown(wait=False, cancel_futures=True)
 
@@ -688,7 +717,11 @@ def main() -> int:
                 "status": "HEALTHY" if installs else "DEGRADED",
                 "app_id": app_id,
                 "installations_count": len(installs),
-                "ai_engine": "ONLINE" if ai_eng.is_available() else "OFFLINE",
+                "ai_engine": (
+                    "ONLINE"
+                    if is_ai_live(ai_eng)
+                    else ("RATE_LIMITED" if ai_eng.is_circuit_active() else "OFFLINE")
+                ),
                 **version_meta,
             }
             print(json.dumps(health_data, indent=2))
@@ -1033,24 +1066,37 @@ def _run_cli() -> int:
             _print_failure_banner(f"Audit execution error: {err}")
             return 1
 
-    # Generate AI Executive Briefing if available
+    # Generate AI or deterministic Executive Briefing without misleading attribution
     executive_summary = ""
-    if not args.mock_mode and ai_engine.is_available() and targets:
-        logger.info("Synthesizing Executive Risk & Governance Narrative via AI...")
-        unique_orgs = sorted(set(installed_org_logins if 'installed_org_logins' in locals() else []) | {t.org_name for t in targets})
-        executive_summary = ai_engine.generate_executive_summary(results, ", ".join(unique_orgs))
-    elif args.mock_mode:
+    active_model = ""
+    if args.mock_mode:
         executive_summary = (
             "Simulated Executive Risk & Governance Briefing for offline audit verification."
         )
+    else:
+        unique_orgs = sorted(
+            set(installed_org_logins if "installed_org_logins" in locals() else [])
+            | {t.org_name for t in targets}
+        )
+        org_scope_str = ", ".join(unique_orgs)
+        if is_ai_live(ai_engine) and targets:
+            logger.info("Synthesizing Executive Risk & Governance Narrative via AI...")
+            executive_summary = ai_engine.generate_executive_summary(results, org_scope_str)
+            if executive_summary:
+                active_model = ai_engine.model_name
+        if not executive_summary and results:
+            if ai_engine and ai_engine.is_circuit_active():
+                logger.warning(
+                    "AI rate-limit circuit active; using deterministic Executive Risk & Governance summary."
+                )
+            executive_summary = AIEngine.build_deterministic_executive_summary(results, org_scope_str)
+            active_model = "Deterministic Policy Engine"
 
     # Generate Reports
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     prefix = app_config.get("reporting", {}).get("report_prefix", "repo360_audit")
 
     xlsx_path = os.path.join(output_dir, f"{prefix}_{timestamp}.xlsx")
-
-    active_model = ai_engine.model_name if (ai_engine and ai_engine.is_available()) else ""
 
     logger.info("Generating Excel Report: %s", xlsx_path)
     ExcelReporter().generate(results, xlsx_path, executive_summary=executive_summary, model_name=active_model)

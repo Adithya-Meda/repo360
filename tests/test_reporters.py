@@ -385,3 +385,129 @@ def test_audit_score_consistency_excludes_skipped(capsys) -> None:
     out = capsys.readouterr().out
     assert "100.0%" in out
     assert "SKIPPED" in out
+
+
+def test_hybrid_ai_and_fallback_recommendations_and_truthful_scorecard(capsys) -> None:
+    """Verify partial AI + fallback rows both render truthfully without dropping checks or mislabeling."""
+    from datetime import datetime, timezone
+    from pathlib import Path
+    from src.ai.engine import AIEngine
+    from src.activity.models import ActivityConfig
+    from src.activity.reporter import write_activity_workbook
+    from src.checks.base import CheckResult, CheckSeverity, CheckStatus, Persona
+    from src.main import print_terminal_scorecard
+    from src.runners.models import RunnersConfig
+    from src.runners.reporter import write_runners_workbook
+
+    results = [
+        CheckResult(
+            check_id="copilot_instructions",
+            check_name="Copilot Instructions",
+            persona=Persona.CONTRIBUTOR,
+            category="AI Readiness",
+            status=CheckStatus.FAIL,
+            severity=CheckSeverity.LOW,
+            org_name="acme",
+            repo_name="repo-ai",
+            current_state="Missing",
+            recommended_state="Baseline instructions",
+            explanation="Standardize guidance.",
+            remediation_snippet_after="# AI tailored Python snippet",
+            extra_details={
+                "ai_enriched": True,
+                "ai_model": "gemini-3.5-flash-lite",
+                "detected_stack": "Python",
+            },
+        ),
+        CheckResult(
+            check_id="dependabot_configuration",
+            check_name="Dependabot Configuration",
+            persona=Persona.REPO_ADMIN,
+            category="Supply Chain",
+            status=CheckStatus.FAIL,
+            severity=CheckSeverity.HIGH,
+            org_name="acme",
+            repo_name="repo-fallback",
+            current_state="Missing dependabot.yml",
+            recommended_state="Enable Dependabot updates",
+            explanation="Automate dependency patches.",
+            remediation_snippet_after="version: 2\nupdates:\n  - package-ecosystem: pip",
+        ),
+    ]
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as f:
+        temp_path = f.name
+
+    try:
+        ExcelReporter().generate(
+            results,
+            temp_path,
+            executive_summary=AIEngine.build_deterministic_executive_summary(results, "acme"),
+            model_name="Deterministic Policy Engine",
+        )
+        wb = openpyxl.load_workbook(temp_path)
+        ws_sum = wb["Executive_Summary"]
+        banner_values = [ws_sum.cell(row=r, column=2).value for r in range(1, ws_sum.max_row + 1)]
+        assert any(
+            "Deterministic Policy Summary" in str(v) for v in banner_values if v is not None
+        )
+        assert not any("Synthesized via Gemini" in str(v) for v in banner_values if v is not None)
+
+        ws_ai = wb["AI_Recommendations"]
+        sources = {ws_ai[f"A{r}"].value: (ws_ai[f"G{r}"].value, ws_ai[f"H{r}"].value) for r in range(2, ws_ai.max_row + 1)}
+        assert "repo-ai" in sources
+        assert "repo-fallback" in sources
+        assert sources["repo-ai"] == ("gemini-3.5-flash-lite", "AI Tailored")
+        assert sources["repo-fallback"] == ("Deterministic Policy Engine", "Standard Policy (Fallback)")
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+    throttled_engine = AIEngine(provider="gemini", api_key="test-key", model_name="gemini-3.5-flash", enabled=True)
+    throttled_engine.trip_circuit_breaker(60.0, reason="429")
+    print_terminal_scorecard(
+        results,
+        [RepoTarget(org_name="acme", repo_name="repo-ai", target_personas={"all"})],
+        {"xlsx": "out.xlsx"},
+        ai_engine=throttled_engine,
+    )
+    out = capsys.readouterr().out
+    assert "RATE LIMITED / FALLBACK" in out
+    assert "1 AI, remainder deterministic" in out
+
+    now = datetime.now(timezone.utc)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as f1, tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as f2:
+        run_xlsx, act_xlsx = Path(f1.name), Path(f2.name)
+    try:
+        write_runners_workbook(
+            run_xlsx,
+            RunnersConfig(),
+            now,
+            now,
+            [],
+            [],
+            [],
+            ai_engine=throttled_engine,
+        )
+        write_activity_workbook(
+            act_xlsx,
+            ActivityConfig(),
+            now,
+            now,
+            [],
+            [],
+            [],
+            [],
+            1,
+            ai_engine=throttled_engine,
+        )
+        wb_run = openpyxl.load_workbook(run_xlsx)
+        wb_act = openpyxl.load_workbook(act_xlsx)
+        run_titles = [c.value for row in wb_run["Executive Summary"].iter_rows(values_only=False) for c in row if c.value]
+        act_titles = [c.value for row in wb_act["Executive Summary"].iter_rows(values_only=False) for c in row if c.value]
+        assert "Fleet Advisory & Autoscaling Guidance (Deterministic Policy)" in run_titles
+        assert "Contributor Cadence & Collaboration Summary (Deterministic Policy)" in act_titles
+    finally:
+        for p in (run_xlsx, act_xlsx):
+            if p.exists():
+                p.unlink()

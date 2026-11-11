@@ -73,6 +73,19 @@ def map_concurrent(
     return results  # type: ignore[return-value]
 
 
+def is_ai_live(ai_engine: Optional[Any]) -> bool:
+    """Return True if an AI engine is available and not currently rate-limit tripped."""
+    if ai_engine is None:
+        return False
+    is_avail_fn = getattr(ai_engine, "is_available", None)
+    if callable(is_avail_fn) and is_avail_fn() is False:
+        return False
+    is_circuit_fn = getattr(ai_engine, "is_circuit_active", None)
+    if callable(is_circuit_fn) and is_circuit_fn() is True:
+        return False
+    return True
+
+
 def run_concurrent_ai(
     items: Sequence[T],
     enrich_fn: Callable[[T], R],
@@ -84,8 +97,7 @@ def run_concurrent_ai(
         raise KeyboardInterrupt
     if not items:
         return []
-    is_avail_fn = getattr(ai_engine, "is_available", None)
-    if ai_engine is None or (callable(is_avail_fn) and is_avail_fn() is False) or len(items) <= 1:
+    if not is_ai_live(ai_engine) or len(items) <= 1:
         return [enrich_fn(item) for item in items]
 
     rec_fn = getattr(ai_engine, "recommended_max_workers", None)

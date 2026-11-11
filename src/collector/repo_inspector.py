@@ -57,6 +57,139 @@ class RepoInspector:
     def _is_forbidden_error(err: requests.exceptions.HTTPError) -> bool:
         return getattr(err, "response", None) is not None and err.response.status_code == 403
 
+    @staticmethod
+    def _extract_forbidden_context(err: requests.exceptions.HTTPError) -> Tuple[str, str, str]:
+        """Extract API error message, accepted-permissions header, and SSO header from a 403 error."""
+        resp = getattr(err, "response", None)
+        if resp is None:
+            return "", "", ""
+
+        api_msg = ""
+        try:
+            payload = resp.json()
+            if isinstance(payload, dict):
+                api_msg = str(payload.get("message") or "").strip()
+        except Exception:
+            raw_text = getattr(resp, "text", None)
+            if isinstance(raw_text, str):
+                api_msg = raw_text.strip()[:160]
+
+        headers = getattr(resp, "headers", None)
+        if headers is not None and hasattr(headers, "get") and not isinstance(headers, (str, bytes)):
+            try:
+                raw_acc = headers.get("x-accepted-github-permissions") or headers.get(
+                    "X-Accepted-GitHub-Permissions"
+                )
+                raw_sso = headers.get("x-github-sso") or headers.get("X-GitHub-SSO")
+                accepted = raw_acc.strip() if isinstance(raw_acc, str) else ""
+                sso_hdr = raw_sso.strip() if isinstance(raw_sso, str) else ""
+                return api_msg, accepted, sso_hdr
+            except Exception:
+                return api_msg, "", ""
+
+        return api_msg, "", ""
+
+    def _describe_forbidden_error(
+        self,
+        err: requests.exceptions.HTTPError,
+        endpoint: str,
+        default_hint: str,
+        org: str = "",
+        permission_key: Optional[str] = None,
+        endpoint_requires_write: bool = False,
+    ) -> str:
+        """Build an actionable 403 diagnostic combining GitHub headers, payload, and App permissions."""
+        api_msg, accepted, sso_hdr = self._extract_forbidden_context(err)
+        lower_msg = api_msg.lower()
+
+        if sso_hdr or "saml" in lower_msg:
+            detail = api_msg or "SSO authorization required"
+            return (
+                f"HTTP 403 Forbidden on {endpoint} — blocked by Organization SAML SSO / "
+                f"network policy ({detail})."
+            )
+
+        if any(tok in lower_msg for tok in ("upgrade", "enterprise", "plan", "subscription", "not enabled")):
+            return (
+                f"HTTP 403 Forbidden on {endpoint} — GitHub API returned '{api_msg}' "
+                f"(feature unavailable on current GitHub plan tier, not a missing App permission)."
+            )
+
+        granted_perms: Optional[Dict[str, str]] = None
+        auth = getattr(self.client, "auth", None)
+        get_perms = getattr(auth, "get_installation_permissions", None)
+        if callable(get_perms) and org:
+            try:
+                candidate = get_perms(org)
+                if isinstance(candidate, dict):
+                    granted_perms = candidate
+            except Exception:
+                granted_perms = None
+
+        accepted_note = f" (required by GitHub: {accepted})" if accepted else ""
+        msg_note = f" (GitHub API: {api_msg})" if api_msg else ""
+
+        if granted_perms is not None and permission_key:
+            granted_level = granted_perms.get(permission_key)
+            if granted_level:
+                if endpoint_requires_write and granted_level == "read":
+                    return (
+                        f"HTTP 403 Forbidden on {endpoint} — App installation has "
+                        f"{permission_key}={granted_level}, but GitHub REST API requires "
+                        f"'{permission_key}=write' (and GitHub Enterprise for org-level rulesets)"
+                        f"{accepted_note}{msg_note}."
+                    )
+                if "write" in accepted.lower() and granted_level == "read":
+                    return (
+                        f"HTTP 403 Forbidden on {endpoint} — App installation has "
+                        f"{permission_key}={granted_level}, but GitHub requires write access"
+                        f"{accepted_note}{msg_note}."
+                    )
+                return (
+                    f"HTTP 403 Forbidden on {endpoint} — App installation already grants "
+                    f"{permission_key}={granted_level}, yet GitHub returned Forbidden"
+                    f"{accepted_note}{msg_note} (check plan entitlement or endpoint permission tier)."
+                )
+            if granted_perms:
+                return (
+                    f"HTTP 403 Forbidden on {endpoint} — active org installation lacks "
+                    f"'{permission_key}' (check Organization Settings -> GitHub Apps -> Accept new permissions); "
+                    f"{default_hint}{msg_note}."
+                )
+
+        if endpoint_requires_write and accepted:
+            return (
+                f"HTTP 403 Forbidden on {endpoint} — GitHub REST API requires "
+                f"{accepted}{msg_note} (read-only Apps default to Read)."
+            )
+
+        if accepted or api_msg:
+            return f"HTTP 403 Forbidden on {endpoint}; {default_hint}{accepted_note}{msg_note}."
+
+        return f"HTTP 403 Forbidden on {endpoint}; {default_hint}."
+
+    def _record_forbidden_error(
+        self,
+        err: requests.exceptions.HTTPError,
+        org: str,
+        control: str,
+        endpoint: str,
+        default_hint: str,
+        permission_key: Optional[str] = None,
+        repo: Optional[str] = None,
+        endpoint_requires_write: bool = False,
+    ) -> None:
+        """Format and record an actionable HTTP 403 diagnostic message."""
+        message = self._describe_forbidden_error(
+            err,
+            endpoint=endpoint,
+            default_hint=default_hint,
+            org=org,
+            permission_key=permission_key,
+            endpoint_requires_write=endpoint_requires_write,
+        )
+        self._record_permission_error(org, control, message, repo=repo)
+
     def seed_repo_metadata(self, org: str, repo: str, metadata: Dict[str, Any]) -> None:
         """Pre-populate repository metadata cache from bulk discovery data to eliminate redundant API calls."""
         if org and repo and metadata and isinstance(metadata, dict):
@@ -117,10 +250,13 @@ class RepoInspector:
             return self.client.get(f"/orgs/{org}", allow_404=True)
         except requests.exceptions.HTTPError as err:
             if self._is_forbidden_error(err):
-                self._record_permission_error(
+                self._record_forbidden_error(
+                    err,
                     org,
                     "org_info",
-                    "HTTP 403 Forbidden on /orgs/{org}; grant Organization Administration (Read) permission.",
+                    "/orgs/{org}",
+                    "grant Organization Administration (Read) permission",
+                    permission_key="organization_administration",
                 )
                 return None
             raise
@@ -132,10 +268,14 @@ class RepoInspector:
             return data if isinstance(data, list) else []
         except requests.exceptions.HTTPError as err:
             if self._is_forbidden_error(err):
-                self._record_permission_error(
+                self._record_forbidden_error(
+                    err,
                     org,
                     "org_rulesets",
-                    "HTTP 403 Forbidden on /orgs/{org}/rulesets; grant Organization Administration (Read) permission.",
+                    "/orgs/{org}/rulesets",
+                    "grant Organization Administration (Write) permission or GitHub Enterprise plan",
+                    permission_key="organization_administration",
+                    endpoint_requires_write=True,
                 )
                 return []
             raise
@@ -149,10 +289,13 @@ class RepoInspector:
             return []
         except requests.exceptions.HTTPError as err:
             if self._is_forbidden_error(err):
-                self._record_permission_error(
+                self._record_forbidden_error(
+                    err,
                     org,
                     "org_runner_groups",
-                    "HTTP 403 Forbidden on /orgs/{org}/actions/runner-groups; grant Self-hosted Runners (Read) permission.",
+                    "/orgs/{org}/actions/runner-groups",
+                    "grant Self-hosted Runners (Read) permission",
+                    permission_key="organization_self_hosted_runners",
                 )
                 return []
             raise
@@ -180,10 +323,13 @@ class RepoInspector:
             return self.client.get(f"/orgs/{org}/actions/permissions", allow_404=True)
         except requests.exceptions.HTTPError as err:
             if self._is_forbidden_error(err):
-                self._record_permission_error(
+                self._record_forbidden_error(
+                    err,
                     org,
                     "org_actions_permissions",
-                    "HTTP 403 Forbidden on /orgs/{org}/actions/permissions; grant Organization Administration (Read).",
+                    "/orgs/{org}/actions/permissions",
+                    "grant Organization Administration (Read) permission",
+                    permission_key="organization_administration",
                 )
                 return None
             raise
@@ -194,10 +340,13 @@ class RepoInspector:
             return self.client.get(f"/orgs/{org}/actions/permissions/workflow", allow_404=True)
         except requests.exceptions.HTTPError as err:
             if self._is_forbidden_error(err):
-                self._record_permission_error(
+                self._record_forbidden_error(
+                    err,
                     org,
                     "org_workflow_permissions",
-                    "HTTP 403 Forbidden on /orgs/{org}/actions/permissions/workflow; grant Organization Administration (Read).",
+                    "/orgs/{org}/actions/permissions/workflow",
+                    "grant Organization Administration (Read) permission",
+                    permission_key="organization_administration",
                 )
                 return None
             raise
@@ -232,10 +381,13 @@ class RepoInspector:
             return None
         except requests.exceptions.HTTPError as err:
             if self._is_forbidden_error(err):
-                self._record_permission_error(
+                self._record_forbidden_error(
+                    err,
                     org,
                     "org_saml_sso",
-                    "HTTP 403 Forbidden querying GraphQL SAML SSO; grant Organization Administration (Read).",
+                    "GraphQL SAML SSO",
+                    "grant Organization Administration (Read) permission",
+                    permission_key="organization_administration",
                 )
                 return {"error_403": True}
             return None
@@ -348,10 +500,13 @@ class RepoInspector:
             return res
         except requests.exceptions.HTTPError as err:
             if self._is_forbidden_error(err):
-                self._record_permission_error(
+                self._record_forbidden_error(
+                    err,
                     org,
                     "repo_rulesets",
-                    "HTTP 403 Forbidden on /rulesets; grant Repository Administration (Read) permission.",
+                    "/rulesets",
+                    "grant Repository Administration (Read) permission",
+                    permission_key="administration",
                     repo=repo,
                 )
                 with self._cache_lock:
@@ -382,10 +537,13 @@ class RepoInspector:
             return res
         except requests.exceptions.HTTPError as err:
             if self._is_forbidden_error(err):
-                self._record_permission_error(
+                self._record_forbidden_error(
+                    err,
                     org,
                     "repo_branch_rules",
-                    "HTTP 403 Forbidden on /rules/branches; grant Repository Administration (Read) permission.",
+                    "/rules/branches",
+                    "grant Repository Administration (Read) permission",
+                    permission_key="administration",
                     repo=repo,
                 )
                 with self._cache_lock:
@@ -426,10 +584,13 @@ class RepoInspector:
             return res
         except requests.exceptions.HTTPError as err:
             if self._is_forbidden_error(err):
-                self._record_permission_error(
+                self._record_forbidden_error(
+                    err,
                     org,
                     "branch_protection",
-                    "HTTP 403 Forbidden on /branches/.../protection; grant Repository Administration (Read) or plan entitlement.",
+                    "/branches/.../protection",
+                    "grant Repository Administration (Read) or plan entitlement",
+                    permission_key="administration",
                     repo=repo,
                 )
                 with self._cache_lock:
@@ -517,10 +678,13 @@ class RepoInspector:
             workflows = data.get("workflows", []) if isinstance(data, dict) and "workflows" in data else []
         except requests.exceptions.HTTPError as err:
             if self._is_forbidden_error(err):
-                self._record_permission_error(
+                self._record_forbidden_error(
+                    err,
                     org,
                     "repo_workflows",
-                    "HTTP 403 Forbidden on /actions/workflows; grant Actions (Read) permission.",
+                    "/actions/workflows",
+                    "grant Actions (Read) permission",
+                    permission_key="actions",
                     repo=repo,
                 )
                 workflows = []
@@ -541,10 +705,13 @@ class RepoInspector:
             res = data.get("environments", []) if isinstance(data, dict) and "environments" in data else []
         except requests.exceptions.HTTPError as err:
             if self._is_forbidden_error(err):
-                self._record_permission_error(
+                self._record_forbidden_error(
+                    err,
                     org,
                     "repo_environments",
-                    "HTTP 403 Forbidden on /environments; grant Repository Environments / Administration (Read).",
+                    "/environments",
+                    "grant Actions (Read) permission",
+                    permission_key="actions",
                     repo=repo,
                 )
                 res = []
