@@ -54,12 +54,88 @@ _MAX_COMPARE_CALLS_PER_REPO = 25
 
 
 def _map_deployment_state(raw_state: Optional[str]) -> str:
-    state = (raw_state or "").lower()
-    if state in ("failure", "error"):
+    """Normalize a GitHub Deployment status string into SUCCESS, FAILURE, IN_PROGRESS, or INACTIVE."""
+    state = (raw_state or "").strip().lower()
+    if state in ("success", "active"):
+        return "SUCCESS"
+    if state in ("failure", "error", "timed_out"):
         return "FAILURE"
     if state in ("in_progress", "queued", "pending", "waiting"):
         return "IN_PROGRESS"
-    return "SUCCESS"
+    if not state:
+        return "IN_PROGRESS"
+    return "INACTIVE"
+
+
+def _parse_status_timestamp(status_obj: Optional[Dict[str, Any]]) -> Optional[datetime]:
+    """Extract completion/status timestamp preferring creation time over later metadata edits."""
+    if not isinstance(status_obj, dict):
+        return None
+    ts_str = (
+        status_obj.get("createdAt")
+        or status_obj.get("created_at")
+        or status_obj.get("updatedAt")
+        or status_obj.get("updated_at")
+    )
+    return parse_ts(ts_str) if ts_str else None
+
+
+def _resolve_deployment_status(
+    statuses: Optional[List[Dict[str, Any]]],
+    latest_status: Optional[Dict[str, Any]] = None,
+) -> Tuple[str, Optional[datetime]]:
+    """Resolve effective deployment outcome and timestamp across GitHub status history.
+
+    When a newer rollout supersedes a previously live deployment, GitHub marks the
+    older deployment's ``latestStatus`` as ``INACTIVE``. Scanning status history preserves
+    genuine prior ``SUCCESS``/``ACTIVE`` completions (with their original completion time)
+    while keeping never-activated, cancelled, or status-less deployments out of ``SUCCESS``.
+    """
+    ordered: List[Dict[str, Any]] = []
+    if statuses:
+        with_ts: List[Tuple[datetime, Dict[str, Any]]] = []
+        without_ts: List[Dict[str, Any]] = []
+        for entry in statuses:
+            if not isinstance(entry, dict):
+                continue
+            dt = _parse_status_timestamp(entry)
+            if dt is not None:
+                with_ts.append((dt, entry))
+            else:
+                without_ts.append(entry)
+        with_ts.sort(key=lambda item: item[0], reverse=True)
+        ordered = [item[1] for item in with_ts] + without_ts
+
+    if not ordered and isinstance(latest_status, dict) and latest_status:
+        ordered = [latest_status]
+
+    if not ordered:
+        return "IN_PROGRESS", None
+
+    latest = ordered[0]
+    latest_raw = str(latest.get("state") or "").strip().lower()
+    latest_mapped = _map_deployment_state(latest_raw)
+    latest_ts = _parse_status_timestamp(latest)
+
+    if latest_raw == "inactive":
+        for entry in ordered[1:]:
+            if str(entry.get("state") or "").strip().lower() in ("success", "active"):
+                return "SUCCESS", (_parse_status_timestamp(entry) or latest_ts)
+        return "INACTIVE", latest_ts
+
+    return latest_mapped, latest_ts
+
+
+def _select_commit_timestamp(
+    authored_str: Optional[str],
+    committed_str: Optional[str],
+) -> Optional[datetime]:
+    """Select commit timestamp, correcting for >24h rebase/cherry-pick author-date drift."""
+    authored_dt = parse_ts(authored_str) if authored_str else None
+    committed_dt = parse_ts(committed_str) if committed_str else None
+    if authored_dt and committed_dt and (committed_dt - authored_dt).total_seconds() > 86400:
+        return committed_dt
+    return authored_dt or committed_dt
 
 
 def _is_production_environment(env_name: str, prod_environments: Tuple[str, ...]) -> bool:
@@ -126,11 +202,13 @@ def _resolve_stream_key(ev: DeploymentRecord) -> str:
 
 
 def _extract_inline_deployment_hints(node: Dict[str, Any]) -> Dict[str, Any]:
-    """Extract commit timestamps, PR open time, and rework signals from a GraphQL Deployment node."""
+    """Extract commit timestamps, PR open time, resolved status, and rework signals from a GraphQL Deployment node."""
     commit_node = node.get("commit") or {}
     commit_sha = str(node.get("commitOid") or commit_node.get("oid") or "").strip() or None
-    commit_ts_str = commit_node.get("authoredDate") or commit_node.get("committedDate")
-    commit_ts = parse_ts(commit_ts_str) if commit_ts_str else None
+    commit_ts = _select_commit_timestamp(
+        commit_node.get("authoredDate") if isinstance(commit_node, dict) else None,
+        commit_node.get("committedDate") if isinstance(commit_node, dict) else None,
+    )
     commit_msg = str(commit_node.get("messageHeadline") or "")
 
     pr_nodes = ((commit_node.get("associatedPullRequests") or {}).get("nodes") or []) if isinstance(commit_node, dict) else []
@@ -151,15 +229,17 @@ def _extract_inline_deployment_hints(node: Dict[str, Any]) -> Dict[str, Any]:
         if _is_rework_text(pr_title) or _is_rework_text(head_ref) or _has_matching_label(lbl_nodes, {"hotfix", "rollback", "revert"}):
             is_rework = True
 
+    statuses_conn = node.get("statuses") or {}
+    status_nodes = statuses_conn.get("nodes") if isinstance(statuses_conn, dict) else None
     latest_status = node.get("latestStatus") or {}
-    completed_str = latest_status.get("updatedAt") or latest_status.get("createdAt")
-    completed_at = parse_ts(completed_str) if completed_str else None
+    resolved_state, completed_at = _resolve_deployment_status(status_nodes, latest_status)
 
     return {
         "commit_sha": commit_sha,
         "commit_ts": commit_ts,
         "pr_created_ts": pr_created_ts,
         "completed_at": completed_at,
+        "resolved_state": resolved_state,
         "is_rework": is_rework,
     }
 
@@ -171,8 +251,9 @@ def _collect_repo_deployments_graphql(
     since: datetime,
     end: datetime,
     hints_out: Optional[Dict[str, Dict[str, Any]]] = None,
+    baseline_out: Optional[Dict[str, str]] = None,
 ) -> Optional[List[DeploymentRecord]]:
-    """Fetch deployments with inline status, commit, and associated PR metadata via GraphQL."""
+    """Fetch deployments with inline status history, commit, and associated PR metadata via GraphQL."""
     query = """
     query($owner: String!, $name: String!, $cursor: String) {
       repository(owner: $owner, name: $name) {
@@ -210,6 +291,13 @@ def _collect_repo_deployments_graphql(
                 }
               }
             }
+            statuses(last: 10) {
+              nodes {
+                state
+                createdAt
+                updatedAt
+              }
+            }
             latestStatus {
               state
               createdAt
@@ -232,6 +320,8 @@ def _collect_repo_deployments_graphql(
 
         conn = repo_node.get("deployments") or {}
         nodes = conn.get("nodes") or []
+        pre_since_checked = 0
+        hit_since = False
         for node in nodes:
             if not isinstance(node, dict):
                 continue
@@ -239,17 +329,23 @@ def _collect_repo_deployments_graphql(
             if not created_str:
                 continue
             created_at = parse_ts(created_str)
-            if created_at < since:
-                return deployments
-            if created_at > end:
-                continue
 
             dep_id = str(node.get("databaseId") or node.get("id") or "")
             env_name = node.get("environment") or "production"
             ref_name = (node.get("ref") or {}).get("name") or "main"
-            latest_status = node.get("latestStatus") or {}
-            status_val = _map_deployment_state(latest_status.get("state"))
             hints = _extract_inline_deployment_hints(node)
+            status_val = hints["resolved_state"]
+
+            if created_at < since:
+                hit_since = True
+                if baseline_out is not None and status_val == "SUCCESS" and hints["commit_sha"]:
+                    baseline_out.setdefault(f"deployment:{env_name.strip().lower()}", hints["commit_sha"])
+                pre_since_checked += 1
+                if pre_since_checked >= 10:
+                    return deployments
+                continue
+            if created_at > end:
+                continue
 
             rec = DeploymentRecord(
                 event_type="Deployment",
@@ -269,6 +365,9 @@ def _collect_repo_deployments_graphql(
                 hints_out[f"dep:{dep_id}"] = hints
             deployments.append(rec)
 
+        if hit_since:
+            return deployments
+
         page_info = conn.get("pageInfo") or {}
         if not page_info.get("hasNextPage"):
             break
@@ -284,10 +383,13 @@ def collect_repo_deployments(
     end: datetime,
     hints_out: Optional[Dict[str, Dict[str, Any]]] = None,
     status_out: Optional[Dict[str, Any]] = None,
+    baseline_out: Optional[Dict[str, str]] = None,
 ) -> List[DeploymentRecord]:
     """Retrieve GitHub Deployment API records for a repository within lookback window."""
     try:
-        gql_deployments = _collect_repo_deployments_graphql(client, org, repo, since, end, hints_out=hints_out)
+        gql_deployments = _collect_repo_deployments_graphql(
+            client, org, repo, since, end, hints_out=hints_out, baseline_out=baseline_out
+        )
         if gql_deployments is not None:
             return gql_deployments
     except requests.HTTPError as err:
@@ -335,16 +437,12 @@ def collect_repo_deployments(
 
     def _build_record(item: Tuple[str, str, str, datetime, Optional[str]]) -> DeploymentRecord:
         dep_id, env_name, ref_name, created_at, sha = item
-        status_state = "SUCCESS"
+        status_state = "IN_PROGRESS"
         completed_at: Optional[datetime] = None
         try:
             statuses = client.get(org, f"/repos/{org}/{repo}/deployments/{dep_id}/statuses")
-            if statuses and isinstance(statuses, list):
-                latest = statuses[0]
-                status_state = _map_deployment_state(latest.get("state"))
-                ts_str = latest.get("updated_at") or latest.get("created_at")
-                if ts_str:
-                    completed_at = parse_ts(ts_str)
+            if isinstance(statuses, list):
+                status_state, completed_at = _resolve_deployment_status(statuses)
         except Exception:
             pass
         return DeploymentRecord(
@@ -377,6 +475,7 @@ def collect_repo_releases(
     since: datetime,
     end: datetime,
     include_non_prod: bool = False,
+    baseline_out: Optional[Dict[str, str]] = None,
 ) -> List[DeploymentRecord]:
     """Retrieve published production GitHub Release records within lookback window."""
     releases: List[DeploymentRecord] = []
@@ -393,16 +492,18 @@ def collect_repo_releases(
             if not pub_str:
                 continue
             published_at = parse_ts(pub_str)
+            tag_name = rel.get("tag_name") or "untagged"
+            env_name = "prerelease" if is_prerelease else "production"
             if published_at < since:
+                if baseline_out is not None and tag_name != "untagged":
+                    baseline_out.setdefault(f"release:{env_name}", tag_name)
                 break
             if published_at > end:
                 continue
 
-            tag_name = rel.get("tag_name") or "untagged"
             rel_name = rel.get("name") or tag_name
             target_branch = rel.get("target_commitish") or "main"
             body = str(rel.get("body") or "")
-            env_name = "prerelease" if is_prerelease else "production"
             is_rework = _is_rework_text(f"{tag_name} {rel_name} {body[:200]}")
 
             releases.append(
@@ -438,6 +539,7 @@ def collect_deploy_workflow_runs(
     default_branch: str = "main",
     include_non_prod: bool = False,
     hints_out: Optional[Dict[str, Dict[str, Any]]] = None,
+    baseline_out: Optional[Dict[str, str]] = None,
 ) -> List[DeploymentRecord]:
     """Retrieve completed production-branch deployment workflow runs (excluding PR/CI checks)."""
     runs: List[DeploymentRecord] = []
@@ -450,35 +552,45 @@ def collect_deploy_workflow_runs(
             if not created_str:
                 continue
             created_at = parse_ts(created_str)
-            if created_at < since:
-                break
-            if created_at > end:
-                continue
 
             event_trigger = (item.get("event") or "").lower()
             if event_trigger in _NON_DEPLOY_EVENTS:
+                if created_at < since:
+                    break
                 continue
 
             wf_name = item.get("name") or ""
             wf_path = item.get("path") or ""
             if not _is_deploy_workflow_name(wf_name, wf_path, include_non_prod=include_non_prod):
+                if created_at < since:
+                    break
                 continue
 
             head_branch = item.get("head_branch") or default_branch or "main"
             if not include_non_prod and event_trigger not in ("release", "deployment"):
                 branch_l = head_branch.strip().lower()
                 if branch_l not in allowed_branches and not _RELEASE_BRANCH_RE.match(branch_l):
+                    if created_at < since:
+                        break
                     continue
 
             conclusion = (item.get("conclusion") or "").lower()
             status_val = "SUCCESS" if conclusion == "success" else ("FAILURE" if conclusion in ("failure", "timed_out") else "OTHER")
+            stream_key = f"workflow:{wf_name.strip().lower() or 'deploy'}:production"
+            head_sha = item.get("head_sha")
+
+            if created_at < since:
+                if baseline_out is not None and status_val == "SUCCESS" and head_sha:
+                    baseline_out.setdefault(stream_key, str(head_sha))
+                break
+            if created_at > end:
+                continue
             if status_val == "OTHER":
                 continue
 
             run_id = item.get("id")
             updated_str = item.get("updated_at")
             completed_at = parse_ts(updated_str) if updated_str else created_at
-            head_sha = item.get("head_sha")
             head_commit = item.get("head_commit") or {}
             commit_ts_str = head_commit.get("timestamp")
             commit_ts = parse_ts(commit_ts_str) if commit_ts_str else None
@@ -497,7 +609,7 @@ def collect_deploy_workflow_runs(
                 run_id=run_id,
                 commit_sha=head_sha,
                 completed_at=completed_at,
-                stream_key=f"workflow:{wf_name.strip().lower() or 'deploy'}:production",
+                stream_key=stream_key,
                 is_rework=is_rework,
             )
             if hints_out is not None and run_id is not None:
@@ -524,22 +636,40 @@ def _enrich_lead_times_from_commits(
     events: List[DeploymentRecord],
     hints_map: Dict[str, Dict[str, Any]],
     rework_keywords: Tuple[str, ...],
+    baseline_refs: Optional[Dict[str, str]] = None,
 ) -> None:
-    """Compute true commit/PR-to-deployment Lead Time for Changes across chronological events."""
+    """Compute commit/PR-to-deployment Lead Time strictly across successful production code changes."""
     if not events:
         return
 
     compare_cache: Dict[Tuple[str, str], Optional[Dict[str, Any]]] = {}
     pr_cache: Dict[str, Optional[datetime]] = {}
     compare_calls = 0
-    prev_success_ref: Optional[str] = None
+    prev_success_by_stream: Dict[str, str] = dict(baseline_refs or {})
 
     for ev in sorted(events, key=lambda d: d.created_at):
+        # DORA LTTC measures completed, successful releases to production only
+        if ev.status != "SUCCESS":
+            ev.lead_time_hours = None
+            ev.lead_time_source = {
+                "IN_PROGRESS": "in_progress",
+                "INACTIVE": "inactive_deploy",
+            }.get(ev.status, "not_deployed")
+            continue
+
         deploy_ts = ev.completed_at or ev.created_at
         hint_key = f"dep:{ev.event_id}" if ev.event_type == "Deployment" else (f"run:{ev.run_id}" if ev.run_id else "")
         hints = hints_map.get(hint_key, {})
 
+        stream_key = _resolve_stream_key(ev)
         curr_ref = ev.commit_sha or (ev.event_id if ev.event_type == "Release" and ev.event_id != "untagged" else None)
+        prev_success_ref = prev_success_by_stream.get(stream_key)
+
+        # Identical SHA/tag redeploy or rebuild without code change has no new change lead time
+        if prev_success_ref and curr_ref and prev_success_ref == curr_ref:
+            ev.lead_time_hours = None
+            ev.lead_time_source = "no_code_change"
+            continue
 
         # 1. Primary: Compare commit range (prev_success_ref...curr_ref) for true batch commit lead time
         resolved_hours: Optional[float] = None
@@ -557,19 +687,27 @@ def _enrich_lead_times_from_commits(
 
             cmp_data = compare_cache.get(cache_key)
             if isinstance(cmp_data, dict):
-                commits = cmp_data.get("commits") or []
+                commits = cmp_data.get("commits")
+                if (
+                    commits == []
+                    and (cmp_data.get("status") == "identical" or cmp_data.get("ahead_by") == 0)
+                ):
+                    ev.lead_time_hours = None
+                    ev.lead_time_source = "no_code_change"
+                    prev_success_by_stream[stream_key] = curr_ref
+                    continue
+
                 deltas: List[float] = []
-                for c in commits:
+                for c in commits or []:
                     c_info = c.get("commit") or {}
                     c_author = c_info.get("author") or {}
                     c_committer = c_info.get("committer") or {}
-                    ts_str = c_author.get("date") or c_committer.get("date")
                     msg = str(c_info.get("message") or "")
                     if _is_rework_text(msg.splitlines()[0] if msg else "", rework_keywords):
                         ev.is_rework = True
-                    if not ts_str:
+                    c_ts = _select_commit_timestamp(c_author.get("date"), c_committer.get("date"))
+                    if c_ts is None:
                         continue
-                    c_ts = parse_ts(ts_str)
                     diff_hours = (deploy_ts - c_ts).total_seconds() / 3600.0
                     if -0.25 <= diff_hours <= 365.0 * 24.0:
                         deltas.append(max(0.01, round(diff_hours, 2)))
@@ -602,7 +740,7 @@ def _enrich_lead_times_from_commits(
                     resolved_hours = max(0.01, round(diff_hours, 2))
                     method = "pr_to_deploy"
 
-        # 3. Tertiary: Single commit authored/committed timestamp -> deployment completion
+        # 3. Tertiary: Single commit timestamp -> deployment completion (initial baseline only)
         if resolved_hours is None:
             commit_ts = hints.get("commit_ts")
             if commit_ts is not None:
@@ -614,8 +752,8 @@ def _enrich_lead_times_from_commits(
         ev.lead_time_hours = resolved_hours
         ev.lead_time_source = method or "unavailable"
 
-        if ev.status == "SUCCESS" and curr_ref:
-            prev_success_ref = curr_ref
+        if curr_ref:
+            prev_success_by_stream[stream_key] = curr_ref
 
 
 def _collect_rework_prs(
@@ -732,10 +870,11 @@ def _apply_native_incident_and_rework_signals(
     metrics.rollback_hotfix_prs = len(rework_prs)
     metrics.incident_issues_count = len(incident_issues)
 
-    # Index failure timestamps already captured directly by failed deployments
-    failure_times: List[datetime] = [d.created_at for d in deployments if d.status == "FAILURE"]
+    # Match only against completed deployments; index failure timestamps already captured
+    completed = [d for d in deployments if d.status in ("SUCCESS", "FAILURE")]
+    failure_times: List[datetime] = [d.created_at for d in completed if d.status == "FAILURE"]
     sha_to_deploy: Dict[str, DeploymentRecord] = {
-        d.commit_sha: d for d in deployments if d.commit_sha
+        d.commit_sha: d for d in completed if d.commit_sha
     }
 
     def _has_nearby_failure(ts: datetime, hours_back: float = 48.0, hours_forward: float = 2.0) -> bool:
@@ -749,9 +888,9 @@ def _apply_native_incident_and_rework_signals(
         matched_deploy = sha_to_deploy.get(m_sha) if m_sha else None
 
         if matched_deploy is None:
-            # Find nearest deployment shortly after PR merge (e.g. within 24h)
+            # Find nearest completed deployment shortly after PR merge (e.g. within 24h)
             candidates = [
-                d for d in deployments
+                d for d in completed
                 if timedelta(hours=-1) <= (d.created_at - merged_at) <= timedelta(hours=24)
             ]
             if candidates:
@@ -897,9 +1036,17 @@ def profile_repo_dora(
     default_branch = str(meta.get("default_branch") or "main")
     hints_map: Dict[str, Dict[str, Any]] = {}
     dep_status: Dict[str, Any] = {}
+    baseline_refs: Dict[str, str] = {}
 
     all_deps = collect_repo_deployments(
-        client, org, repo, since, end, hints_out=hints_map, status_out=dep_status
+        client,
+        org,
+        repo,
+        since,
+        end,
+        hints_out=hints_map,
+        status_out=dep_status,
+        baseline_out=baseline_refs,
     )
     metrics.deployments_api_forbidden = bool(dep_status.get("deployments_forbidden"))
 
@@ -909,7 +1056,13 @@ def profile_repo_dora(
         deps = [d for d in all_deps if _is_production_environment(d.environment, active_cfg.prod_environments)]
 
     rels = collect_repo_releases(
-        client, org, repo, since, end, include_non_prod=active_cfg.include_non_prod
+        client,
+        org,
+        repo,
+        since,
+        end,
+        include_non_prod=active_cfg.include_non_prod,
+        baseline_out=baseline_refs,
     )
     wf_runs = collect_deploy_workflow_runs(
         client,
@@ -920,6 +1073,7 @@ def profile_repo_dora(
         default_branch=default_branch,
         include_non_prod=active_cfg.include_non_prod,
         hints_out=hints_map,
+        baseline_out=baseline_refs,
     )
 
     metrics.total_releases = len(rels)
@@ -944,10 +1098,16 @@ def profile_repo_dora(
 
     metrics.deployments = sorted(combined_events, key=lambda d: d.created_at)
 
-    # Enrich true commit/PR-to-deployment lead times & native GitHub incident/rework signals ONLY for active repos
+    # Enrich commit/PR-to-deployment lead times & native GitHub incident/rework signals ONLY for active repos
     if metrics.deployments:
         _enrich_lead_times_from_commits(
-            client, org, repo, metrics.deployments, hints_map, active_cfg.rework_keywords
+            client,
+            org,
+            repo,
+            metrics.deployments,
+            hints_map,
+            active_cfg.rework_keywords,
+            baseline_refs=baseline_refs,
         )
         metrics.incidents = calculate_recovery_incidents(metrics.deployments)
         rework_prs = _collect_rework_prs(client, org, repo, since, end, default_branch, active_cfg)
@@ -1175,7 +1335,7 @@ def build_dora_rows(
             d.lead_time_hours
             for m in active_repos
             for d in m.deployments
-            if d.lead_time_hours is not None and d.lead_time_hours >= 0
+            if d.status == "SUCCESS" and d.lead_time_hours is not None and d.lead_time_hours >= 0
         ]
         org_lead_time = round(float(statistics.median(all_lead_times)), 2) if all_lead_times else None
 

@@ -183,8 +183,13 @@ def compute_composite_tier(
     return composite
 
 
-def compute_fleet_dora_summary(repo_rows: List[list], lookback_days: int) -> Dict[str, Any]:
-    """Compute active-repo-scoped fleet DORA aggregates and tiers from repository rows."""
+def compute_fleet_dora_summary(
+    repo_rows: List[list],
+    lookback_days: int,
+    deployment_rows: Optional[List[list]] = None,
+    recovery_rows: Optional[List[list]] = None,
+) -> Dict[str, Any]:
+    """Compute active-repo-scoped fleet DORA aggregates and tiers consistently with org metrics."""
     total_repos = len(repo_rows)
     active_rows = [r for r in repo_rows if len(r) > 3 and isinstance(r[3], int) and r[3] > 0]
     active_repos = len(active_rows)
@@ -219,12 +224,31 @@ def compute_fleet_dora_summary(repo_rows: List[list], lookback_days: int) -> Dic
         round(float(statistics.median(df_values)), 2) if df_values else None
     )
 
-    lttc_values = [float(r[8]) for r in active_rows if len(r) > 8 and isinstance(r[8], (int, float))]
+    # Match org-level LTTC and MTTR statistical basis (event-level medians over completed outcomes)
+    if deployment_rows is not None:
+        lttc_values = [
+            float(r[8])
+            for r in deployment_rows
+            if len(r) > 8 and r[5] == "SUCCESS" and isinstance(r[8], (int, float)) and float(r[8]) >= 0
+        ]
+        incomplete_deploys = sum(
+            1 for r in deployment_rows if len(r) > 5 and r[5] not in ("SUCCESS", "FAILURE")
+        )
+    else:
+        lttc_values = [float(r[8]) for r in active_rows if len(r) > 8 and isinstance(r[8], (int, float))]
+        incomplete_deploys = 0
     median_lttc_hours: Optional[float] = (
         round(float(statistics.median(lttc_values)), 2) if lttc_values else None
     )
 
-    mttr_values = [float(r[12]) for r in active_rows if len(r) > 12 and isinstance(r[12], (int, float))]
+    if recovery_rows is not None:
+        mttr_values = [
+            float(r[6])
+            for r in recovery_rows
+            if len(r) > 7 and r[7] == "Resolved" and isinstance(r[6], (int, float))
+        ]
+    else:
+        mttr_values = [float(r[12]) for r in active_rows if len(r) > 12 and isinstance(r[12], (int, float))]
     median_mttr_hours: Optional[float] = (
         round(float(statistics.median(mttr_values)), 2) if mttr_values else None
     )
@@ -257,6 +281,7 @@ def compute_fleet_dora_summary(repo_rows: List[list], lookback_days: int) -> Dic
         "total_deploys": total_deploys,
         "total_successful": total_successful,
         "total_failed_deploys": total_failed_deploys,
+        "incomplete_deploys": incomplete_deploys,
         "effective_failed": effective_failed,
         "rework_total": rework_total,
         "median_df_weekly": median_df_weekly,
@@ -332,8 +357,17 @@ class RepoDORAMetrics:
     deployments_api_forbidden: bool = False
 
     @property
+    def completed_deployments(self) -> List[DeploymentRecord]:
+        """Return only completed production deployments (excluding in-progress/inactive)."""
+        return [d for d in self.deployments if d.status in ("SUCCESS", "FAILURE")]
+
+    @property
     def total_deploys(self) -> int:
-        return len(self.deployments)
+        return len(self.completed_deployments)
+
+    @property
+    def in_progress_deploys(self) -> int:
+        return sum(1 for d in self.deployments if d.status not in ("SUCCESS", "FAILURE"))
 
     @property
     def successful_deploys(self) -> int:
@@ -352,21 +386,27 @@ class RepoDORAMetrics:
 
     @property
     def rework_deploys(self) -> int:
-        """Count of deployments representing rollbacks, reverts, or emergency hotfixes."""
+        """Count of completed deployments representing rollbacks, reverts, or emergency hotfixes."""
         if not self.total_deploys:
             return 0
-        flagged = sum(1 for d in self.deployments if d.is_rework)
+        flagged = sum(1 for d in self.completed_deployments if d.is_rework)
         return min(self.total_deploys, flagged + self.unlinked_rework_prs)
 
     def deployment_frequency_per_week(self, window_days: int = 90) -> float:
-        """Calculate deployments per 7-day week over the analysis window."""
+        """Calculate completed deployments per 7-day week (0.0 when no deployment succeeded)."""
+        if self.successful_deploys == 0:
+            return 0.0
         weeks = max(1.0, window_days / 7.0)
         return round(self.total_deploys / weeks, 2)
 
     @property
     def median_lead_time_hours(self) -> Optional[float]:
-        """Compute median lead time for changes in hours."""
-        times = [d.lead_time_hours for d in self.deployments if d.lead_time_hours is not None and d.lead_time_hours >= 0]
+        """Compute median lead time for changes in hours strictly over successful deployments."""
+        times = [
+            d.lead_time_hours
+            for d in self.deployments
+            if d.status == "SUCCESS" and d.lead_time_hours is not None and d.lead_time_hours >= 0
+        ]
         if not times:
             return None
         return round(float(statistics.median(times)), 2)

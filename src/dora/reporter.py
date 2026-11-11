@@ -39,6 +39,7 @@ STATUS_STYLES = {
     "SUCCESS": ("C6EFCE", "006100"),
     "FAILURE": ("FFC7CE", "9C0006"),
     "IN_PROGRESS": ("FFF2CC", "833C0C"),
+    "INACTIVE": ("F2F2F2", "595959"),
     "Resolved": ("C6EFCE", "006100"),
     "Open": ("FFC7CE", "9C0006"),
 }
@@ -92,7 +93,12 @@ def write_dora_workbook(
     )
     summary["A2"].font = Font(italic=True, color="595959")
 
-    summary_data = compute_fleet_dora_summary(repo_rows, cfg.lookback_days)
+    summary_data = compute_fleet_dora_summary(
+        repo_rows,
+        cfg.lookback_days,
+        deployment_rows=deployment_rows,
+        recovery_rows=recovery_rows,
+    )
     tier_counts = summary_data["tier_counts"]
     cfr_str = f"{summary_data['cfr_overall']}%" if summary_data["cfr_overall"] is not None else "N/A"
     rework_str = (
@@ -115,7 +121,7 @@ def write_dora_workbook(
         ["Active Deploying Repositories", summary_data["active_repos"]],
         ["Inactive Repositories (N/A)", summary_data["inactive_repos"]],
         ["Fleet Overall DORA Performance Tier", summary_data["fleet_tier"]],
-        ["Total Production Deployments & Releases", summary_data["total_deploys"]],
+        ["Total Completed Deployments & Releases", summary_data["total_deploys"]],
         ["Successful Deployments", summary_data["total_successful"]],
         ["Failed Deployments (Direct)", summary_data["total_failed_deploys"]],
         ["Effective Failed Changes (Inc. Incidents/Hotfixes)", summary_data["effective_failed"]],
@@ -132,6 +138,11 @@ def write_dora_workbook(
         ["Low Tier Repositories", tier_counts.get("Low", 0)],
         ["Inactive / N/A Repositories", tier_counts.get("N/A", 0)],
     ]
+    if summary_data.get("incomplete_deploys", 0) > 0:
+        kpis.insert(
+            9,
+            ["Pending / Incomplete Deployments (Excluded)", summary_data["incomplete_deploys"]],
+        )
     if summary_data["permission_gap_repos"] > 0:
         kpis.append(["Deployments API Permission Gap Repos", summary_data["permission_gap_repos"]])
 
@@ -150,15 +161,15 @@ def write_dora_workbook(
         ["Production Scope", env_scope],
         [
             "Deployment Frequency",
-            "Organization and fleet DF use median weekly deploys per active repo; zero-deploy repos are marked N/A.",
+            "Completed production deployments per week per active repo (0.0 if none succeeded; zero-deploy repos marked N/A).",
         ],
         [
             "Lead Time for Changes",
-            "Hours from commit authored/pushed or associated PR creation to deployment completion (<24h Elite).",
+            "Hours from commit authored/pushed or associated PR creation to successful deploy (<24h Elite; skips failed/in-progress/no-diff runs).",
         ],
         [
             "Change Failure Rate",
-            "Unique failed production changes across failed deploys, post-deploy incident issues, and revert/hotfix PRs.",
+            "Unique failed production changes divided by completed deployments (excluding in-progress/inactive attempts).",
         ],
         [
             "Recovery Time (MTTR)",
@@ -166,7 +177,7 @@ def write_dora_workbook(
         ],
         [
             "Deployment Rework Rate",
-            "Percentage of deployments matched to revert, rollback, hotfix, or emergency remediation work.",
+            "Percentage of completed deployments matched to revert, rollback, hotfix, or emergency remediation work.",
         ],
     ]
     if summary_data["permission_gap_repos"] > 0:

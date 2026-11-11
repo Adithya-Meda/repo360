@@ -234,6 +234,8 @@ from src.dora.models import (
 from src.dora.collector import (
     _apply_native_incident_and_rework_signals,
     _deduplicate_release_and_workflow_events,
+    _enrich_lead_times_from_commits,
+    _resolve_deployment_status,
     collect_deploy_workflow_runs,
     collect_repo_deployments,
     profile_repo_dora,
@@ -676,3 +678,252 @@ def test_run_dora_cli_passes_production_scope_flags(monkeypatch, tmp_path: Path)
     assert cfg.prod_environments == ("prod", "live-eu")
     assert cfg.incident_labels == ("sev0", "outage")
     assert cfg.include_non_prod is True
+
+
+def test_dora_excludes_in_progress_and_inactive_and_skips_failed_lttc():
+    now = datetime(2026, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
+    since = now - timedelta(days=90)
+
+    def _ts(dt: datetime) -> str:
+        return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # 1. GraphQL statuses history: superseded INACTIVE with earlier SUCCESS stays SUCCESS at original time;
+    # INACTIVE with no prior SUCCESS stays INACTIVE; empty statuses stays IN_PROGRESS.
+    superseded_state, superseded_ts = _resolve_deployment_status(
+        [
+            {"state": "SUCCESS", "createdAt": _ts(now - timedelta(hours=10))},
+            {"state": "INACTIVE", "createdAt": _ts(now - timedelta(hours=1))},
+        ]
+    )
+    assert superseded_state == "SUCCESS"
+    assert superseded_ts == now - timedelta(hours=10)
+
+    never_live_state, _ = _resolve_deployment_status(
+        [
+            {"state": "PENDING", "createdAt": _ts(now - timedelta(hours=5))},
+            {"state": "INACTIVE", "createdAt": _ts(now - timedelta(hours=1))},
+        ]
+    )
+    assert never_live_state == "INACTIVE"
+    assert _resolve_deployment_status([])[0] == "IN_PROGRESS"
+
+    # 2. Failed retries on 70-day-old commits + rapid IN_PROGRESS bursts yield 0 successful deploys,
+    # 100% CFR, DF=0.0, LTTC=N/A (no 1600+h or false 0.04h Elite score), and overall Low tier.
+    stale_commit = _ts(now - timedelta(days=70))
+    fresh_commit = _ts(now - timedelta(minutes=2))
+    nodes = [
+        {
+            "databaseId": 100 + i,
+            "environment": "production",
+            "ref": {"name": "main"},
+            "commitOid": f"fail-sha-{i}",
+            "createdAt": _ts(now - timedelta(hours=20 - i)),
+            "commit": {"authoredDate": stale_commit, "committedDate": stale_commit, "messageHeadline": "old"},
+            "associatedPullRequests": {"nodes": []},
+            "statuses": {"nodes": [{"state": "FAILURE", "createdAt": _ts(now - timedelta(hours=20 - i))}]},
+            "latestStatus": {"state": "FAILURE", "createdAt": _ts(now - timedelta(hours=20 - i))},
+        }
+        for i in range(3)
+    ] + [
+        {
+            "databaseId": 200 + i,
+            "environment": "production",
+            "ref": {"name": "main"},
+            "commitOid": f"pend-sha-{i}",
+            "createdAt": _ts(now - timedelta(minutes=1)),
+            "commit": {"authoredDate": fresh_commit, "committedDate": fresh_commit, "messageHeadline": "wip"},
+            "associatedPullRequests": {"nodes": []},
+            "statuses": {"nodes": [{"state": "IN_PROGRESS", "createdAt": _ts(now - timedelta(minutes=1))}]},
+            "latestStatus": {"state": "IN_PROGRESS", "createdAt": _ts(now - timedelta(minutes=1))},
+        }
+        for i in range(4)
+    ]
+
+    mock_client = MagicMock()
+    mock_client.graphql.return_value = {
+        "data": {"repository": {"deployments": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": nodes}}}
+    }
+    mock_client.paginate.return_value = []
+    mock_client.paginate_enveloped.return_value = []
+    mock_client.get.return_value = []
+
+    metrics = profile_repo_dora(
+        mock_client,
+        "acme",
+        "unstable-app",
+        since,
+        now,
+        {"default_branch": "main", "pushed_at": _ts(now)},
+        cfg=DORAConfig(lookback_days=90),
+    )
+
+    assert metrics.in_progress_deploys == 4
+    assert metrics.total_deploys == 3  # Only completed outcomes (FAILURE)
+    assert metrics.successful_deploys == 0
+    assert metrics.failed_deploys == 3
+    assert metrics.deployment_frequency_per_week(90) == 0.0
+    assert metrics.change_failure_rate_pct == 100.0
+    assert metrics.median_lead_time_hours is None
+    assert all(d.lead_time_hours is None for d in metrics.deployments)
+    overall, df_t, lttc_t, cfr_t, _ = metrics.get_tiers(90)
+    assert lttc_t == "N/A"
+    assert cfr_t == "Low"
+    assert df_t == "Low"
+    assert overall == "Low"
+
+
+def test_dora_pre_window_baseline_and_same_sha_redeploy():
+    now = datetime(2026, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
+    since = now - timedelta(days=30)
+
+    def _ts(dt: datetime) -> str:
+        return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # Oldest node is pre-window (< since) superseded INACTIVE with prior SUCCESS; provides baseline_refs!
+    # Node 1 deploys new sha-new1; Node 2 re-runs exact same sha-new1 48h later (no_code_change).
+    nodes = [
+        {
+            "databaseId": 3,
+            "environment": "production",
+            "ref": {"name": "main"},
+            "commitOid": "sha-new1",
+            "createdAt": _ts(now - timedelta(hours=2)),
+            "commit": {"authoredDate": _ts(now - timedelta(hours=70)), "committedDate": _ts(now - timedelta(hours=50))},
+            "associatedPullRequests": {"nodes": []},
+            "statuses": {"nodes": [{"state": "SUCCESS", "createdAt": _ts(now - timedelta(hours=2))}]},
+            "latestStatus": {"state": "SUCCESS", "createdAt": _ts(now - timedelta(hours=2))},
+        },
+        {
+            "databaseId": 2,
+            "environment": "production",
+            "ref": {"name": "main"},
+            "commitOid": "sha-new1",
+            "createdAt": _ts(now - timedelta(hours=50)),
+            "commit": {"authoredDate": _ts(now - timedelta(hours=70)), "committedDate": _ts(now - timedelta(hours=54))},
+            "associatedPullRequests": {"nodes": []},
+            "statuses": {"nodes": [{"state": "SUCCESS", "createdAt": _ts(now - timedelta(hours=50))}]},
+            "latestStatus": {"state": "SUCCESS", "createdAt": _ts(now - timedelta(hours=50))},
+        },
+        {
+            "databaseId": 1,
+            "environment": "production",
+            "ref": {"name": "main"},
+            "commitOid": "sha-prewindow",
+            "createdAt": _ts(since - timedelta(days=2)),
+            "commit": {"authoredDate": _ts(since - timedelta(days=3))},
+            "associatedPullRequests": {"nodes": []},
+            "statuses": {
+                "nodes": [
+                    {"state": "SUCCESS", "createdAt": _ts(since - timedelta(days=2))},
+                    {"state": "INACTIVE", "createdAt": _ts(now - timedelta(hours=50))},
+                ]
+            },
+            "latestStatus": {"state": "INACTIVE", "createdAt": _ts(now - timedelta(hours=50))},
+        },
+    ]
+
+    mock_client = MagicMock()
+    mock_client.graphql.return_value = {
+        "data": {"repository": {"deployments": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": nodes}}}
+    }
+    mock_client.paginate.return_value = []
+    mock_client.paginate_enveloped.return_value = []
+
+    def _fake_get(org, endpoint, params=None):
+        if endpoint == "/repos/acme/app/compare/sha-prewindow...sha-new1":
+            return {"commits": [{"commit": {"author": {"date": _ts(now - timedelta(hours=54))}, "message": "feat: new"}}]}
+        return []
+
+    mock_client.get.side_effect = _fake_get
+
+    metrics = profile_repo_dora(
+        mock_client,
+        "acme",
+        "app",
+        since,
+        now,
+        {"default_branch": "main", "pushed_at": _ts(now)},
+        cfg=DORAConfig(lookback_days=30),
+    )
+
+    assert len(metrics.deployments) == 2
+    assert metrics.deployments[0].lead_time_hours == 4.0
+    assert metrics.deployments[0].lead_time_source == "commit_to_deploy"
+    # Second deploy reused sha-new1 -> no fake 48h/68h fallback
+    assert metrics.deployments[1].lead_time_hours is None
+    assert metrics.deployments[1].lead_time_source == "no_code_change"
+    assert metrics.median_lead_time_hours == 4.0
+
+    # Compare returning zero commits / identical branch state also resolves to no_code_change
+    zero_diff_client = MagicMock()
+    zero_diff_client.get.return_value = {"status": "identical", "ahead_by": 0, "commits": []}
+    ev_identical = DeploymentRecord("Release", "v1.0.3", "v1.0.3", "production", "SUCCESS", "main", now, commit_sha="v1.0.3")
+    _enrich_lead_times_from_commits(
+        zero_diff_client, "acme", "app", [ev_identical], {}, ("hotfix",), baseline_refs={"release:production": "v1.0.2"}
+    )
+    assert ev_identical.lead_time_hours is None
+    assert ev_identical.lead_time_source == "no_code_change"
+
+
+def test_fleet_and_single_org_summaries_match_and_track_incomplete_deploys(tmp_path: Path):
+    now = datetime(2026, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
+
+    repo_small = RepoDORAMetrics(
+        org="single-org",
+        repo="small-svc",
+        deployments=[
+            DeploymentRecord("Deployment", "1", "prod", "production", "SUCCESS", "main", now - timedelta(hours=5), lead_time_hours=0.1)
+        ],
+    )
+    repo_heavy = RepoDORAMetrics(
+        org="single-org",
+        repo="heavy-svc",
+        deployments=[
+            DeploymentRecord("Deployment", f"h{i}", "prod", "production", "SUCCESS", "main", now - timedelta(hours=i + 1), lead_time_hours=6.0)
+            for i in range(9)
+        ] + [
+            DeploymentRecord("Deployment", "hf", "prod", "production", "FAILURE", "main", now - timedelta(hours=20)),
+            DeploymentRecord("Deployment", "hp", "prod", "production", "IN_PROGRESS", "main", now),
+        ],
+        incidents=[
+            RecoveryIncident("Deployment hf", now - timedelta(hours=20), "Deployment h1", now - timedelta(hours=18), 2.0, "Resolved", "Deployment Stream", "production")
+        ],
+    )
+
+    repo_rows, org_rows, dep_rows, rec_rows = build_dora_rows(
+        [repo_small, repo_heavy],
+        orgs=["single-org"],
+        window_days=30,
+    )
+    fleet = compute_fleet_dora_summary(
+        repo_rows,
+        lookback_days=30,
+        deployment_rows=dep_rows,
+        recovery_rows=rec_rows,
+    )
+
+    # 1-org Fleet LTTC and MTTR match Org LTTC and MTTR identically (event-level medians)
+    assert fleet["median_lttc_hours"] == org_rows[0][7] == 6.0
+    assert fleet["median_mttr_hours"] == org_rows[0][11] == 2.0
+    assert fleet["total_deploys"] == 11  # 1 + (9 success + 1 failure); IN_PROGRESS excluded
+    assert fleet["total_successful"] == 10
+    assert fleet["total_failed_deploys"] == 1
+    assert fleet["incomplete_deploys"] == 1
+
+    out_file = tmp_path / "dora_unified.xlsx"
+    write_dora_workbook(
+        path=out_file,
+        cfg=DORAConfig(output_dir=str(tmp_path), lookback_days=30),
+        since=now - timedelta(days=30),
+        end=now,
+        repo_rows=repo_rows,
+        org_rows=org_rows,
+        deployment_rows=dep_rows,
+        recovery_rows=rec_rows,
+        failures=[],
+        execution_duration=1.2,
+    )
+    wb = load_workbook(out_file)
+    exec_text = "\n".join(str(c.value) for row in wb["Executive Summary"].iter_rows() for c in row if c.value is not None)
+    assert "Pending / Incomplete Deployments (Excluded)" in exec_text
+

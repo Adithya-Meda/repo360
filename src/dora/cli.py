@@ -40,7 +40,12 @@ def print_dora_scorecard(
     B = "\033[1m"
     X = "\033[0m"
 
-    summary_data = compute_fleet_dora_summary(repo_rows, lookback_days)
+    summary_data = compute_fleet_dora_summary(
+        repo_rows,
+        lookback_days,
+        deployment_rows=deployment_rows,
+        recovery_rows=recovery_rows,
+    )
     total_repos = summary_data["total_repos"]
     active_repos = summary_data["active_repos"]
     inactive_repos = summary_data["inactive_repos"]
