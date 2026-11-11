@@ -37,6 +37,10 @@ inputs:
     description: "Duration (in days) to retain the uploaded artifact"
     required: false
     default: "60"
+  require_ai:
+    description: "Enable AI-powered remediation and insights ('yes' or 'no', default: 'no'). Falls back to deterministic policy rules if AI is offline."
+    required: false
+    default: "no"
   ai_api_key:
     description: "Unified AI API key for any provider (Google Gemini, OpenAI, Anthropic)"
     required: false
@@ -119,51 +123,50 @@ runs:
         AI_API_KEY: ${{ inputs.ai_api_key || inputs.gemini_api_key || inputs.openai_api_key || inputs.anthropic_api_key || inputs.llm_api_key }}
         AI_MODEL: ${{ inputs.ai_model || inputs.llm_model }}
         AI_PROVIDER: ${{ inputs.llm_provider }}
+        INPUT_ORG: ${{ inputs.org }}
+        INPUT_OUTPUT_DIR: ${{ inputs.output_dir }}
+        INPUT_LOOKBACK_DAYS: ${{ inputs.lookback_days }}
+        INPUT_REQUIRE_AI: ${{ inputs.require_ai }}
+        INPUT_COLLECT_ACTIVITY: ${{ inputs.collect_activity }}
+        INPUT_COLLECT_RUNNERS: ${{ inputs.collect_runners }}
+        INPUT_COLLECT_FINOPS: ${{ inputs.collect_finops }}
+        INPUT_COLLECT_DORA: ${{ inputs.collect_dora }}
+        INPUT_COLLECT_BYPASS: ${{ inputs.collect_bypass }}
       run: |
-        CMD="repo360 audit --output-dir ${{ inputs.output_dir }}"
-        if [ -n "${{ inputs.org }}" ]; then
-          CMD="$CMD --org ${{ inputs.org }}"
-        fi
-        eval $CMD
+        REQUIRE_AI_VAL="$(printf '%s' "${INPUT_REQUIRE_AI:-no}" | tr '[:upper:]' '[:lower:]')"
+        case "$REQUIRE_AI_VAL" in
+          yes|no) ;;
+          *)
+            echo "Error: Invalid require_ai input '$INPUT_REQUIRE_AI'. Expected 'yes' or 'no'." >&2
+            exit 1
+            ;;
+        esac
 
-        if [ "${{ inputs.collect_activity }}" = "true" ]; then
-          ACT_CMD="repo360 activity --output-dir ${{ inputs.output_dir }} --lookback-days ${{ inputs.lookback_days }}"
-          if [ -n "${{ inputs.org }}" ]; then
-            ACT_CMD="$ACT_CMD --org ${{ inputs.org }}"
-          fi
-          eval $ACT_CMD
-        fi
-
-        if [ "${{ inputs.collect_runners }}" = "true" ]; then
-          RUN_CMD="repo360 runners --output-dir ${{ inputs.output_dir }} --lookback-days ${{ inputs.lookback_days }}"
-          if [ -n "${{ inputs.org }}" ]; then
-            RUN_CMD="$RUN_CMD --org ${{ inputs.org }}"
-          fi
-          eval $RUN_CMD
+        COMMON_ARGS=(--output-dir "$INPUT_OUTPUT_DIR" --require-ai "$REQUIRE_AI_VAL")
+        if [ -n "$INPUT_ORG" ]; then
+          COMMON_ARGS+=(--org "$INPUT_ORG")
         fi
 
-        if [ "${{ inputs.collect_finops }}" = "true" ]; then
-          FIN_CMD="repo360 finops --output-dir ${{ inputs.output_dir }}"
-          if [ -n "${{ inputs.org }}" ]; then
-            FIN_CMD="$FIN_CMD --org ${{ inputs.org }}"
-          fi
-          eval $FIN_CMD
+        repo360 audit "${COMMON_ARGS[@]}"
+
+        if [ "$INPUT_COLLECT_ACTIVITY" = "true" ]; then
+          repo360 activity "${COMMON_ARGS[@]}" --lookback-days "$INPUT_LOOKBACK_DAYS"
         fi
 
-        if [ "${{ inputs.collect_dora }}" = "true" ]; then
-          DOR_CMD="repo360 dora --output-dir ${{ inputs.output_dir }} --lookback-days ${{ inputs.lookback_days }}"
-          if [ -n "${{ inputs.org }}" ]; then
-            DOR_CMD="$DOR_CMD --org ${{ inputs.org }}"
-          fi
-          eval $DOR_CMD
+        if [ "$INPUT_COLLECT_RUNNERS" = "true" ]; then
+          repo360 runners "${COMMON_ARGS[@]}" --lookback-days "$INPUT_LOOKBACK_DAYS"
         fi
 
-        if [ "${{ inputs.collect_bypass }}" = "true" ]; then
-          BYP_CMD="repo360 bypass --output-dir ${{ inputs.output_dir }} --lookback-days ${{ inputs.lookback_days }}"
-          if [ -n "${{ inputs.org }}" ]; then
-            BYP_CMD="$BYP_CMD --org ${{ inputs.org }}"
-          fi
-          eval $BYP_CMD
+        if [ "$INPUT_COLLECT_FINOPS" = "true" ]; then
+          repo360 finops "${COMMON_ARGS[@]}"
+        fi
+
+        if [ "$INPUT_COLLECT_DORA" = "true" ]; then
+          repo360 dora "${COMMON_ARGS[@]}" --lookback-days "$INPUT_LOOKBACK_DAYS"
+        fi
+
+        if [ "$INPUT_COLLECT_BYPASS" = "true" ]; then
+          repo360 bypass "${COMMON_ARGS[@]}" --lookback-days "$INPUT_LOOKBACK_DAYS"
         fi
 
     - name: "Publish Audit Reports Artifact"

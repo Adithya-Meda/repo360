@@ -589,3 +589,234 @@ def test_diagnose_dora_flow_grounding_markdown_strip_and_no_op_awareness(monkeyp
 
 
 
+
+
+def test_gemini_rate_limit_fails_over_to_fallback_model_without_circuit_trip(monkeypatch):
+    from unittest.mock import MagicMock
+
+    monkeypatch.setattr("src.ai.engine.time.sleep", lambda *_args, **_kwargs: None)
+    engine = AIEngine(provider="gemini", api_key="test-key", model_name="gemini-3.5-flash", enabled=True)
+    mock_client = MagicMock()
+
+    seen_models = []
+
+    def _side_effect(model, **_kwargs):
+        seen_models.append(model)
+        if model == "gemini-3.5-flash":
+            raise Exception("429 RESOURCE_EXHAUSTED: Please retry in 30s")
+        resp = MagicMock()
+        resp.text = "Recovered via fallback model"
+        return resp
+
+    mock_client.models.generate_content.side_effect = _side_effect
+    engine._client = mock_client
+
+    result = engine._generate_text("Generate risk advisory for repo-alpha", retry_on_rate_limit=True)
+    assert result == "Recovered via fallback model"
+    assert engine.is_circuit_active() is False
+    assert engine.model_name == "gemini-3.5-flash-lite"
+    assert "gemini-3.5-flash" in engine._model_cooldown_until
+    assert seen_models == ["gemini-3.5-flash", "gemini-3.5-flash-lite"]
+
+    seen_models.clear()
+    result_next = engine._generate_text("Generate risk advisory for repo-beta", retry_on_rate_limit=True)
+    assert result_next == "Recovered via fallback model"
+    assert seen_models == ["gemini-3.5-flash-lite"]
+
+
+def test_gemini_rate_limit_backoff_retry_recovers_on_same_model(monkeypatch):
+    from unittest.mock import MagicMock
+
+    sleep_durations = []
+    monkeypatch.setattr("src.ai.engine.time.sleep", lambda sec: sleep_durations.append(sec))
+
+    engine = AIEngine(provider="gemini", api_key="test-key", model_name="gemini-3.5-flash", enabled=True)
+    mock_client = MagicMock()
+    calls = {"count": 0}
+
+    def _side_effect(model, **_kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise Exception("429 RESOURCE_EXHAUSTED: Please retry in 2s")
+        resp = MagicMock()
+        resp.text = f"Recovered on {model}"
+        return resp
+
+    mock_client.models.generate_content.side_effect = _side_effect
+    engine._client = mock_client
+
+    result = engine._generate_text("Backoff recovery prompt", retry_on_rate_limit=True)
+    assert result == "Recovered on gemini-3.5-flash"
+    assert calls["count"] == 2
+    assert any(sec >= 2.0 for sec in sleep_durations)
+    assert engine.is_circuit_active() is False
+
+
+def test_openai_and_anthropic_429_retry_after_and_model_fallback(monkeypatch):
+    from unittest.mock import MagicMock, patch
+
+    monkeypatch.setattr("src.ai.engine.time.sleep", lambda *_args, **_kwargs: None)
+
+    openai_engine = AIEngine(provider="openai", api_key="sk-test", model_name="gpt-4o", enabled=True)
+    openai_calls = []
+
+    def _mock_openai_post(_url, json=None, **_kwargs):
+        model = json["model"]
+        openai_calls.append(model)
+        resp = MagicMock()
+        if model == openai_engine.FALLBACK_MODELS_BY_PROVIDER["openai"][0] or len(openai_calls) == 1:
+            if len(openai_calls) == 1:
+                resp.status_code = 429
+                resp.headers = {"Retry-After": "25"}
+                resp.text = "rate limit"
+                return resp
+        resp.status_code = 200
+        resp.json.return_value = {"choices": [{"message": {"content": f"OpenAI ok via {model}"}}]}
+        return resp
+
+    with patch("requests.post", side_effect=_mock_openai_post):
+        out_openai = openai_engine._generate_text("OpenAI failover test", retry_on_rate_limit=True)
+
+    assert out_openai is not None and out_openai.startswith("OpenAI ok via ")
+    assert len(openai_calls) == 2
+    assert openai_engine.is_circuit_active() is False
+
+    anthropic_engine = AIEngine(
+        provider="anthropic",
+        api_key="anth-test",
+        model_name="claude-3-7-sonnet-latest",
+        enabled=True,
+    )
+
+    def _mock_anthropic_429(_url, **_kwargs):
+        resp = MagicMock()
+        resp.status_code = 529
+        resp.headers = {"Retry-After": "90"}
+        resp.text = "overloaded"
+        return resp
+
+    with patch("requests.post", side_effect=_mock_anthropic_429):
+        out_anth = anthropic_engine._generate_text("Anthropic exhausted test", retry_on_rate_limit=False)
+
+    assert out_anth is None
+    assert anthropic_engine.is_circuit_active() is True
+
+
+def test_prompt_cache_deduplicates_identical_generate_text_calls():
+    from unittest.mock import MagicMock
+
+    engine = AIEngine(provider="gemini", api_key="test-key", model_name="gemini-3.5-flash", enabled=True)
+    mock_client = MagicMock()
+    resp = MagicMock()
+    resp.text = "Cached deterministic-like output"
+    mock_client.models.generate_content.return_value = resp
+    engine._client = mock_client
+
+    first = engine._generate_text("Identical governance briefing prompt")
+    second = engine._generate_text("Identical governance briefing prompt")
+    assert first == "Cached deterministic-like output"
+    assert second == "Cached deterministic-like output"
+    assert mock_client.models.generate_content.call_count == 1
+
+
+def test_recommended_max_workers_and_run_concurrent_ai_throttling(monkeypatch):
+    from src.common.concurrency import run_concurrent_ai
+
+    monkeypatch.delenv("LLM_MAX_WORKERS", raising=False)
+    monkeypatch.delenv("LLM_MIN_INTERVAL_SECONDS", raising=False)
+
+    gemini_engine = AIEngine(provider="gemini", api_key="test-key", enabled=True)
+    assert gemini_engine.recommended_max_workers(8) == 3
+
+    gemini_engine._bump_adaptive_pacing()
+    assert gemini_engine.recommended_max_workers(8) == 1
+
+    monkeypatch.setenv("LLM_MAX_WORKERS", "2")
+    assert gemini_engine.recommended_max_workers(8) == 2
+
+    processed = run_concurrent_ai(["r1", "r2", "r3"], lambda x: f"done:{x}", ai_engine=gemini_engine)
+    assert processed == ["done:r1", "done:r2", "done:r3"]
+
+
+def test_parse_yes_no_and_cli_helper_flags():
+    """Verify --require-ai yes/no parsing, default 'no', legacy '--no-ai', and conflict rejection."""
+    import argparse
+    import pytest
+    from src.ai import add_ai_cli_arguments, parse_yes_no, resolve_ai_cli_flag
+
+    assert parse_yes_no("yes") is True
+    assert parse_yes_no("YES") is True
+    assert parse_yes_no(" Yes ") is True
+    assert parse_yes_no("no") is False
+    assert parse_yes_no("NO") is False
+    assert parse_yes_no(" No ") is False
+
+    for bad in ("true", "false", "1", "0", "maybe", ""):
+        with pytest.raises(argparse.ArgumentTypeError):
+            parse_yes_no(bad)
+
+    def _parse(argv):
+        parser = argparse.ArgumentParser(prog="repo360 test")
+        add_ai_cli_arguments(parser)
+        args = parser.parse_args(argv)
+        return resolve_ai_cli_flag(args, parser)
+
+    assert _parse([]) is False
+    assert _parse(["--require-ai", "no"]) is False
+    assert _parse(["--require-ai", "NO"]) is False
+    assert _parse(["--require-ai=no"]) is False
+    assert _parse(["--require-ai", "yes"]) is True
+    assert _parse(["--require-ai", "YES"]) is True
+    assert _parse(["--require-ai=yes"]) is True
+    assert _parse(["--require-ai"]) is True
+    assert _parse(["--no-ai"]) is False
+    assert _parse(["--require-ai", "no", "--no-ai"]) is False
+
+    with pytest.raises(SystemExit) as exc_invalid:
+        _parse(["--require-ai", "invalid"])
+    assert exc_invalid.value.code == 2
+
+    with pytest.raises(SystemExit) as exc_conflict:
+        _parse(["--require-ai", "yes", "--no-ai"])
+    assert exc_conflict.value.code == 2
+
+
+@patch("google.genai.Client")
+def test_init_ai_engine_enable_ai_flag_and_fallback(mock_client_cls: MagicMock) -> None:
+    """Verify enable_ai=False disables AI even with a key, and enable_ai=True falls back when offline."""
+    from src.ai import init_ai_engine
+
+    creds_with_key = {
+        "llm_provider": "gemini",
+        "llm_model": "gemini-3.5-flash",
+        "llm_api_key": "fake-key",
+        "llm_enabled": True,
+    }
+
+    # 1. Default / '--require-ai no' disables AI without touching GenAI SDK
+    disabled_eng = init_ai_engine(enable_ai=False, creds=creds_with_key)
+    assert disabled_eng.enabled is False
+    assert disabled_eng.disabled_by_cli is True
+    assert not disabled_eng.is_available()
+    assert mock_client_cls.call_count == 0
+
+    # 2. '--require-ai yes' without API key falls back deterministically without raising
+    no_key_creds = {**creds_with_key, "llm_api_key": ""}
+    fallback_no_key = init_ai_engine(enable_ai=True, creds=no_key_creds)
+    assert fallback_no_key.enabled is False
+    assert not fallback_no_key.is_available()
+
+    # 3. '--require-ai yes' with failing connection falls back deterministically without raising
+    mock_client = MagicMock()
+    mock_client.models.generate_content.side_effect = Exception("connection refused")
+    mock_client_cls.return_value = mock_client
+    fallback_offline = init_ai_engine(enable_ai=True, creds=creds_with_key)
+    assert fallback_offline.enabled is False
+    assert not fallback_offline.is_available()
+
+    # 4. '--require-ai yes' with working connection initializes ONLINE engine
+    mock_client.models.generate_content.side_effect = None
+    mock_client.models.generate_content.return_value = MagicMock(text="pong")
+    online_eng = init_ai_engine(enable_ai=True, creds=creds_with_key)
+    assert online_eng.enabled is True
+    assert online_eng.is_available()

@@ -11,7 +11,7 @@ Platform governance, compliance, engineering intelligence, and infrastructure me
 
 - **Python 3.10+** and **[pipx](https://pypa.github.io/pipx/)** (for CLI use)
 - **Organization Owner / Admin access** on GitHub (to install the read-only GitHub App)
-- **AI API Key** (Required for audit: Google Gemini, OpenAI, or Anthropic to synthesize tailored remediations and executive briefings)
+- **AI API Key** (Optional: Google Gemini, OpenAI, or Anthropic — used when `--require-ai yes` / `require_ai: "yes"` is enabled; defaults to `--require-ai no` deterministic policy rules)
 
 ---
 
@@ -91,9 +91,10 @@ Registers the read-only GitHub App with all required permissions, downloads the 
 Repositories are automatically discovered directly from GitHub App installations across your organizations:
 
 ```bash
-# Governance Audit (Executive Excel workbook)
+# Governance Audit (Executive Excel workbook; AI disabled by default via --require-ai no)
 repo360 audit
 repo360 audit --org <your-org>
+repo360 audit --require-ai yes # Enable AI-tailored remediations (falls back deterministically if offline)
 
 # User Activity & Contributor Metrics (Executive Excel workbook)
 repo360 activity
@@ -176,7 +177,7 @@ Repo360 is packaged as a composite action that sets up the environment, executes
 In repository **Settings** &rarr; **Secrets and variables** &rarr; **Actions**:
 - `REPO360_APP_ID`: Numeric GitHub App ID (Variable or Secret)
 - `REPO360_APP_PRIVATE_KEY`: RSA private key `.pem` string (Secret)
-- `AI_API_KEY`: API key for Google Gemini, OpenAI, or Anthropic (Secret, required for audit)
+- `AI_API_KEY`: API key for Google Gemini, OpenAI, or Anthropic (Secret, optional — used when `require_ai: "yes"` is set)
 
 #### 2. Workflow Example (`.github/workflows/audit.yml`)
 
@@ -202,7 +203,8 @@ jobs:
         with:
           app_id: ${{ vars.REPO360_APP_ID }} # GitHub App ID for authentication
           private_key: ${{ secrets.REPO360_APP_PRIVATE_KEY }} # Private key for token exchange
-          ai_api_key: ${{ secrets.AI_API_KEY }} # Required for AI-tailored remediations in audit
+          require_ai: "no" # Set to "yes" to enable AI remediation & insights (falls back deterministically if offline)
+          ai_api_key: ${{ secrets.AI_API_KEY }} # Optional API key used when require_ai is "yes"
           collect_activity: "true" # Scrapes contributor commit, PR, review, and issue metrics
           collect_runners: "true" # Audits self-hosted runner fleet compute, queues, and SLAs
           collect_finops: "true" # Profiles per-repository storage quotas, artifacts, and caches

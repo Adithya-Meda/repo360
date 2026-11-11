@@ -14,13 +14,14 @@ Capabilities:
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
 import threading
 import time
 import warnings
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 # Suppress noisy internal warnings from third-party client
 warnings.filterwarnings("ignore", category=SyntaxWarning)
@@ -128,6 +129,19 @@ class AIEngine:
         self._cache_lock = threading.Lock()
         self._cache_cond = threading.Condition(self._cache_lock)
         self._in_flight_keys: set[str] = set()
+        self._prompt_cache: Dict[str, str] = {}
+        self._prompt_cache_max_entries: int = 512
+        self._prompt_in_flight: set[str] = set()
+        self._prompt_cond = threading.Condition(self._cache_lock)
+        self._rate_lock = threading.Lock()
+        self._min_request_interval_s: float = self._parse_non_negative_float_env(
+            "LLM_MIN_INTERVAL_SECONDS", 0.0
+        )
+        self._retry_attempts: int = self._parse_bounded_int_env(
+            "LLM_RETRY_ATTEMPTS", default=2, low=1, high=4
+        )
+        self._next_request_at: float = 0.0
+        self._model_cooldown_until: Dict[str, float] = {}
         self.init_error: Optional[str] = None
         self._circuit_cooldown_until: float = 0.0
         self._circuit_notified: bool = False
@@ -179,6 +193,106 @@ class AIEngine:
             and result.status in (CheckStatus.WARN, CheckStatus.FAIL)
             and result.check_id in self.SUPPORTED_REMEDIATION_CHECKS
         )
+
+    @staticmethod
+    def _parse_non_negative_float_env(name: str, default: float) -> float:
+        """Parse a non-negative float environment variable safely."""
+        raw = os.getenv(name, "").strip()
+        if not raw:
+            return default
+        try:
+            return max(0.0, float(raw))
+        except ValueError:
+            return default
+
+    @staticmethod
+    def _parse_bounded_int_env(name: str, default: int, low: int, high: int) -> int:
+        """Parse and clamp an integer environment variable safely."""
+        raw = os.getenv(name, "").strip()
+        if not raw:
+            return default
+        try:
+            return max(low, min(high, int(raw)))
+        except ValueError:
+            return default
+
+    @staticmethod
+    def _extract_retry_after(
+        headers: Optional[Any] = None,
+        err_msg: str = "",
+    ) -> Optional[float]:
+        """Extract bounded Retry-After seconds from response headers or provider error text."""
+        if headers is not None and hasattr(headers, "get"):
+            raw_hdr = headers.get("Retry-After") or headers.get("retry-after")
+            if raw_hdr is not None:
+                try:
+                    return max(0.5, min(120.0, float(str(raw_hdr).strip())))
+                except ValueError:
+                    pass
+
+        if err_msg:
+            match = re.search(
+                r"retry\s+(?:in|after)\s+([0-9]+(?:\.[0-9]+)?)\s*(ms|milliseconds?|s|sec|seconds?)?",
+                err_msg,
+                re.IGNORECASE,
+            )
+            if match:
+                val = float(match.group(1))
+                unit = (match.group(2) or "s").lower()
+                if unit.startswith("m"):
+                    val /= 1000.0
+                return max(0.5, min(120.0, val))
+        return None
+
+    def recommended_max_workers(self, requested: int = 8) -> int:
+        """Return safe LLM worker concurrency based on provider limits and active rate-limit pacing."""
+        requested_safe = max(1, int(requested))
+        env_cap = os.getenv("LLM_MAX_WORKERS", "").strip()
+        if env_cap:
+            try:
+                return max(1, min(requested_safe, int(env_cap)))
+            except ValueError:
+                pass
+        with self._rate_lock:
+            if self._min_request_interval_s > 0.0:
+                return 1
+        provider_cap = 3 if self.provider == "gemini" else 4
+        return min(requested_safe, provider_cap)
+
+    def _wait_for_rate_slot(self) -> None:
+        """Reserve the next paced dispatch slot across threads without sleeping under lock."""
+        with self._rate_lock:
+            interval = self._min_request_interval_s
+            if interval <= 0.0:
+                return
+            now = time.monotonic()
+            wait_s = max(0.0, self._next_request_at - now)
+            self._next_request_at = max(now, self._next_request_at) + interval
+        if wait_s > 0.0:
+            time.sleep(wait_s)
+
+    def _bump_adaptive_pacing(self) -> None:
+        """Adaptively increase minimum inter-request spacing after a provider 429/503."""
+        with self._rate_lock:
+            if self._min_request_interval_s <= 0.0:
+                self._min_request_interval_s = 1.5
+            else:
+                self._min_request_interval_s = min(4.0, self._min_request_interval_s + 0.75)
+
+    def _mark_model_rate_limited(self, model: str, cooldown_seconds: float) -> None:
+        """Record temporary per-model cooldown so subsequent calls route directly to healthy fallbacks."""
+        bounded = max(15.0, min(300.0, float(cooldown_seconds)))
+        with self._rate_lock:
+            self._model_cooldown_until[model] = time.monotonic() + bounded
+
+    def _candidate_models(self, provider_key: str) -> List[str]:
+        """Return deduplicated candidate models ordered with active model first."""
+        fallbacks = self.FALLBACK_MODELS_BY_PROVIDER.get(provider_key, ())
+        ordered: List[str] = []
+        for candidate in (self.model_name, *fallbacks):
+            if candidate and candidate not in ordered:
+                ordered.append(candidate)
+        return ordered
 
     def trip_circuit_breaker(self, cooldown_seconds: float = 120.0, reason: str = "Rate limit") -> None:
         """Temporarily suspend live LLM remediation requests to keep audit pipeline moving fast."""
@@ -362,49 +476,162 @@ class AIEngine:
         """Redact sensitive tokens and key patterns before sending to LLM."""
         return self.SENSITIVE_PATTERN.sub("[REDACTED_CREDENTIAL]", text)
 
-    def _call_gemini(self, prompt: str, retry_on_rate_limit: bool = True) -> Optional[str]:
-        """Execute Gemini call with resilient rate-limit handling and safe model fallback."""
+    def _execute_with_model_fallback(
+        self,
+        provider_key: str,
+        invoke_model: Callable[[str], Tuple[str, Optional[str], Optional[float]]],
+        retry_on_rate_limit: bool = True,
+    ) -> Optional[str]:
+        """Run a provider call with model failover, per-model cooldowns, pacing, and circuit breaker."""
         if not self.is_available() or self.is_circuit_active():
             return None
 
-        candidate_models = [self.model_name] + [
-            m for m in self.FALLBACK_MODELS_BY_PROVIDER["gemini"] if m != self.model_name
-        ]
+        all_candidates = self._candidate_models(provider_key)
+        now = time.monotonic()
+        with self._rate_lock:
+            active_candidates = [
+                m for m in all_candidates if self._model_cooldown_until.get(m, 0.0) <= now
+            ]
+            if not active_candidates and all_candidates:
+                soonest_expiry = min(
+                    self._model_cooldown_until.get(m, now + 60.0) for m in all_candidates
+                )
+                remaining = max(5.0, min(120.0, soonest_expiry - now))
+            else:
+                remaining = 0.0
 
-        for model in candidate_models:
-            for attempt in range(2 if retry_on_rate_limit else 1):
-                try:
-                    kwargs: Dict[str, Any] = {
-                        "model": model,
-                        "contents": self.sanitize_text(prompt),
-                    }
-                    if self._gen_config is not None:
-                        kwargs["config"] = self._gen_config
+        if not active_candidates:
+            if remaining > 0.0:
+                self.trip_circuit_breaker(
+                    remaining,
+                    reason=f"{provider_key.upper()} Rate limit (all candidate models cooling down)",
+                )
+            return None
 
-                    response = self._client.models.generate_content(**kwargs)
-                    if response and response.text:
-                        if model != self.model_name:
-                            self.model_name = model
-                        return response.text.strip()
+        max_attempts = self._retry_attempts if retry_on_rate_limit else 1
+        saw_rate_limit = False
+        max_retry_after: Optional[float] = None
+
+        for idx, model in enumerate(active_candidates):
+            for attempt in range(max_attempts):
+                if retry_on_rate_limit or idx == 0:
+                    self._wait_for_rate_slot()
+                if not self.is_available() or self.is_circuit_active():
                     return None
-                except Exception as err:
-                    err_msg = str(err)
-                    if "API_KEY_INVALID" in err_msg or "UNAUTHENTICATED" in err_msg:
-                        logger.warning("AI engine suspended (API Key Invalid). Falling back to deterministic templates.")
-                        self.enabled = False
-                        return None
-                    elif "RESOURCE_EXHAUSTED" in err_msg or "429" in err_msg or "503" in err_msg:
-                        self.trip_circuit_breaker(120.0, reason="Gemini Rate limit (429/Quota exceeded)")
-                        return None
-                    elif "NOT_FOUND" in err_msg or "404" in err_msg:
-                        break  # try next fallback model
-                    else:
-                        logger.debug("AI generation skipped on %s for check: %s", model, err)
-                        break
+
+                status, text, retry_after_s = invoke_model(model)
+                if status == "ok":
+                    with self._rate_lock:
+                        self._model_cooldown_until.pop(model, None)
+                    if model != self.model_name:
+                        self.model_name = model
+                    return text
+                if status == "empty":
+                    return None
+                if status == "auth_error":
+                    self.enabled = False
+                    return None
+                if status == "rate_limit":
+                    saw_rate_limit = True
+                    if retry_after_s is not None:
+                        max_retry_after = max(max_retry_after or 0.0, retry_after_s)
+                    self._bump_adaptive_pacing()
+                    if attempt + 1 < max_attempts and (
+                        retry_after_s is None or retry_after_s <= 12.0
+                    ):
+                        jitter = (time.monotonic_ns() % 400) / 1000.0
+                        backoff_s = (
+                            retry_after_s
+                            if retry_after_s is not None
+                            else min(8.0, 1.5 * (2 ** attempt))
+                        )
+                        time.sleep(backoff_s + jitter)
+                        continue
+                    cooldown_s = retry_after_s if retry_after_s is not None else 60.0
+                    self._mark_model_rate_limited(model, cooldown_s)
+                    break
+                # "not_found" or non-rate-limit error -> move to next candidate model
+                break
+
+        if saw_rate_limit:
+            cb_cooldown = max(60.0, min(300.0, max_retry_after or 120.0))
+            self.trip_circuit_breaker(
+                cb_cooldown,
+                reason=f"{provider_key.upper()} Rate limit (429/Quota exceeded)",
+            )
         return None
 
+    def _classify_http_error(
+        self,
+        resp: Any,
+        model: str,
+        provider_label: str,
+    ) -> Tuple[str, Optional[str], Optional[float]]:
+        """Map HTTP non-200 error responses into normalized failover statuses."""
+        status_code = getattr(resp, "status_code", 0)
+        if status_code in (401, 403):
+            logger.warning(
+                "%s API Key Invalid or Unauthenticated. Falling back to deterministic mode.",
+                provider_label,
+            )
+            return ("auth_error", None, None)
+        if status_code in (429, 503, 529):
+            retry_after = self._extract_retry_after(
+                getattr(resp, "headers", None),
+                getattr(resp, "text", "") or "",
+            )
+            return ("rate_limit", None, retry_after)
+        if status_code == 404:
+            return ("not_found", None, None)
+        logger.debug("%s API returned status %s for %s", provider_label, status_code, model)
+        return ("error", None, None)
+
+    def _call_gemini(self, prompt: str, retry_on_rate_limit: bool = True) -> Optional[str]:
+        """Execute Gemini call with resilient rate-limit handling and safe model fallback."""
+        clean_prompt = self.sanitize_text(prompt)
+
+        def _invoke(model: str) -> Tuple[str, Optional[str], Optional[float]]:
+            try:
+                kwargs: Dict[str, Any] = {
+                    "model": model,
+                    "contents": clean_prompt,
+                }
+                if self._gen_config is not None:
+                    kwargs["config"] = self._gen_config
+
+                response = self._client.models.generate_content(**kwargs)
+                if response and response.text:
+                    return ("ok", response.text.strip(), None)
+                return ("empty", None, None)
+            except Exception as err:
+                err_msg = str(err)
+                lower_msg = err_msg.lower()
+                if "API_KEY_INVALID" in err_msg or "UNAUTHENTICATED" in err_msg:
+                    logger.warning(
+                        "AI engine suspended (API Key Invalid). Falling back to deterministic templates."
+                    )
+                    return ("auth_error", None, None)
+                if (
+                    "RESOURCE_EXHAUSTED" in err_msg
+                    or "429" in err_msg
+                    or "503" in err_msg
+                    or "rate limit" in lower_msg
+                    or "quota exceeded" in lower_msg
+                ):
+                    return ("rate_limit", None, self._extract_retry_after(err_msg=err_msg))
+                if "NOT_FOUND" in err_msg or "404" in err_msg:
+                    return ("not_found", None, None)
+                logger.debug("AI generation skipped on %s for check: %s", model, err)
+                return ("error", None, None)
+
+        return self._execute_with_model_fallback(
+            "gemini",
+            _invoke,
+            retry_on_rate_limit=retry_on_rate_limit,
+        )
+
     def _call_openai(self, prompt: str, retry_on_rate_limit: bool = True) -> Optional[str]:
-        """Execute OpenAI Chat Completion API call with model fallback."""
+        """Execute OpenAI Chat Completion API call with model fallback and rate-limit resilience."""
         if not self.is_available() or self.is_circuit_active():
             return None
 
@@ -417,47 +644,36 @@ class AIEngine:
             "api-key": self.api_key,
             "Content-Type": "application/json",
         }
-        candidates = [self.model_name] + [
-            m for m in self.FALLBACK_MODELS_BY_PROVIDER["openai"] if m != self.model_name
-        ]
+        clean_prompt = self.sanitize_text(prompt)
 
-        for model in candidates:
-            for attempt in range(2 if retry_on_rate_limit else 1):
-                try:
-                    payload = {
-                        "model": model,
-                        "messages": [{"role": "user", "content": self.sanitize_text(prompt)}],
-                        "temperature": 0.2,
-                    }
-                    resp = requests.post(url, headers=headers, json=payload, timeout=20)
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        choices = data.get("choices", [])
-                        if choices:
-                            if model != self.model_name:
-                                self.model_name = model
-                            content = choices[0].get("message", {}).get("content", "")
-                            return content.strip() if content else None
-                        return None
-                    elif resp.status_code in (401, 403):
-                        logger.warning("OpenAI API Key Invalid or Unauthenticated. Falling back to deterministic mode.")
-                        self.enabled = False
-                        return None
-                    elif resp.status_code == 429:
-                        self.trip_circuit_breaker(120.0, reason="OpenAI Rate limit (429)")
-                        return None
-                    elif resp.status_code == 404:
-                        break
-                    else:
-                        logger.debug("OpenAI API returned status %s for %s", resp.status_code, model)
-                        break
-                except Exception as err:
-                    logger.debug("OpenAI API call failed on model %s: %s", model, err)
-                    break
-        return None
+        def _invoke(model: str) -> Tuple[str, Optional[str], Optional[float]]:
+            try:
+                payload = {
+                    "model": model,
+                    "messages": [{"role": "user", "content": clean_prompt}],
+                    "temperature": 0.2,
+                }
+                resp = requests.post(url, headers=headers, json=payload, timeout=20)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    choices = data.get("choices", [])
+                    if choices:
+                        content = choices[0].get("message", {}).get("content", "")
+                        return ("ok", content.strip(), None) if content else ("empty", None, None)
+                    return ("empty", None, None)
+                return self._classify_http_error(resp, model, "OpenAI")
+            except Exception as err:
+                logger.debug("OpenAI API call failed on model %s: %s", model, err)
+                return ("error", None, None)
+
+        return self._execute_with_model_fallback(
+            "openai",
+            _invoke,
+            retry_on_rate_limit=retry_on_rate_limit,
+        )
 
     def _call_anthropic(self, prompt: str, retry_on_rate_limit: bool = True) -> Optional[str]:
-        """Execute Anthropic Messages API call with model fallback."""
+        """Execute Anthropic Messages API call with model fallback and rate-limit resilience."""
         if not self.is_available() or self.is_circuit_active():
             return None
 
@@ -470,56 +686,73 @@ class AIEngine:
             "anthropic-version": "2023-06-01",
             "Content-Type": "application/json",
         }
-        candidates = [self.model_name] + [
-            m for m in self.FALLBACK_MODELS_BY_PROVIDER["anthropic"] if m != self.model_name
-        ]
+        clean_prompt = self.sanitize_text(prompt)
 
-        for model in candidates:
-            for attempt in range(2 if retry_on_rate_limit else 1):
-                try:
-                    payload = {
-                        "model": model,
-                        "max_tokens": 2048,
-                        "messages": [{"role": "user", "content": self.sanitize_text(prompt)}],
-                        "temperature": 0.2,
-                    }
-                    resp = requests.post(url, headers=headers, json=payload, timeout=20)
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        contents = data.get("content", [])
-                        if contents:
-                            if model != self.model_name:
-                                self.model_name = model
-                            text = contents[0].get("text", "")
-                            return text.strip() if text else None
-                        return None
-                    elif resp.status_code in (401, 403):
-                        logger.warning("Anthropic API Key Invalid or Unauthenticated. Falling back to deterministic mode.")
-                        self.enabled = False
-                        return None
-                    elif resp.status_code == 429:
-                        self.trip_circuit_breaker(120.0, reason="Anthropic Rate limit (429)")
-                        return None
-                    elif resp.status_code == 404:
-                        break
-                    else:
-                        logger.debug("Anthropic API returned status %s for %s", resp.status_code, model)
-                        break
-                except Exception as err:
-                    logger.debug("Anthropic API call failed on model %s: %s", model, err)
-                    break
-        return None
+        def _invoke(model: str) -> Tuple[str, Optional[str], Optional[float]]:
+            try:
+                payload = {
+                    "model": model,
+                    "max_tokens": 2048,
+                    "messages": [{"role": "user", "content": clean_prompt}],
+                    "temperature": 0.2,
+                }
+                resp = requests.post(url, headers=headers, json=payload, timeout=20)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    contents = data.get("content", [])
+                    if contents:
+                        text = contents[0].get("text", "")
+                        return ("ok", text.strip(), None) if text else ("empty", None, None)
+                    return ("empty", None, None)
+                return self._classify_http_error(resp, model, "Anthropic")
+            except Exception as err:
+                logger.debug("Anthropic API call failed on model %s: %s", model, err)
+                return ("error", None, None)
+
+        return self._execute_with_model_fallback(
+            "anthropic",
+            _invoke,
+            retry_on_rate_limit=retry_on_rate_limit,
+        )
 
     def _generate_text(self, prompt: str, retry_on_rate_limit: bool = True) -> Optional[str]:
-        """Route text generation to the active LLM provider."""
-        if not self.is_available():
+        """Route text generation to the active LLM provider with thread-safe prompt caching."""
+        if not self.is_available() or self.is_circuit_active():
             return None
-        if self.provider in ("openai", "azure"):
-            return self._call_openai(prompt, retry_on_rate_limit=retry_on_rate_limit)
-        elif self.provider == "anthropic":
-            return self._call_anthropic(prompt, retry_on_rate_limit=retry_on_rate_limit)
-        else:
-            return self._call_gemini(prompt, retry_on_rate_limit=retry_on_rate_limit)
+
+        clean_prompt = self.sanitize_text(prompt)
+        digest = hashlib.sha256(clean_prompt.encode("utf-8", errors="ignore")).hexdigest()
+        cache_key = f"{self.provider}:{digest}"
+
+        with self._prompt_cond:
+            while True:
+                if cache_key in self._prompt_cache:
+                    return self._prompt_cache[cache_key]
+                if cache_key not in self._prompt_in_flight:
+                    self._prompt_in_flight.add(cache_key)
+                    break
+                if self.is_circuit_active() or not self.is_available():
+                    return None
+                self._prompt_cond.wait(timeout=1.0)
+
+        result: Optional[str] = None
+        try:
+            if self.provider in ("openai", "azure"):
+                result = self._call_openai(clean_prompt, retry_on_rate_limit=retry_on_rate_limit)
+            elif self.provider == "anthropic":
+                result = self._call_anthropic(clean_prompt, retry_on_rate_limit=retry_on_rate_limit)
+            else:
+                result = self._call_gemini(clean_prompt, retry_on_rate_limit=retry_on_rate_limit)
+        finally:
+            with self._prompt_cond:
+                self._prompt_in_flight.discard(cache_key)
+                if result:
+                    if len(self._prompt_cache) >= self._prompt_cache_max_entries:
+                        oldest_key = next(iter(self._prompt_cache))
+                        del self._prompt_cache[oldest_key]
+                    self._prompt_cache[cache_key] = result
+                self._prompt_cond.notify_all()
+        return result
 
     def generate_executive_summary(self, results: List[CheckResult], org_name: str) -> str:
         """Synthesize a high-level executive risk and governance narrative."""
@@ -956,15 +1189,26 @@ Provide ONLY 2 concise sentences summarizing development cadence and workload di
 def init_ai_engine(
     require_ai: bool = False,
     no_ai: bool = False,
+    enable_ai: Optional[bool] = None,
+    verify: bool = True,
+    creds: Optional[Dict[str, Any]] = None,
+    log: Optional[logging.Logger] = None,
 ) -> AIEngine:
-    """Initialize AIEngine with credentials, healthcheck, and CLI overrides."""
+    """Initialize AIEngine with credentials, pre-flight healthcheck, and CLI overrides."""
     from ..credentials import resolve_runtime_credentials
 
-    creds = resolve_runtime_credentials()
-    provider = creds.get("llm_provider", "gemini")
-    ai_model = creds.get("llm_model", "gemini-3.5-flash")
-    llm_api_key = creds.get("llm_api_key", "")
-    llm_enabled = bool(creds.get("llm_enabled", True)) and not no_ai
+    active_log = log or logger
+    resolved_creds = creds if creds is not None else resolve_runtime_credentials()
+    provider = resolved_creds.get("llm_provider", "gemini")
+    ai_model = resolved_creds.get("llm_model", "gemini-3.5-flash")
+    llm_api_key = resolved_creds.get("llm_api_key", "")
+
+    if no_ai or enable_ai is False:
+        llm_enabled = False
+    elif enable_ai is True:
+        llm_enabled = True
+    else:
+        llm_enabled = bool(resolved_creds.get("llm_enabled", True))
 
     ai_engine = AIEngine(
         api_key=llm_api_key,
@@ -972,18 +1216,61 @@ def init_ai_engine(
         provider=provider,
         enabled=llm_enabled,
     )
+    ai_engine.disabled_by_cli = bool(no_ai or enable_ai is False)
 
-    if llm_enabled and ai_engine.is_available():
+    if not llm_enabled:
+        if require_ai:
+            raise RuntimeError("--require-ai was specified but AI engine is disabled or not configured.")
+        if ai_engine.disabled_by_cli and verify:
+            active_log.info(
+                "AI Remediation Engine: DISABLED (--require-ai no). "
+                "Using deterministic policy rules."
+            )
+        return ai_engine
+
+    key_hint = (
+        "OPENAI_API_KEY"
+        if ai_engine.provider in ("openai", "azure")
+        else "ANTHROPIC_API_KEY"
+        if ai_engine.provider == "anthropic"
+        else "GEMINI_API_KEY"
+    )
+
+    if not ai_engine.is_available():
+        offline_reason = ai_engine.init_error or f"{key_hint} not configured"
+        if require_ai:
+            raise RuntimeError("--require-ai was specified but AI engine is disabled or not configured.")
+        if verify:
+            active_log.warning(
+                "AI Remediation Engine: OFFLINE (%s). "
+                "Calculations will proceed using deterministic policy rules. "
+                "To enable AI-tailored outputs, run 'repo360 setup' or configure %s.",
+                offline_reason,
+                key_hint,
+            )
+        return ai_engine
+
+    if verify:
+        active_log.info(
+            "Performing pre-flight healthcheck for AI Remediation Engine (%s: %s)...",
+            ai_engine.provider.upper(),
+            ai_engine.model_name,
+        )
         is_ok, reason = ai_engine.verify_connection()
-        if not is_ok:
-            logger.warning(
+        if is_ok:
+            active_log.info(
+                "AI Remediation Engine: ONLINE (%s: %s - Authenticated)",
+                ai_engine.provider.upper(),
+                ai_engine.model_name,
+            )
+        else:
+            ai_engine.enabled = False
+            active_log.warning(
                 "AI Remediation Engine: OFFLINE (%s). "
                 "Calculations will proceed using deterministic policy rules.",
                 reason,
             )
             if require_ai:
                 raise RuntimeError(f"--require-ai was specified but AI engine is offline: {reason}")
-    elif require_ai:
-        raise RuntimeError("--require-ai was specified but AI engine is disabled or not configured.")
 
     return ai_engine

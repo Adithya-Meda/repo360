@@ -20,7 +20,7 @@ import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from .ai import AIEngine
+from .ai import AIEngine, add_ai_cli_arguments, resolve_ai_cli_flag
 from .auth.github_app_auth import GitHubAppAuth
 from .checks import (
     ALL_CONTRIBUTOR_CHECKS,
@@ -181,6 +181,8 @@ def print_terminal_scorecard(
     ai_status = (
         f"{G}ONLINE ({ai_engine.model_name}){X}"
         if (ai_engine and ai_engine.is_available())
+        else f"{Y}DISABLED (Deterministic Policy){X}"
+        if (ai_engine and getattr(ai_engine, "disabled_by_cli", False))
         else f"{Y}OFFLINE (Deterministic Fallback){X}"
     )
 
@@ -773,10 +775,12 @@ def _run_cli() -> int:
         action="store_true",
         help="Run in offline mock mode using simulated data for verification.",
     )
-    parser.add_argument(
-        "--require-ai",
-        action="store_true",
-        help="Stop the audit if AI authentication fails, instead of falling back to standard built-in recommendations.",
+    add_ai_cli_arguments(
+        parser,
+        help_text=(
+            "Enable AI-powered remediation and executive briefing ('yes' or 'no', default: 'no'). "
+            "Falls back to deterministic policy rules if AI is offline or unconfigured."
+        ),
     )
     parser.add_argument(
         "--workers",
@@ -791,6 +795,7 @@ def _run_cli() -> int:
     )
 
     args = parser.parse_args()
+    ai_enabled = resolve_ai_cli_flag(args, parser)
 
     app_config = ConfigValidator.get_default_app_config()
     advisory_config = ConfigValidator.get_default_advisory_config()
@@ -805,57 +810,13 @@ def _run_cli() -> int:
     creds = resolve_runtime_credentials()
 
     # Initialize AI Engine (Multi-provider: Gemini, OpenAI, Anthropic)
-    provider = creds["llm_provider"]
-    ai_model = creds["llm_model"]
-    llm_api_key = creds["llm_api_key"]
-    llm_enabled = creds["llm_enabled"]
-    key_hint = f"{provider.upper()}_API_KEY"
-
-    ai_engine = AIEngine(
-        api_key=llm_api_key,
-        model_name=ai_model,
-        provider=provider,
-        enabled=llm_enabled,
+    from .ai import init_ai_engine
+    ai_engine = init_ai_engine(
+        enable_ai=ai_enabled,
+        verify=not args.mock_mode,
+        creds=creds,
+        log=logger,
     )
-
-    if not args.mock_mode and ai_engine.enabled:
-        logger.info(
-            "Performing pre-flight healthcheck for AI Remediation Engine (%s: %s)...",
-            ai_engine.provider.upper(),
-            ai_engine.model_name,
-        )
-        is_ok, reason = ai_engine.verify_connection()
-        if is_ok:
-            logger.info(
-                "AI Remediation Engine: ONLINE (%s: %s - Authenticated)",
-                ai_engine.provider.upper(),
-                ai_engine.model_name,
-            )
-        else:
-            logger.warning(
-                "AI Remediation Engine: OFFLINE (%s). "
-                "Audit will proceed using deterministic policy rules. "
-                "To enable AI-tailored remediations, run 'repo360 setup' or configure %s.",
-                reason,
-                key_hint,
-            )
-            if args.require_ai:
-                logger.error("Execution halted: --require-ai was specified but AI engine is offline (%s).", reason)
-                _print_failure_banner(f"--require-ai was specified but AI Remediation Engine is offline ({reason}).")
-                return 1
-    elif not ai_engine.enabled:
-        offline_reason = ai_engine.init_error or f"{key_hint} not configured"
-        logger.warning(
-            "AI Remediation Engine: OFFLINE (%s). "
-            "Remediations will use deterministic policy defaults. "
-            "To enable AI-tailored remediations, run 'repo360 setup' or configure %s.",
-            offline_reason,
-            key_hint,
-        )
-        if args.require_ai:
-            logger.error("Execution halted: --require-ai was specified but %s is not configured.", key_hint)
-            _print_failure_banner(f"--require-ai was specified but {key_hint} is not configured.")
-            return 1
 
     results: List[CheckResult] = []
 

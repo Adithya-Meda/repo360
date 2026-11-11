@@ -79,7 +79,7 @@ def run_concurrent_ai(
     ai_engine: Optional[Any] = None,
     max_workers: int = 8,
 ) -> List[R]:
-    """Execute AI advisory calls concurrently when live LLM synthesis is active."""
+    """Execute AI advisory calls concurrently with provider-aware rate-limit throttling."""
     if is_shutting_down():
         raise KeyboardInterrupt
     if not items:
@@ -88,11 +88,21 @@ def run_concurrent_ai(
     if ai_engine is None or (callable(is_avail_fn) and is_avail_fn() is False) or len(items) <= 1:
         return [enrich_fn(item) for item in items]
 
+    rec_fn = getattr(ai_engine, "recommended_max_workers", None)
+    capped_workers = max_workers
+    if callable(rec_fn):
+        candidate = rec_fn(max_workers)
+        if isinstance(candidate, int) and not isinstance(candidate, bool):
+            capped_workers = max(1, min(max_workers, candidate))
+
+    if capped_workers <= 1:
+        return [enrich_fn(item) for item in items]
+
     return map_concurrent(
         items,
         enrich_fn,
-        max_workers=min(max_workers, len(items)),
-        max_cap=max_workers,
+        max_workers=min(capped_workers, len(items)),
+        max_cap=capped_workers,
         thread_name_prefix="repo360-ai",
     )
 

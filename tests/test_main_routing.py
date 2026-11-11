@@ -330,3 +330,134 @@ def test_main_route_uninstall_and_remove(monkeypatch) -> None:
         monkeypatch.setattr("src.uninstall.run_uninstall_cli", mock_uninstall)
         assert main_mod.main() == 0
         assert mock_uninstall.called
+
+
+@pytest.mark.parametrize(
+    "module_path,fn_name",
+    [
+        ("src.activity.cli", "run_activity_cli"),
+        ("src.runners.cli", "run_runners_cli"),
+        ("src.finops.cli", "run_finops_cli"),
+        ("src.dora.cli", "run_dora_cli"),
+        ("src.bypass.cli", "run_bypass_cli"),
+    ],
+)
+@pytest.mark.parametrize(
+    "cli_args,expected_enable_ai",
+    [
+        ([], False),
+        (["--require-ai", "no"], False),
+        (["--require-ai", "NO"], False),
+        (["--require-ai", "yes"], True),
+        (["--require-ai", "YES"], True),
+        (["--require-ai"], True),
+    ],
+)
+def test_subcommand_clis_support_require_ai_yes_no_default_no(
+    monkeypatch,
+    module_path: str,
+    fn_name: str,
+    cli_args: list[str],
+    expected_enable_ai: bool,
+) -> None:
+    """Verify every analytics subcommand defaults --require-ai to 'no' and accepts 'yes'/'no'."""
+    import importlib
+
+    cli_mod = importlib.import_module(module_path)
+    runner = getattr(cli_mod, fn_name)
+    captured = {}
+
+    def _fake_init_ai_engine(**kwargs):
+        captured.update(kwargs)
+        return MagicMock(enabled=kwargs.get("enable_ai", False), is_available=lambda: False)
+
+    monkeypatch.setattr(
+        cli_mod,
+        "resolve_runtime_credentials",
+        lambda: {"app_id": "123", "private_key": "pem", "llm_api_key": "sk-test", "llm_enabled": True},
+    )
+    monkeypatch.setattr(
+        cli_mod,
+        "GitHubAppAuth",
+        lambda **kw: MagicMock(api_base_url="https://api.github.com"),
+    )
+    monkeypatch.setattr(cli_mod, "ResilientGitHubClient", lambda **kw: MagicMock())
+    monkeypatch.setattr(cli_mod, "discover_app_organizations", lambda **kw: [])
+    monkeypatch.setattr("src.ai.init_ai_engine", _fake_init_ai_engine)
+
+    rc = runner(cli_args)
+    assert rc == 1  # Expected exit when no installations are discovered
+    assert captured["enable_ai"] is expected_enable_ai
+
+
+@pytest.mark.parametrize(
+    "cli_args,expected_enable_ai",
+    [
+        (["repo360", "audit", "--mock-mode"], False),
+        (["repo360", "audit", "--mock-mode", "--require-ai", "no"], False),
+        (["repo360", "audit", "--mock-mode", "--require-ai", "yes"], True),
+        (["repo360", "audit", "--mock-mode", "--require-ai"], True),
+    ],
+)
+def test_audit_cli_supports_require_ai_yes_no_default_no(
+    monkeypatch,
+    tmp_path,
+    cli_args: list[str],
+    expected_enable_ai: bool,
+) -> None:
+    """Verify 'repo360 audit' defaults --require-ai to 'no' and honors 'yes'/'no'."""
+    from src import main as main_mod
+
+    captured = {}
+
+    def _fake_init_ai_engine(**kwargs):
+        captured.update(kwargs)
+        return MagicMock(
+            enabled=kwargs.get("enable_ai", False),
+            disabled_by_cli=not kwargs.get("enable_ai", False),
+            is_available=lambda: False,
+            model_name="gemini-3.5-flash",
+        )
+
+    monkeypatch.setattr(sys, "argv", [*cli_args, "--output-dir", str(tmp_path)])
+    monkeypatch.setattr(
+        "src.credentials.resolve_runtime_credentials",
+        lambda: {
+            "app_id": "",
+            "installation_id": "",
+            "private_key": "",
+            "api_base_url": "https://api.github.com",
+            "llm_provider": "gemini",
+            "llm_model": "gemini-3.5-flash",
+            "llm_api_key": "sk-test",
+            "llm_enabled": True,
+        },
+    )
+    monkeypatch.setattr("src.ai.init_ai_engine", _fake_init_ai_engine)
+
+    rc = main_mod.main()
+    assert rc == 0
+    assert captured["enable_ai"] is expected_enable_ai
+    assert captured["verify"] is False
+
+
+def test_audit_cli_rejects_invalid_require_ai_value(monkeypatch) -> None:
+    """Verify 'repo360 audit --require-ai invalid' fails fast with parser exit code 2."""
+    from src import main as main_mod
+
+    monkeypatch.setattr(sys, "argv", ["repo360", "audit", "--require-ai", "invalid"])
+    with pytest.raises(SystemExit) as exc:
+        main_mod.main()
+    assert exc.value.code == 2
+
+
+def test_action_yml_defines_require_ai_input_default_no() -> None:
+    """Verify action.yml exposes require_ai (default 'no') and passes --require-ai to all subcommands."""
+    from pathlib import Path
+
+    action_text = Path(__file__).resolve().parent.parent.joinpath("action.yml").read_text(encoding="utf-8")
+    assert "require_ai:" in action_text
+    assert 'default: "no"' in action_text
+    assert "--require-ai" in action_text
+    for subcmd in ("audit", "activity", "runners", "finops", "dora", "bypass"):
+        assert f"repo360 {subcmd}" in action_text
