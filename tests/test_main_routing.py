@@ -279,3 +279,41 @@ def test_run_audit_parallel_ai_enrichment_decoupled():
         assert r.extra_details.get("ai_enriched") is True
         assert "# Auto Enriched In Background" in r.remediation_snippet_after
 
+
+
+def test_main_route_version_flags(monkeypatch) -> None:
+    """Verify 'version', '--version', and '-V' route to run_version_cli cleanly."""
+    from unittest.mock import MagicMock
+    from src import main as main_mod
+
+    for flag in ("version", "--version", "-V"):
+        monkeypatch.setattr(sys, "argv", ["repo360", flag, "--check"])
+        mock_version = MagicMock(return_value=0)
+        monkeypatch.setattr("src.upgrade.run_version_cli", mock_version)
+        assert main_mod.main() == 0
+        assert mock_version.called
+
+
+def test_main_route_health_includes_commit_metadata(monkeypatch, capsys) -> None:
+    """Verify 'repo360 health' output includes installed version and commit metadata."""
+    import json
+    from unittest.mock import MagicMock
+    from src import main as main_mod
+
+    monkeypatch.setattr(sys, "argv", ["repo360", "health"])
+    monkeypatch.setattr("src.credentials.resolve_runtime_credentials", lambda: {"app_id": "123", "private_key": "pem"})
+    monkeypatch.setattr("src.auth.github_app_auth.GitHubAppAuth", lambda **kw: MagicMock(discover_installations=lambda: [{"id": 1}]))
+    monkeypatch.setattr("src.ai.init_ai_engine", lambda: MagicMock(is_available=lambda: True))
+    monkeypatch.setattr("src.upgrade.get_installation_details", lambda: {
+        "version": "1.0.0",
+        "commit_short": "cdfeb814",
+        "commit_source": "direct_url.json",
+    })
+
+    rc = main_mod.main()
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "HEALTHY"
+    assert payload["version"] == "1.0.0"
+    assert payload["installed_commit"] == "cdfeb814"
+    assert payload["commit_source"] == "direct_url.json"

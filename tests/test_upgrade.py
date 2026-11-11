@@ -232,3 +232,65 @@ def test_run_upgrade_cli_fresh_upgrade(capsys):
             captured = capsys.readouterr()
             assert "[SUCCESS]" in captured.out
             assert "upgraded successfully" in captured.out
+
+
+def test_is_output_already_up_to_date_uv_markers() -> None:
+    """uv package install output containing '+ repo360' must not be misclassified as up-to-date."""
+    from src.upgrade import is_output_already_up_to_date
+
+    assert is_output_already_up_to_date("", "+ repo360==1.0.0\nInstalled 1 package in 18ms\n") is False
+    assert is_output_already_up_to_date("", "Prepared 1 package in 1.2s\nInstalled 1 package in 15ms\n+ repo360==1.0.0\n") is False
+    assert is_output_already_up_to_date("Requirement already satisfied: repo360", "") is True
+
+
+def test_get_installation_details_and_force_commands() -> None:
+    """Verify installation metadata inspection and --force command generation."""
+    from unittest.mock import patch
+    from src.upgrade import get_installation_details, get_upgrade_commands
+
+    details = get_installation_details()
+    for key in ("version", "commit", "commit_short", "commit_source", "installer", "source_url", "package_path"):
+        assert key in details
+
+    with patch("src.upgrade.get_installation_details", return_value={"installer": "uv"}):
+        cmds = get_upgrade_commands(installer_override="pipx", force=True)
+        joined = " ".join(cmds[0][1])
+        assert "--reinstall-package=repo360" in joined
+
+    cmds_pip = get_upgrade_commands(installer_override="pip", force=True)
+    assert "--force-reinstall" in cmds_pip[0][1]
+
+
+def test_check_installation_against_remote_match_and_mismatch(capsys) -> None:
+    """Verify commit verification against origin/main handles match, outdated, and --strict mode."""
+    from unittest.mock import patch
+    from src.upgrade import check_installation_against_remote, run_version_cli
+
+    with patch("src.upgrade.get_installation_details", return_value={
+        "version": "1.0.0",
+        "commit": "cdfeb8143bd88aa17a02d03d47175c52d251002e",
+        "commit_short": "cdfeb814",
+        "commit_source": "direct_url.json",
+        "installer": "uv",
+        "source_url": "https://github.com/org/repo.git",
+        "package_path": "C:/env/repo360",
+    }), patch("src.upgrade.get_remote_commit_sha", return_value="cdfeb8143bd88aa17a02d03d47175c52d251002e"):
+        rc = run_version_cli(["--check", "--strict"])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "UP-TO-DATE" in out
+        assert "cdfeb814" in out
+
+    with patch("src.upgrade.get_installation_details", return_value={
+        "version": "1.0.0",
+        "commit": "228a2fe606fb904c0b475bde69da3ee95a7fd39c",
+        "commit_short": "228a2fe6",
+        "commit_source": "direct_url.json",
+        "installer": "uv",
+        "source_url": "https://github.com/org/repo.git",
+        "package_path": "C:/env/repo360",
+    }), patch("src.upgrade.get_remote_commit_sha", return_value="cdfeb8143bd88aa17a02d03d47175c52d251002e"):
+        assert check_installation_against_remote(strict=False) == 0
+        out_warn = capsys.readouterr().out
+        assert "OUTDATED" in out_warn
+        assert check_installation_against_remote(strict=True) == 1

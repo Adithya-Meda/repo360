@@ -2,7 +2,7 @@
 
 Uses GitHub's official App Manifest flow:
 1. Prompts interactively for target Organization and parameters.
-2. Spins up a temporary local HTTP server on http://localhost:8989
+2. Spins up a temporary local HTTP server on http://127.0.0.1:8989
 3. Opens browser to GitHub with pre-configured read-only governance permissions
 4. Exchanges authorization code via POST /app-manifests/{code}/conversions
 5. Automatically saves the RSA private key (.pem) to user config (~/.repo360/secrets/)
@@ -36,17 +36,27 @@ from .credentials import (
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger("setup-wizard")
 
+LOOPBACK_HOST = "127.0.0.1"
 PORT = 8989
-CALLBACK_URL = f"http://localhost:{PORT}/callback"
+CALLBACK_URL = f"http://{LOOPBACK_HOST}:{PORT}/callback"
 
 
 def _normalize_github_domain(domain: str) -> str:
     """Normalize a GitHub base URL to scheme + host without trailing slashes."""
-    cleaned = (domain or "https://github.com").strip().rstrip("/")
+    cleaned = (domain or "https://github.com").strip().strip("\"'").rstrip("/")
     if not cleaned.startswith(("http://", "https://")):
         cleaned = f"https://{cleaned}"
     parsed = urllib.parse.urlparse(cleaned)
     return f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else cleaned
+
+
+def _build_default_app_name(org_name: str) -> str:
+    """Build a unique GitHub App name respecting GitHub's 34-character limit."""
+    clean_org = org_name.strip() if org_name else ""
+    if not clean_org:
+        return "Repo360"
+    candidate = f"Repo360-{clean_org}"
+    return candidate[:34].rstrip("-") or "Repo360"
 
 
 def get_manifest(github_domain: str, app_name: str = "Repo360", state_nonce: str = "") -> dict:
@@ -105,9 +115,11 @@ class ManifestCallbackHandler(http.server.BaseHTTPRequestHandler):
             clean_domain = _normalize_github_domain(self.github_domain)
             # Auto-assign unique name using target_org to avoid global GitHub App name collisions
             clean_org = self.target_org.strip() if self.target_org else ""
-            default_name = f"Repo360-{clean_org}" if clean_org else "Repo360"
+            default_name = _build_default_app_name(clean_org)
             active_name = self.app_name or default_name
-            manifest_json = json.dumps(get_manifest(clean_domain, app_name=active_name))
+            manifest_payload = get_manifest(clean_domain, app_name=active_name)
+            manifest_json = json.dumps(manifest_payload)
+            logger.debug("Serving manifest form action for org='%s' with redirect_url='%s'", clean_org, manifest_payload.get("redirect_url"))
 
             encoded_org = urllib.parse.quote(clean_org, safe="") if clean_org else ""
             base_action = (
@@ -214,6 +226,8 @@ class ManifestCallbackHandler(http.server.BaseHTTPRequestHandler):
 </html>"""
 
             self.send_response(200)
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+            self.send_header("Pragma", "no-cache")
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             self.wfile.write(html_page.encode("utf-8"))
@@ -414,7 +428,7 @@ def run_wizard(
     github_domain = _normalize_github_domain(github_domain)
     api_domain = resolve_api_base_url(github_domain)
 
-    default_name = f"Repo360-{org_name}" if org_name else "Repo360"
+    default_name = _build_default_app_name(org_name)
     chosen_name = app_name or default_name
 
     ManifestCallbackHandler.target_org = org_name
@@ -435,10 +449,10 @@ def run_wizard(
     print("Starting local listener and opening your browser...")
 
     socketserver.TCPServer.allow_reuse_address = True
-    server = socketserver.TCPServer(("localhost", PORT), ManifestCallbackHandler)
+    server = socketserver.TCPServer((LOOPBACK_HOST, PORT), ManifestCallbackHandler)
     server.timeout = 0.5
     if open_browser:
-        webbrowser.open(f"http://localhost:{PORT}/")
+        webbrowser.open(f"http://{LOOPBACK_HOST}:{PORT}/")
 
     # Wait for the single callback request (timeout=0.5 ensures responsive Ctrl+C handling on Windows)
     try:

@@ -26,7 +26,7 @@ def test_get_manifest_payload() -> None:
     assert manifest["hook_attributes"]["url"] == "https://mycorp.ghe.com"
     assert manifest["hook_attributes"]["active"] is False
     # redirect_url must stay clean without embedded ?state=... query parameters
-    assert manifest["redirect_url"] == "http://localhost:8989/callback"
+    assert manifest["redirect_url"] == "http://127.0.0.1:8989/callback"
     assert "?" not in manifest["redirect_url"]
     assert manifest["default_permissions"]["organization_administration"] == "read"
     assert manifest["default_permissions"]["administration"] == "read"
@@ -36,6 +36,18 @@ def test_get_manifest_payload() -> None:
     assert manifest["default_permissions"]["issues"] == "read"
     assert manifest["default_permissions"]["members"] == "read"
     assert manifest["default_permissions"]["organization_self_hosted_runners"] == "read"
+
+
+def test_app_name_limit_and_domain_quotes() -> None:
+    """Verify GitHub App default name obeys 34-char cap and quoted domains normalize cleanly."""
+    from src.setup_app import _build_default_app_name, _normalize_github_domain
+
+    assert _build_default_app_name("") == "Repo360"
+    long_name = _build_default_app_name("very-long-enterprise-organization-name-exceeding-limit")
+    assert len(long_name) <= 34
+    assert long_name.startswith("Repo360")
+    assert _normalize_github_domain('  "https://mycorp.ghe.com/"  ') == "https://mycorp.ghe.com"
+    assert _normalize_github_domain("  'github.com/'  ") == "https://github.com"
 
 
 def test_manifest_callback_handler_redirect_form() -> None:
@@ -58,6 +70,8 @@ def test_manifest_callback_handler_redirect_form() -> None:
     handler.do_GET()
 
     handler.send_response.assert_called_with(200)
+    handler.send_header.assert_any_call("Cache-Control", "no-store, no-cache, must-revalidate")
+    handler.send_header.assert_any_call("Pragma", "no-cache")
     handler.send_header.assert_called_with("Content-Type", "text/html; charset=utf-8")
     assert handler.wfile.write.called
     written_html = handler.wfile.write.call_args[0][0].decode("utf-8")
@@ -66,7 +80,7 @@ def test_manifest_callback_handler_redirect_form() -> None:
     match = re.search(r"name=\"manifest\"\s+value='([^']+)'", written_html)
     assert match is not None
     payload = json.loads(html.unescape(match.group(1)))
-    assert payload["redirect_url"] == "http://localhost:8989/callback"
+    assert payload["redirect_url"] == "http://127.0.0.1:8989/callback"
 
 
 def test_manifest_callback_handler_validates_state_and_exchanges_code() -> None:

@@ -532,9 +532,11 @@ Commands:
   bypass      Audit secret scanning push-protection overrides and branch ruleset bypass events
   upgrade     Upgrade Repo360 CLI to the latest version directly from GitHub
   health      Verify GitHub App authentication, organization access, and AI engine status
+  version     Display installed Repo360 version, commit SHA, and check for updates
 
 Options:
-  -h, --help  Show this help message or help for a specific command
+  -h, --help     Show this help message or help for a specific command
+  -V, --version  Show installed Repo360 version and commit SHA
 
 Run 'repo360 <command> --help' for details on a specific command (e.g. 'repo360 activity -h').
 """)
@@ -572,6 +574,16 @@ def main() -> int:
     # 2. Root help flags
     if subcmd in ("-h", "--help"):
         return _print_root_help()
+
+    # 3. Version command and flags (-V / -v / --version / version)
+    if subcmd in ("version", "--version", "-v"):
+        sys.argv.pop(1)
+        from .upgrade import run_version_cli
+        try:
+            return run_version_cli()
+        except KeyboardInterrupt:
+            logger.warning("\nVersion check cancelled by user (Ctrl+C). Exiting...")
+            return 130
 
     # 3. Route recognized subcommands
     if subcmd == "audit":
@@ -648,12 +660,20 @@ def main() -> int:
         from .credentials import resolve_runtime_credentials
         from .auth.github_app_auth import GitHubAppAuth
         from .ai import init_ai_engine
+        from .upgrade import get_installation_details
+
+        install_details = get_installation_details()
+        version_meta = {
+            "version": install_details.get("version"),
+            "installed_commit": install_details.get("commit_short"),
+            "commit_source": install_details.get("commit_source"),
+        }
 
         creds = resolve_runtime_credentials()
         app_id = creds.get("app_id")
         private_key = creds.get("private_key")
         if not app_id or not private_key:
-            print(json.dumps({"status": "UNHEALTHY", "error": "Credentials unconfigured"}, indent=2))
+            print(json.dumps({"status": "UNHEALTHY", "error": "Credentials unconfigured", **version_meta}, indent=2))
             return 1
         try:
             auth = GitHubAppAuth(
@@ -668,11 +688,12 @@ def main() -> int:
                 "app_id": app_id,
                 "installations_count": len(installs),
                 "ai_engine": "ONLINE" if ai_eng.is_available() else "OFFLINE",
+                **version_meta,
             }
             print(json.dumps(health_data, indent=2))
             return 0 if installs else 1
         except Exception as exc:
-            print(json.dumps({"status": "UNHEALTHY", "error": str(exc)}, indent=2))
+            print(json.dumps({"status": "UNHEALTHY", "error": str(exc), **version_meta}, indent=2))
             return 1
 
     # 4. Unknown subcommand or misplaced option
