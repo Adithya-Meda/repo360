@@ -293,6 +293,10 @@ def test_repo_inspector_prefetch_audit_context():
     def fake_get(path, params=None, allow_404=False, **kwargs):
         if path.endswith("/rulesets"):
             return [{"name": "default", "enforcement": "active"}]
+        if path.endswith("/rules/branches/main"):
+            return [{"type": "pull_request"}]
+        if path.endswith("/environments"):
+            return {"environments": [{"name": "prod", "protection_rules": [{"type": "required_reviewers"}]}]}
         if path.endswith("/protection"):
             return {"required_pull_request_reviews": {"required_approving_review_count": 2}}
         if "/contents/" in path:
@@ -302,12 +306,14 @@ def test_repo_inspector_prefetch_audit_context():
     with patch.object(client, "get", side_effect=fake_get) as mock_get:
         inspector.prefetch_repo_audit_context("org", "repo", "main")
         first_calls = mock_get.call_count
-        assert first_calls == 6  # CODEOWNERS + requirements.txt + 2 workflows + rulesets + protection
+        assert first_calls == 8  # CODEOWNERS + requirements.txt + 2 workflows + rulesets + branch_rules + protection + environments
 
         # Subsequent reads hit warm in-memory caches (0 extra HTTP calls)
         assert inspector.get_file_content("org", "repo", ".github/CODEOWNERS", "main") is not None
         assert inspector.get_file_content("org", "repo", ".github/workflows/ci.yml", "main") is not None
         assert inspector.get_repo_rulesets("org", "repo") == [{"name": "default", "enforcement": "active"}]
+        assert inspector.get_repo_branch_rules("org", "repo", "main") == [{"type": "pull_request"}]
+        assert inspector.get_environments("org", "repo") == [{"name": "prod", "protection_rules": [{"type": "required_reviewers"}]}]
         assert inspector.get_branch_protection("org", "repo", "main") is not None
         assert mock_get.call_count == first_calls
 

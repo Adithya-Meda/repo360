@@ -7,6 +7,7 @@ import logging
 import math
 import threading
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from urllib.parse import quote
 import requests
 
 from ..common.concurrency import is_empty_repo, map_concurrent
@@ -32,7 +33,29 @@ class RepoInspector:
         self._repo_metadata_cache: Dict[Tuple[str, str], Optional[Dict[str, Any]]] = {}
         self._repo_rulesets_cache: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
         self._repo_protection_cache: Dict[Tuple[str, str, str], Optional[Dict[str, Any]]] = {}
+        self._repo_branch_rules_cache: Dict[Tuple[str, str, str], List[Dict[str, Any]]] = {}
         self._repo_environments_cache: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+        self._permission_errors: Dict[Tuple[str, Optional[str], str], str] = {}
+
+    def _record_permission_error(
+        self, org: str, control: str, message: str, repo: Optional[str] = None
+    ) -> None:
+        key = (org, repo, control)
+        with self._cache_lock:
+            if key not in self._permission_errors:
+                logger.warning("Permission gap [%s/%s - %s]: %s", org, repo or "Organization", control, message)
+            self._permission_errors[key] = message
+
+    def get_permission_error(
+        self, org: str, control: str, repo: Optional[str] = None
+    ) -> Optional[str]:
+        """Return recorded HTTP 403/permission error message for an org/repo control, if any."""
+        with self._cache_lock:
+            return self._permission_errors.get((org, repo, control))
+
+    @staticmethod
+    def _is_forbidden_error(err: requests.exceptions.HTTPError) -> bool:
+        return getattr(err, "response", None) is not None and err.response.status_code == 403
 
     def seed_repo_metadata(self, org: str, repo: str, metadata: Dict[str, Any]) -> None:
         """Pre-populate repository metadata cache from bulk discovery data to eliminate redundant API calls."""
@@ -58,11 +81,18 @@ class RepoInspector:
                 self._repo_tree_cache[key] = empty_set
                 return empty_set
 
-        data = self.client.get(
-            f"/repos/{org}/{repo}/git/trees/{ref}",
-            params={"recursive": "1"},
-            allow_404=True,
-        )
+        try:
+            data = self.client.get(
+                f"/repos/{org}/{repo}/git/trees/{quote(ref, safe='')}",
+                params={"recursive": "1"},
+                allow_404=True,
+                allow_403=True,
+            )
+        except requests.exceptions.HTTPError as err:
+            if self._is_forbidden_error(err):
+                data = None
+            else:
+                raise
         if not data or not isinstance(data, dict):
             # Repository is empty or default branch ref doesn't exist
             empty_set = set()
@@ -83,23 +113,135 @@ class RepoInspector:
 
     def get_org_info(self, org: str) -> Optional[Dict[str, Any]]:
         """Fetch general organization metadata."""
-        return self.client.get(f"/orgs/{org}", allow_404=True)
+        try:
+            return self.client.get(f"/orgs/{org}", allow_404=True)
+        except requests.exceptions.HTTPError as err:
+            if self._is_forbidden_error(err):
+                self._record_permission_error(
+                    org,
+                    "org_info",
+                    "HTTP 403 Forbidden on /orgs/{org}; grant Organization Administration (Read) permission.",
+                )
+                return None
+            raise
 
     def get_org_rulesets(self, org: str) -> List[Dict[str, Any]]:
         """Fetch all organization-level repository rulesets."""
-        data = self.client.get(f"/orgs/{org}/rulesets", allow_404=True)
-        return data if isinstance(data, list) else []
+        try:
+            data = self.client.get(f"/orgs/{org}/rulesets", allow_404=True)
+            return data if isinstance(data, list) else []
+        except requests.exceptions.HTTPError as err:
+            if self._is_forbidden_error(err):
+                self._record_permission_error(
+                    org,
+                    "org_rulesets",
+                    "HTTP 403 Forbidden on /orgs/{org}/rulesets; grant Organization Administration (Read) permission.",
+                )
+                return []
+            raise
 
     def get_org_runner_groups(self, org: str) -> List[Dict[str, Any]]:
         """Fetch self-hosted runner groups in the organization."""
-        data = self.client.get(f"/orgs/{org}/actions/runner-groups", allow_404=True)
-        if isinstance(data, dict) and "runner_groups" in data:
-            return data["runner_groups"]
-        return []
+        try:
+            data = self.client.get(f"/orgs/{org}/actions/runner-groups", allow_404=True)
+            if isinstance(data, dict) and "runner_groups" in data:
+                return data["runner_groups"]
+            return []
+        except requests.exceptions.HTTPError as err:
+            if self._is_forbidden_error(err):
+                self._record_permission_error(
+                    org,
+                    "org_runner_groups",
+                    "HTTP 403 Forbidden on /orgs/{org}/actions/runner-groups; grant Self-hosted Runners (Read) permission.",
+                )
+                return []
+            raise
+
+    def get_org_self_hosted_runners_count(self, org: str) -> Optional[int]:
+        """Return count of registered org-level self-hosted runners, or None when inaccessible."""
+        try:
+            data = self.client.get(
+                f"/orgs/{org}/actions/runners",
+                params={"per_page": 1},
+                allow_404=True,
+                allow_403=True,
+            )
+            if isinstance(data, dict) and "total_count" in data:
+                return int(data["total_count"])
+            return None
+        except requests.exceptions.HTTPError as err:
+            if self._is_forbidden_error(err):
+                return None
+            raise
 
     def get_org_actions_permissions(self, org: str) -> Optional[Dict[str, Any]]:
-        """Fetch default actions permissions for the organization."""
-        return self.client.get(f"/orgs/{org}/actions/permissions", allow_404=True)
+        """Fetch top-level actions enablement permissions for the organization."""
+        try:
+            return self.client.get(f"/orgs/{org}/actions/permissions", allow_404=True)
+        except requests.exceptions.HTTPError as err:
+            if self._is_forbidden_error(err):
+                self._record_permission_error(
+                    org,
+                    "org_actions_permissions",
+                    "HTTP 403 Forbidden on /orgs/{org}/actions/permissions; grant Organization Administration (Read).",
+                )
+                return None
+            raise
+
+    def get_org_workflow_permissions(self, org: str) -> Optional[Dict[str, Any]]:
+        """Fetch default GITHUB_TOKEN workflow permissions for the organization."""
+        try:
+            return self.client.get(f"/orgs/{org}/actions/permissions/workflow", allow_404=True)
+        except requests.exceptions.HTTPError as err:
+            if self._is_forbidden_error(err):
+                self._record_permission_error(
+                    org,
+                    "org_workflow_permissions",
+                    "HTTP 403 Forbidden on /orgs/{org}/actions/permissions/workflow; grant Organization Administration (Read).",
+                )
+                return None
+            raise
+
+    def get_org_saml_sso(self, org: str) -> Optional[Dict[str, Any]]:
+        """Inspect GraphQL organization SAML SSO and 2FA enforcement metadata."""
+        query = """
+        query($org: String!) {
+          organization(login: $org) {
+            requiresTwoFactorAuthentication
+            samlIdentityProvider {
+              ssoUrl
+            }
+          }
+        }
+        """
+        try:
+            resp = self.client.graphql(query, variables={"org": org}, org=org)
+            errors = resp.get("errors") if isinstance(resp, dict) else None
+            org_node = (resp.get("data") or {}).get("organization") if isinstance(resp, dict) else None
+            if errors and not org_node:
+                err_msg = "; ".join(str(e.get("message", "")) for e in errors if isinstance(e, dict))
+                if "forbidden" in err_msg.lower() or "resource not accessible" in err_msg.lower():
+                    self._record_permission_error(
+                        org,
+                        "org_saml_sso",
+                        f"GraphQL SAML SSO lookup denied: {err_msg}",
+                    )
+                    return {"error_403": True}
+            if isinstance(org_node, dict):
+                return org_node
+            return None
+        except requests.exceptions.HTTPError as err:
+            if self._is_forbidden_error(err):
+                self._record_permission_error(
+                    org,
+                    "org_saml_sso",
+                    "HTTP 403 Forbidden querying GraphQL SAML SSO; grant Organization Administration (Read).",
+                )
+                return {"error_403": True}
+            return None
+        except Exception as err:
+            logger.debug("SAML SSO GraphQL check unavailable for %s: %s", org, err)
+            return None
 
     def list_installation_repositories(
         self,
@@ -193,7 +335,7 @@ class RepoInspector:
         return meta
 
     def get_repo_rulesets(self, org: str, repo: str) -> List[Dict[str, Any]]:
-        """Fetch repository-level rulesets (falls back gracefully if 403 forbidden or unconfigured)."""
+        """Fetch repository-level rulesets (records 403 permission gaps explicitly)."""
         cache_key = (org, repo)
         with self._cache_lock:
             if cache_key in self._repo_rulesets_cache:
@@ -205,17 +347,68 @@ class RepoInspector:
                 self._repo_rulesets_cache[cache_key] = res
             return res
         except requests.exceptions.HTTPError as err:
-            if getattr(err, "response", None) is not None and err.response.status_code == 403:
-                logger.debug("Rulesets API returned 403 on %s/%s (falling back to classic protection).", org, repo)
+            if self._is_forbidden_error(err):
+                self._record_permission_error(
+                    org,
+                    "repo_rulesets",
+                    "HTTP 403 Forbidden on /rulesets; grant Repository Administration (Read) permission.",
+                    repo=repo,
+                )
                 with self._cache_lock:
                     self._repo_rulesets_cache[cache_key] = []
                 return []
             raise
 
+    def get_repo_branch_rules(
+        self, org: str, repo: str, branch: str = "main"
+    ) -> List[Dict[str, Any]]:
+        """Fetch effective active branch rules (org + repo rulesets) targeting ``branch``."""
+        cache_key = (org, repo, branch)
+        with self._cache_lock:
+            if cache_key in self._repo_branch_rules_cache:
+                return self._repo_branch_rules_cache[cache_key]
+            cached_meta = self._repo_metadata_cache.get((org, repo))
+            if is_empty_repo(cached_meta):
+                self._repo_branch_rules_cache[cache_key] = []
+                return []
+        try:
+            data = self.client.get(
+                f"/repos/{org}/{repo}/rules/branches/{quote(branch, safe='')}",
+                allow_404=True,
+            )
+            res = data if isinstance(data, list) else []
+            with self._cache_lock:
+                self._repo_branch_rules_cache[cache_key] = res
+            return res
+        except requests.exceptions.HTTPError as err:
+            if self._is_forbidden_error(err):
+                self._record_permission_error(
+                    org,
+                    "repo_branch_rules",
+                    "HTTP 403 Forbidden on /rules/branches; grant Repository Administration (Read) permission.",
+                    repo=repo,
+                )
+                with self._cache_lock:
+                    self._repo_branch_rules_cache[cache_key] = []
+                return []
+            raise
+
+    def get_repo_ruleset_details(
+        self, org: str, repo: str, ruleset_id: int
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch full rule payload for a single repository ruleset ID."""
+        try:
+            data = self.client.get(f"/repos/{org}/{repo}/rulesets/{ruleset_id}", allow_404=True, allow_403=True)
+            return data if isinstance(data, dict) else None
+        except requests.exceptions.HTTPError as err:
+            if self._is_forbidden_error(err):
+                return None
+            raise
+
     def get_branch_protection(
         self, org: str, repo: str, branch: str = "main"
     ) -> Optional[Dict[str, Any]]:
-        """Fetch branch protection rules for a specific branch (falls back gracefully if 403/404)."""
+        """Fetch branch protection rules for a specific branch (records 403 permission gaps)."""
         cache_key = (org, repo, branch)
         with self._cache_lock:
             if cache_key in self._repo_protection_cache:
@@ -226,14 +419,19 @@ class RepoInspector:
                 return None
         try:
             res = self.client.get(
-                f"/repos/{org}/{repo}/branches/{branch}/protection", allow_404=True
+                f"/repos/{org}/{repo}/branches/{quote(branch, safe='')}/protection", allow_404=True
             )
             with self._cache_lock:
                 self._repo_protection_cache[cache_key] = res
             return res
         except requests.exceptions.HTTPError as err:
-            if getattr(err, "response", None) is not None and err.response.status_code == 403:
-                logger.debug("Branch protection API returned 403 on %s/%s:%s.", org, repo, branch)
+            if self._is_forbidden_error(err):
+                self._record_permission_error(
+                    org,
+                    "branch_protection",
+                    "HTTP 403 Forbidden on /branches/.../protection; grant Repository Administration (Read) or plan entitlement.",
+                    repo=repo,
+                )
                 with self._cache_lock:
                     self._repo_protection_cache[cache_key] = None
                 return None
@@ -258,11 +456,18 @@ class RepoInspector:
                     self._file_content_cache[content_key] = None
                     return None
 
-        data = self.client.get(
-            f"/repos/{org}/{repo}/contents/{path_clean}",
-            params={"ref": ref},
-            allow_404=True,
-        )
+        try:
+            data = self.client.get(
+                f"/repos/{org}/{repo}/contents/{path_clean}",
+                params={"ref": ref},
+                allow_404=True,
+                allow_403=True,
+            )
+        except requests.exceptions.HTTPError as err:
+            if self._is_forbidden_error(err):
+                data = None
+            else:
+                raise
         if not data or not isinstance(data, dict):
             with self._cache_lock:
                 self._file_content_cache[content_key] = None
@@ -307,8 +512,20 @@ class RepoInspector:
                     self._repo_workflows_cache[cache_key] = workflows
                     return workflows
 
-        data = self.client.get(f"/repos/{org}/{repo}/actions/workflows", allow_404=True)
-        workflows = data.get("workflows", []) if isinstance(data, dict) and "workflows" in data else []
+        try:
+            data = self.client.get(f"/repos/{org}/{repo}/actions/workflows", allow_404=True)
+            workflows = data.get("workflows", []) if isinstance(data, dict) and "workflows" in data else []
+        except requests.exceptions.HTTPError as err:
+            if self._is_forbidden_error(err):
+                self._record_permission_error(
+                    org,
+                    "repo_workflows",
+                    "HTTP 403 Forbidden on /actions/workflows; grant Actions (Read) permission.",
+                    repo=repo,
+                )
+                workflows = []
+            else:
+                raise
         with self._cache_lock:
             self._repo_workflows_cache[cache_key] = workflows
         return workflows
@@ -319,8 +536,20 @@ class RepoInspector:
         with self._cache_lock:
             if cache_key in self._repo_environments_cache:
                 return self._repo_environments_cache[cache_key]
-        data = self.client.get(f"/repos/{org}/{repo}/environments", allow_404=True)
-        res = data.get("environments", []) if isinstance(data, dict) and "environments" in data else []
+        try:
+            data = self.client.get(f"/repos/{org}/{repo}/environments", allow_404=True)
+            res = data.get("environments", []) if isinstance(data, dict) and "environments" in data else []
+        except requests.exceptions.HTTPError as err:
+            if self._is_forbidden_error(err):
+                self._record_permission_error(
+                    org,
+                    "repo_environments",
+                    "HTTP 403 Forbidden on /environments; grant Repository Environments / Administration (Read).",
+                    repo=repo,
+                )
+                res = []
+            else:
+                raise
         with self._cache_lock:
             self._repo_environments_cache[cache_key] = res
         return res
@@ -343,11 +572,18 @@ class RepoInspector:
                     prefix = path_clean + "/"
                     return any(p.startswith(prefix) for p in tree_set)
 
-        data = self.client.get(
-            f"/repos/{org}/{repo}/contents/{path_clean}",
-            params={"ref": ref},
-            allow_404=True,
-        )
+        try:
+            data = self.client.get(
+                f"/repos/{org}/{repo}/contents/{path_clean}",
+                params={"ref": ref},
+                allow_404=True,
+                allow_403=True,
+            )
+        except requests.exceptions.HTTPError as err:
+            if self._is_forbidden_error(err):
+                data = None
+            else:
+                raise
         return data is not None
 
     def prefetch_repo_audit_context(
@@ -399,7 +635,10 @@ class RepoInspector:
 
         if _is_enabled("branch_rulesets"):
             tasks.append(lambda: self.get_repo_rulesets(org, repo))
+            tasks.append(lambda: self.get_repo_branch_rules(org, repo, ref))
             tasks.append(lambda: self.get_branch_protection(org, repo, ref))
+        if _is_enabled("environment_protection_gates"):
+            tasks.append(lambda: self.get_environments(org, repo))
 
         if len(tasks) <= 1:
             for fn in tasks:
@@ -463,11 +702,18 @@ class RepoInspector:
             has_tree_cache = True
             root_files = {p for p in tree_set if "/" not in p}
         else:
-            contents = self.client.get(
-                f"/repos/{org}/{repo}/contents",
-                params={"ref": ref},
-                allow_404=True,
-            )
+            try:
+                contents = self.client.get(
+                    f"/repos/{org}/{repo}/contents",
+                    params={"ref": ref},
+                    allow_404=True,
+                    allow_403=True,
+                )
+            except requests.exceptions.HTTPError as err:
+                if self._is_forbidden_error(err):
+                    contents = None
+                else:
+                    raise
             if isinstance(contents, list):
                 for item in contents:
                     if isinstance(item, dict) and "name" in item:

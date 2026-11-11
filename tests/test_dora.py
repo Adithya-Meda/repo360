@@ -37,10 +37,11 @@ def test_dora_tier_classifiers():
     assert get_lttc_tier(800.0) == "Low"
     assert get_lttc_tier(None) == "N/A"
 
-    # Change Failure Rate
+    # Change Failure Rate (DORA 2023/2024: <=5% Elite, <=10% High, <=20% Medium, >20% Low)
     assert get_cfr_tier(2.0) == "Elite"
     assert get_cfr_tier(10.0) == "High"
-    assert get_cfr_tier(25.0) == "Medium"
+    assert get_cfr_tier(15.0) == "Medium"
+    assert get_cfr_tier(25.0) == "Low"
     assert get_cfr_tier(40.0) == "Low"
 
     # MTTR
@@ -50,10 +51,20 @@ def test_dora_tier_classifiers():
     assert get_mttr_tier(200.0) == "Low"
     assert get_mttr_tier(None) == "N/A"
 
-    # Composite Tier
+    # Composite Tier & Guardrails
     assert compute_composite_tier(["Elite", "Elite", "High", "Elite"]) == "Elite"
     assert compute_composite_tier(["High", "High", "Medium", "High"]) == "High"
     assert compute_composite_tier(["Low", "Low", "Medium", "Low"]) == "Low"
+    # Low throughput or missing LTTC without Elite cadence must cap High/Elite at Medium
+    assert compute_composite_tier(
+        ["Low", "Elite", "Elite", "Elite"], df_tier="Low", lttc_tier="Elite"
+    ) == "Medium"
+    assert compute_composite_tier(
+        ["High", "N/A", "Elite", "Elite"], df_tier="High", lttc_tier="N/A"
+    ) == "Medium"
+    assert compute_composite_tier(
+        ["Elite", "N/A", "Elite", "Elite"], df_tier="Elite", lttc_tier="N/A"
+    ) == "High"
 
 
 def test_recovery_incident_calculation():
@@ -138,12 +149,12 @@ def test_repo_dora_metrics_aggregation():
     assert m.successful_deploys == 9
     assert m.failed_deploys == 1
     assert m.change_failure_rate_pct == 10.0
-    assert m.deployment_frequency_per_week(70) == 1.0
+    assert m.deployment_frequency_per_week(70) == 0.9  # 9 successful deploys / 10 weeks
     assert m.median_lead_time_hours is not None
     assert m.median_mttr_hours == 48.0
 
     overall, df_tier, lttc_tier, cfr_tier, mttr_tier = m.get_tiers(70)
-    assert df_tier == "High"
+    assert df_tier == "Medium"
     assert cfr_tier == "High"
     assert mttr_tier == "Medium"
 
@@ -611,7 +622,7 @@ def test_org_median_df_dedup_permission_gap_and_workbook(tmp_path: Path):
     repo_rows, org_rows, dep_rows, rec_rows = build_dora_rows([r_fast, r_slow, r_gap], ["acme"], window_days=7)
     assert org_rows[0][2] == 2  # Active Deploy Repos
     assert org_rows[0][4] == 16  # Total Deployments
-    assert org_rows[0][5] == 8.0  # Median of 14.0 and 2.0
+    assert org_rows[0][5] == 7.5  # Median of 14.0 (14 success/wk) and 1.0 (1 success/wk)
     assert org_rows[0][15] == 1  # Inactive Repos
     assert org_rows[0][16] == 1  # Open Incidents
 
@@ -620,6 +631,7 @@ def test_org_median_df_dedup_permission_gap_and_workbook(tmp_path: Path):
     assert fleet["inactive_repos"] == 1
     assert fleet["permission_gap_repos"] == 1
     assert fleet["open_incidents"] == 1
+    assert fleet["total_df_weekly"] == 15.0  # 15 successful deploys / 1 week (excludes failed s1)
 
     out_file = tmp_path / "dora_compliance.xlsx"
     cfg = DORAConfig(output_dir=str(tmp_path), lookback_days=7)
@@ -909,6 +921,7 @@ def test_fleet_and_single_org_summaries_match_and_track_incomplete_deploys(tmp_p
     assert fleet["total_successful"] == 10
     assert fleet["total_failed_deploys"] == 1
     assert fleet["incomplete_deploys"] == 1
+    assert fleet["total_df_weekly"] == round(10 / (30.0 / 7.0), 2)
 
     out_file = tmp_path / "dora_unified.xlsx"
     write_dora_workbook(
@@ -926,4 +939,263 @@ def test_fleet_and_single_org_summaries_match_and_track_incomplete_deploys(tmp_p
     wb = load_workbook(out_file)
     exec_text = "\n".join(str(c.value) for row in wb["Executive Summary"].iter_rows() for c in row if c.value is not None)
     assert "Pending / Incomplete Deployments (Excluded)" in exec_text
+
+
+def test_composite_tier_enterprise_guardrails():
+    # High-performing delivery still caps at Medium if MTTR is Low (>168h)
+    assert (
+        compute_composite_tier(
+            ["Elite", "Elite", "Elite", "Low"],
+            cfr_tier="Elite",
+            df_tier="Elite",
+            lttc_tier="Elite",
+            mttr_tier="Low",
+        )
+        == "Medium"
+    )
+    # Open unresolved incident without prior MTTR history caps at Medium
+    assert (
+        compute_composite_tier(
+            ["Elite", "Elite", "Elite", "N/A"],
+            cfr_tier="Elite",
+            df_tier="Elite",
+            lttc_tier="Elite",
+            mttr_tier="N/A",
+            has_open_incidents=True,
+        )
+        == "Medium"
+    )
+    # Zero value-delivering code changes (all no-op rebuilds) caps at Medium
+    assert (
+        compute_composite_tier(
+            ["Elite", "Elite", "Elite", "Elite"],
+            cfr_tier="Elite",
+            df_tier="Elite",
+            lttc_tier="Elite",
+            mttr_tier="Elite",
+            code_change_deploys=0,
+        )
+        == "Medium"
+    )
+    # Sparse 1-2 deployment sample over multi-week window caps at Medium
+    assert (
+        compute_composite_tier(
+            ["Elite", "Elite", "Elite", "Elite"],
+            cfr_tier="Elite",
+            df_tier="Elite",
+            lttc_tier="Elite",
+            mttr_tier="Elite",
+            successful_deploys=2,
+            code_change_deploys=2,
+            window_days=90,
+        )
+        == "Medium"
+    )
+    # Single-week window (<14 days) with 2 deploys is not penalized
+    assert (
+        compute_composite_tier(
+            ["High", "Elite", "Elite", "Elite"],
+            cfr_tier="Elite",
+            df_tier="High",
+            lttc_tier="Elite",
+            mttr_tier="Elite",
+            successful_deploys=2,
+            code_change_deploys=2,
+            window_days=7,
+        )
+        == "Elite"
+    )
+
+
+def test_no_op_rebuilds_retry_collapse_and_stalled_deploys(tmp_path: Path):
+    now = datetime(2026, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
+
+    # Repo A: 2 new-code SUCCESS + 8 no-op rebuilds + 3 consecutive same-SHA failures + 1 recovery SUCCESS
+    deploys_a = [
+        DeploymentRecord("Deployment", "c1", "prod", "production", "SUCCESS", "main", now - timedelta(days=20), lead_time_hours=4.0, commit_sha="sha-a1", lead_time_source="commit_to_deploy", completed_at=now - timedelta(days=20)),
+        DeploymentRecord("Deployment", "c2", "prod", "production", "SUCCESS", "main", now - timedelta(days=15), lead_time_hours=6.0, commit_sha="sha-a2", lead_time_source="pr_to_deploy", completed_at=now - timedelta(days=15)),
+    ] + [
+        DeploymentRecord("Deployment", f"noop-{i}", "prod", "production", "SUCCESS", "main", now - timedelta(days=14 - i), lead_time_hours=None, commit_sha="sha-a2", lead_time_source="no_code_change", completed_at=now - timedelta(days=14 - i))
+        for i in range(8)
+    ] + [
+        DeploymentRecord("Deployment", f"retry-{j}", "prod", "production", "FAILURE", "main", now - timedelta(hours=10 - j), commit_sha="bad-sha-1", completed_at=now - timedelta(hours=10 - j))
+        for j in range(3)
+    ] + [
+        DeploymentRecord("Deployment", "fix-1", "prod", "production", "SUCCESS", "main", now - timedelta(hours=5), lead_time_hours=2.0, commit_sha="fix-sha-2", is_rework=True, lead_time_source="commit_to_deploy", completed_at=now - timedelta(hours=5)),
+    ]
+    repo_a = RepoDORAMetrics(
+        org="acme",
+        repo="svc-a",
+        deployments=deploys_a,
+        incidents=[RecoveryIncident("Deployment retry-0", now - timedelta(hours=10), "Deployment fix-1", now - timedelta(hours=5), 5.0, "Resolved", "Deployment Stream", "production")],
+    )
+
+    assert repo_a.total_deploys == 14
+    assert repo_a.successful_deploys == 11
+    assert repo_a.code_change_deploys == 3
+    assert repo_a.no_op_deploys == 8
+    assert repo_a.redundant_failure_retries == 2
+    assert repo_a.cfr_denominator == 12
+    assert repo_a.effective_failed_changes == 1
+    assert repo_a.change_failure_rate_pct == round((1 / 12) * 100, 2)
+    assert repo_a.deployment_frequency_per_week(90) == round(3 / (90.0 / 7.0), 2)
+    assert repo_a.lttc_coverage_pct == 100.0
+
+    # Distinct SHAs failing consecutively must NOT be collapsed
+    distinct_fail_repo = RepoDORAMetrics(
+        org="acme",
+        repo="distinct-fails",
+        deployments=[
+            DeploymentRecord("Deployment", "d1", "prod", "production", "FAILURE", "main", now - timedelta(hours=3), commit_sha="s1"),
+            DeploymentRecord("Deployment", "d2", "prod", "production", "FAILURE", "main", now - timedelta(hours=2), commit_sha="s2"),
+        ],
+    )
+    assert distinct_fail_repo.redundant_failure_retries == 0
+    assert distinct_fail_repo.cfr_denominator == 2
+    assert distinct_fail_repo.effective_failed_changes == 2
+
+    # Repo B: exclusively no-op rebuilds + 1 stalled deploy (>24h IN_PROGRESS)
+    repo_b = RepoDORAMetrics(
+        org="acme",
+        repo="cron-only",
+        deployments=[
+            DeploymentRecord("Deployment", f"n{k}", "prod", "production", "SUCCESS", "main", now - timedelta(days=k + 2), commit_sha="same", lead_time_source="no_code_change", completed_at=now - timedelta(days=k + 2))
+            for k in range(11)
+        ] + [
+            DeploymentRecord("Deployment", "stalled-1", "prod", "production", "IN_PROGRESS", "main", now - timedelta(hours=40), commit_sha="pend")
+        ],
+        stalled_deploys_count=1,
+    )
+    assert repo_b.code_change_deploys == 0
+    assert repo_b.deployment_frequency_per_week(90) == 0.0
+    assert repo_b.get_tiers(90)[0] == "Medium"  # Zero real code changes cannot be Elite/High
+
+    repo_rows, org_rows, dep_rows, rec_rows = build_dora_rows([repo_a, repo_b], ["acme"], window_days=90)
+    assert repo_rows[0][21] == 3
+    assert repo_rows[0][22] == 8
+    assert repo_rows[0][23] == 100.0
+    assert repo_rows[0][25] == 1
+    assert repo_rows[0][27] == 2
+    assert "Only same-SHA/zero-diff rebuilds" in repo_rows[1][14]
+    assert dep_rows[-1][12] == "Pending"  # Completed / Updated (IST) column on IN_PROGRESS row
+
+    fleet = compute_fleet_dora_summary(repo_rows, 90, deployment_rows=dep_rows, recovery_rows=rec_rows)
+    assert fleet["code_change_deploys"] == 3
+    assert fleet["no_op_deploys"] == 19
+    assert fleet["collapsed_retries"] == 2
+    assert fleet["stalled_deploys"] == 1
+    assert fleet["cfr_denominator"] == 23  # 25 total - 2 retries
+    assert fleet["effective_failed"] == 1
+    assert fleet["cfr_overall"] == round((1 / 23) * 100, 2)
+    assert fleet["pr_lttc_count"] == 1
+    assert fleet["commit_lttc_count"] == 2
+    assert fleet["lttc_coverage_pct"] == 100.0
+
+    out_xlsx = tmp_path / "enterprise_dora.xlsx"
+    write_dora_workbook(
+        path=out_xlsx,
+        cfg=DORAConfig(output_dir=str(tmp_path), lookback_days=90),
+        since=now - timedelta(days=90),
+        end=now,
+        repo_rows=repo_rows,
+        org_rows=org_rows,
+        deployment_rows=dep_rows,
+        recovery_rows=rec_rows,
+        failures=[("acme/cron-only", "HTTP 403 on /deployments API")],
+        execution_duration=1.1,
+    )
+    wb = load_workbook(out_xlsx)
+    exec_text = "\n".join(str(c.value) for row in wb["Executive Summary"].iter_rows() for c in row if c.value is not None)
+    for label in (
+        "Code-Change Deployments (Unique Changes)",
+        "No-Op / Same-SHA Redeploys (Excluded DF)",
+        "Collapsed Workflow Failure Retries (CFR)",
+        "Stalled Deployments (>24h IN_PROGRESS)",
+        "LTTC Signal Coverage (%)",
+        "Collection Errors & Permission Gaps",
+    ):
+        assert label in exec_text
+
+
+def test_squash_merge_single_commit_pr_lead_time_and_url_quoting():
+    now = datetime(2026, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
+
+    def _ts(dt: datetime) -> str:
+        return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    ev1 = DeploymentRecord("Release", "release/v1.0", "v1.0", "production", "SUCCESS", "main", now - timedelta(hours=24), commit_sha="release/v1.0")
+    ev2 = DeploymentRecord("Release", "release/v1.1", "v1.1", "production", "SUCCESS", "main", now, commit_sha="release/v1.1")
+
+    seen_endpoints: list[str] = []
+
+    def _fake_get(org, endpoint, params=None):
+        seen_endpoints.append(endpoint)
+        if endpoint == "/repos/acme/squash-app/compare/release%2Fv1.0...release%2Fv1.1":
+            # Single squashed commit merged 6 minutes before deploy
+            return {
+                "commits": [
+                    {"commit": {"author": {"date": _ts(now - timedelta(minutes=6))}, "message": "feat: big PR (#42)"}}
+                ]
+            }
+        if endpoint == "/repos/acme/squash-app/commits/release%2Fv1.1/pulls":
+            # Underlying PR was opened 18 hours before deploy
+            return [{"created_at": _ts(now - timedelta(hours=18)), "title": "feat: big PR", "head": {"ref": "feat/big"}}]
+        return []
+
+    mock_client = MagicMock()
+    mock_client.get.side_effect = _fake_get
+
+    _enrich_lead_times_from_commits(
+        mock_client, "acme", "squash-app", [ev1, ev2], {}, ("hotfix", "revert", "rollback")
+    )
+
+    assert "/repos/acme/squash-app/compare/release%2Fv1.0...release%2Fv1.1" in seen_endpoints
+    assert "/repos/acme/squash-app/commits/release%2Fv1.1/pulls" in seen_endpoints
+    assert ev2.lead_time_hours == 18.0
+    assert ev2.lead_time_source == "pr_to_deploy"
+
+
+def test_run_dora_cli_forwards_permission_and_api_failures(monkeypatch, tmp_path: Path):
+    from src.dora.cli import run_dora_cli
+
+    now = datetime(2026, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
+    captured = {}
+
+    monkeypatch.setattr("src.dora.cli.resolve_runtime_credentials", lambda: {"app_id": "123", "private_key": "pem"})
+    monkeypatch.setattr("src.dora.cli.GitHubAppAuth", lambda **kw: MagicMock())
+    monkeypatch.setattr("src.dora.cli.ResilientGitHubClient", lambda **kw: MagicMock())
+    monkeypatch.setattr("src.dora.cli.discover_app_organizations", lambda **kw: ["acme"])
+    monkeypatch.setattr("src.dora.cli.discover_app_repositories", lambda **kw: ([("acme", "locked")], {}))
+
+    sample_metric = RepoDORAMetrics(
+        org="acme",
+        repo="locked",
+        signal_mode="Permission Gap (deployments:read)",
+        deployments_api_forbidden=True,
+        errors=["Issues API forbidden (HTTP 403) on acme/locked"],
+        deployments=[
+            DeploymentRecord("Workflow Run", "1", "Deploy", "production", "IN_PROGRESS", "main", now - timedelta(hours=36))
+        ],
+        stalled_deploys_count=1,
+    )
+    monkeypatch.setattr("src.dora.cli.collect_dora_data", lambda *a, **kw: [sample_metric])
+
+    orig_write = write_dora_workbook
+
+    def _spy_write(**kwargs):
+        captured["failures"] = kwargs["failures"]
+        captured["path"] = kwargs["path"]
+        return orig_write(**kwargs)
+
+    monkeypatch.setattr("src.dora.cli.write_dora_workbook", _spy_write)
+    rc = run_dora_cli(["--output-dir", str(tmp_path), "--lookback-days", "30", "--no-ai"])
+    assert rc == 0
+    assert len(captured["failures"]) == 2
+    assert any("deployments: read" in reason for _, reason in captured["failures"])
+    assert any("Issues API forbidden" in reason for _, reason in captured["failures"])
+    wb = load_workbook(captured["path"])
+    exec_text = "\n".join(str(c.value) for row in wb["Executive Summary"].iter_rows() for c in row if c.value is not None)
+    assert "Collection Errors & Permission Gaps" in exec_text
+    assert "Issues API forbidden (HTTP 403) on acme/locked" in exec_text
+
 

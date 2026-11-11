@@ -131,11 +131,12 @@ class Activity:
     def add(self, metric: str, when: datetime) -> None:
         current = getattr(self, metric, 0)
         setattr(self, metric, current + 1)
-        self.active_days.add(when.astimezone(IST).strftime(DATE_FMT))
+        when_ist = when.astimezone(IST)
+        self.active_days.add(when_ist.strftime(DATE_FMT))
         self.first_active = min(self.first_active, when) if self.first_active else when
         self.last_active = max(self.last_active, when) if self.last_active else when
         if metric == "commits":
-            self.commit_months.add((when.year, when.month))
+            self.commit_months.add((when_ist.year, when_ist.month))
 
     def merge(self, other: Activity) -> None:
         for k in METRIC_KEYS:

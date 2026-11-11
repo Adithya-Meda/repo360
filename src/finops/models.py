@@ -193,8 +193,16 @@ class RepoStorageProfile:
         return format_bytes_to_mb(self.cache_bytes)
 
     @property
+    def package_bytes(self) -> int:
+        return sum(pkg.size_in_bytes for pkg in self.packages)
+
+    @property
+    def package_mb(self) -> float:
+        return format_bytes_to_mb(self.package_bytes)
+
+    @property
     def total_storage_mb(self) -> float:
-        return round(self.disk_size_mb + self.active_artifact_mb + self.cache_mb, 2)
+        return round(self.disk_size_mb + self.active_artifact_mb + self.cache_mb + self.package_mb, 2)
 
     @property
     def optimization_status(self) -> str:

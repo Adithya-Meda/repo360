@@ -2,17 +2,13 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
-import os
-import re
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
-
-import requests
+from urllib.parse import quote
 
 from ..common.client import ResilientGitHubClient
 from ..common.concurrency import map_concurrent, resolve_worker_count
@@ -142,6 +138,7 @@ def collect_pull_requests_graphql(
             endCursor
           }
           nodes {
+            id
             number
             createdAt
             mergedAt
@@ -150,6 +147,10 @@ def collect_pull_requests_graphql(
               login
             }
             reviews(first: 50) {
+              pageInfo {
+                hasNextPage
+                endCursor
+              }
               nodes {
                 author {
                   login
@@ -157,6 +158,27 @@ def collect_pull_requests_graphql(
                 submittedAt
                 state
               }
+            }
+          }
+        }
+      }
+    }
+    """
+    reviews_page_query = """
+    query($prId: ID!, $revCursor: String) {
+      node(id: $prId) {
+        ... on PullRequest {
+          reviews(first: 100, after: $revCursor) {
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+            nodes {
+              author {
+                login
+              }
+              submittedAt
+              state
             }
           }
         }
@@ -187,8 +209,21 @@ def collect_pull_requests_graphql(
                     report.cohort_merged += 1
 
             first_review: Optional[datetime] = None
-            reviews = (pr.get("reviews") or {}).get("nodes") or []
-            for review in reviews:
+            reviews_conn = pr.get("reviews") or {}
+            reviews_nodes = list(reviews_conn.get("nodes") or [])
+            rev_page_info = reviews_conn.get("pageInfo") or {}
+            pr_node_id = pr.get("id")
+            while rev_page_info.get("hasNextPage") and rev_page_info.get("endCursor") and pr_node_id:
+                extra = client.graphql(
+                    org,
+                    reviews_page_query,
+                    {"prId": pr_node_id, "revCursor": rev_page_info["endCursor"]},
+                )
+                extra_conn = ((extra.get("data") or {}).get("node") or {}).get("reviews") or {}
+                reviews_nodes.extend(extra_conn.get("nodes") or [])
+                rev_page_info = extra_conn.get("pageInfo") or {}
+
+            for review in reviews_nodes:
                 if review.get("state") == "PENDING" or not review.get("submittedAt"):
                     continue
                 rev_dict = {"login": review["author"]["login"]} if review.get("author") and review["author"].get("login") else None
@@ -266,9 +301,13 @@ def collect_repo_events(
     if not (pushed_at and pushed_at < collected_since):
         try:
             for commit in client.paginate(
-                org, f"{base}/commits", {**since_param, "until": end.strftime("%Y-%m-%dT%H:%M:%SZ")}
+                org,
+                f"{base}/commits",
+                {**since_param, "until": end.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")},
             ):
-                record(commit.get("author"), "commits", commit.get("commit", {}).get("author", {}).get("date"))
+                commit_meta = commit.get("commit", {})
+                commit_ts = (commit_meta.get("author") or {}).get("date") or (commit_meta.get("committer") or {}).get("date")
+                record(commit.get("author"), "commits", commit_ts)
         except Exception as exc:
             if report:
                 report.errors.append(_format_error("Commits", exc))
@@ -382,19 +421,23 @@ def collect_repository(
     size = report.metadata.get("size", 1)
     pushed_at = parse_ts(report.metadata["pushed_at"]) if report.metadata.get("pushed_at") else None
     updated_at = parse_ts(report.metadata["updated_at"]) if report.metadata.get("updated_at") else None
+    month_start = end.astimezone(IST).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    collected_since = min(since, end - timedelta(days=30), month_start)
 
-    is_dormant = bool(size == 0 or (pushed_at and pushed_at < since and updated_at and updated_at < since))
+    is_dormant = bool(size == 0 or (pushed_at and pushed_at < collected_since and updated_at and updated_at < collected_since))
     if is_dormant:
         report.users = {}
         report.activity_complete = True
     else:
+        pre_errors = len(report.errors)
         try:
             report.users = collect_repo_events(client, org, repo, since, exclude_bots, end, report)
-            report.activity_complete = True
+            report.activity_complete = len(report.errors) == pre_errors
         except Exception as exc:
             report.errors.append(f"Activity: {exc}")
 
-    # 4. Branch protection
+    # 4. Branch protection (classic branch protection + repository/org rulesets)
+    branch = report.metadata.get("default_branch")
     if size == 0 or report.metadata.get("archived"):
         report.protected = "No"
         report.protected_branches = ()
@@ -405,18 +448,24 @@ def collect_repository(
                 for b in client.paginate(org, f"{base}/branches", {"protected": "true"})
                 if isinstance(b, dict) and "name" in b
             ]
+            if branch and branch not in protected:
+                try:
+                    branch_rules = client.get(org, f"{base}/rules/branches/{quote(branch, safe='')}")
+                    if isinstance(branch_rules, list) and branch_rules:
+                        protected.append(f"{branch} (Ruleset)")
+                except Exception:
+                    pass
             report.protected_branches = tuple(sorted(protected, key=str.casefold))
             report.protected = "Yes" if report.protected_branches else "No"
         except Exception as exc:
             report.errors.append(f"Branch protection: {exc}")
 
     # 5. CODEOWNERS check
-    branch = report.metadata.get("default_branch")
     if not branch or size == 0:
         report.codeowners = "No"
     else:
         try:
-            tree_data = client.get(org, f"{base}/git/trees/{branch}", {"recursive": "1"})
+            tree_data = client.get(org, f"{base}/git/trees/{quote(branch, safe='')}", {"recursive": "1"})
             tree_paths = {item["path"] for item in tree_data.get("tree", []) if item.get("type") == "blob"}
             for path in (".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"):
                 if path in tree_paths:
@@ -427,7 +476,7 @@ def collect_repository(
         except Exception:
             for path in (".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"):
                 try:
-                    content = client.get(org, f"{base}/contents/{path}", {"ref": branch})
+                    content = client.get(org, f"{base}/contents/{quote(path, safe='/')}", {"ref": branch})
                     if isinstance(content, dict) and content.get("type") == "file":
                         report.codeowners, report.codeowners_path = "Yes", path
                         break
@@ -506,17 +555,17 @@ def fetch_team_access(
         for slug in slugs:
             team_tasks.append((org, slug))
 
-    def _fetch_single_team_members(pair: Tuple[str, str]) -> Tuple[str, str, Set[str]]:
+    def _fetch_single_team_members(pair: Tuple[str, str]) -> Tuple[str, str, Set[str], bool]:
         org, slug = pair
         try:
             t_members = {
                 m["login"] for m in client.paginate(org, f"/orgs/{org}/teams/{slug}/members")
                 if isinstance(m, dict) and "login" in m and not (exclude_bots and is_bot(m))
             }
-            return org, slug, t_members
+            return org, slug, t_members, True
         except Exception as exc:
             logger.debug("Team %s/%s member lookup failed: %s", org, slug, exc)
-            return org, slug, set()
+            return org, slug, set(), False
 
     if team_tasks:
         member_results = map_concurrent(
@@ -526,7 +575,9 @@ def fetch_team_access(
             max_cap=24,
             thread_name_prefix="act-team-members",
         )
-        for org, slug, t_members in member_results:
+        for org, slug, t_members, ok in member_results:
+            if not ok:
+                org_team_complete[org] = False
             for login in t_members:
                 teams_by_user[(org, login)].add(slug)
 
@@ -554,33 +605,61 @@ def build_rows(
     per_user: Dict[Tuple[str, str], Activity] = defaultdict(Activity)
     repos_by_user: Dict[Tuple[str, str], Set[str]] = defaultdict(set)
     teams_norm: Dict[Tuple[str, str], Set[str]] = defaultdict(set)
+    canonical_org: Dict[str, str] = {}
+    canonical_login: Dict[Tuple[str, str], str] = {}
+    norm_members: Dict[str, Dict[str, str]] = {}
+    team_complete_norm = {k.casefold(): v for k, v in org_team_complete.items()}
     repo_rows: List[list] = []
 
+    for m_org, m_logins in members.items():
+        org_k = m_org.casefold()
+        canonical_org.setdefault(org_k, m_org)
+        m_map = norm_members.setdefault(org_k, {})
+        for login in m_logins:
+            lk = login.casefold()
+            m_map.setdefault(lk, login)
+            canonical_login[(org_k, lk)] = login
+
     for (org, login), teams in teams_by_user.items():
-        teams_norm[(org, login.casefold())].update(teams)
+        teams_norm[(org.casefold(), login.casefold())].update(teams)
 
     for (org, repo), users in sorted(results.items(), key=lambda x: (x[0][0].lower(), x[0][1].lower())):
-        for login, act in sorted(users.items(), key=lambda x: (-x[1].total(), x[0].lower())):
-            per_user[(org, login)].merge(act)
-            repos_by_user[(org, login)].add(repo)
+        org_k = org.casefold()
+        disp_org = canonical_org.setdefault(org_k, org)
+        repo_user_agg: Dict[str, Tuple[str, Activity]] = {}
+        for login, act in users.items():
+            lk = login.casefold()
+            disp_login = canonical_login.setdefault((org_k, lk), login)
+            if lk not in repo_user_agg:
+                merged_act = Activity()
+                merged_act.merge(act)
+                repo_user_agg[lk] = (disp_login, merged_act)
+            else:
+                repo_user_agg[lk][1].merge(act)
+
+        for lk, (disp_login, act) in sorted(repo_user_agg.items(), key=lambda x: (-x[1][1].total(), x[0])):
+            per_user[(org_k, lk)].merge(act)
+            repos_by_user[(org_k, lk)].add(repo.casefold())
             repo_rows.append([
-                org, repo, login, act.total(),
+                disp_org, repo, disp_login, act.total(),
                 act.commits, act.prs_opened, act.prs_merged, act.reviews,
                 act.review_comments, act.issues_opened, act.issue_comments,
                 len(act.active_days), fmt_timestamp(act.last_active),
             ])
 
     if cfg.include_inactive_members:
-        for org, logins in members.items():
-            for login in logins:
-                per_user.setdefault((org, login), Activity())
+        for org_k, m_map in norm_members.items():
+            for lk in m_map:
+                per_user.setdefault((org_k, lk), Activity())
 
     user_rows: List[list] = []
-    for (org, login), act in per_user.items():
-        member_flag = ("Yes" if login in members.get(org, set()) else "No") if org in members else "Unknown"
-        teams = sorted(teams_norm.get((org, login.casefold()), ()), key=str.casefold)
+    for (org_k, lk), act in per_user.items():
+        disp_org = canonical_org.get(org_k, org_k)
+        disp_login = canonical_login.get((org_k, lk), lk)
+        member_flag = ("Yes" if lk in norm_members[org_k] else "No") if org_k in norm_members else "Unknown"
+        teams = sorted(teams_norm.get((org_k, lk), ()), key=str.casefold)
         team_str = "; ".join(teams)
-        if not org_team_complete.get(org, False):
+        if not team_complete_norm.get(org_k, False):
             team_str = f"{team_str}; Unknown" if team_str else "Unknown"
         elif not team_str:
             team_str = "None"
@@ -591,8 +670,8 @@ def build_rows(
         days_since_last = (end - act.last_active).days if act.last_active else None
 
         user_rows.append([
-            org,
-            login,
+            disp_org,
+            disp_login,
             classify(active_days_count, cfg),
             active_days_count,
             act.total(),
@@ -604,7 +683,7 @@ def build_rows(
             act.issues_opened,
             act.issue_comments,
             avg_commits,
-            len(repos_by_user.get((org, login), ())),
+            len(repos_by_user.get((org_k, lk), ())),
             fmt_timestamp(act.first_active),
             fmt_timestamp(act.last_active),
             days_since_last,
@@ -622,28 +701,39 @@ def build_org_rows(
     all_orgs: Optional[List[str]] = None,
 ) -> List[list]:
     """Aggregate per-organization contributor metrics and status distribution."""
-    repo_counts = Counter(org for org, _ in results)
+    canonical_org: Dict[str, str] = {}
+    for o in (all_orgs or []):
+        canonical_org.setdefault(o.casefold(), o)
+    for org, _ in results:
+        canonical_org.setdefault(org.casefold(), org)
+
+    repo_sets: Dict[str, Set[str]] = defaultdict(set)
+    for org, repo in results:
+        repo_sets[org.casefold()].add(repo.casefold())
+
     stats: Dict[str, Counter] = defaultdict(Counter)
     for row in user_rows:
         org = row[0]
-        stats[org][row[STATUS_IDX]] += 1
-        stats[org]["total"] += row[TOTAL_IDX]
+        ok = org.casefold()
+        canonical_org.setdefault(ok, org)
+        stats[ok][row[STATUS_IDX]] += 1
+        stats[ok]["total"] += row[TOTAL_IDX]
         if row[TOTAL_IDX] > 0:
-            stats[org]["contributors"] += 1
+            stats[ok]["contributors"] += 1
 
-    orgs = sorted(set(all_orgs or []) | set(repo_counts) | set(stats), key=str.lower)
+    org_keys = sorted(canonical_org, key=lambda k: canonical_org[k].lower())
     return [
         [
-            org,
-            repo_counts[org],
-            stats[org]["contributors"],
-            stats[org]["Active"],
-            stats[org]["Moderate"],
-            stats[org]["Low"],
-            stats[org]["Inactive"],
-            stats[org]["total"],
+            canonical_org[ok],
+            len(repo_sets[ok]),
+            stats[ok]["contributors"],
+            stats[ok]["Active"],
+            stats[ok]["Moderate"],
+            stats[ok]["Low"],
+            stats[ok]["Inactive"],
+            stats[ok]["total"],
         ]
-        for org in orgs
+        for ok in org_keys
     ]
 
 
@@ -689,7 +779,7 @@ def build_management_tables(
 
         activity_available = result.activity_complete
         active_last_7 = (
-            ("Yes" if any(when >= end - timedelta(days=7) for _, _, when in result.events) else "No")
+            ("Yes" if any(end - timedelta(days=7) <= when <= end for _, _, when in result.events) else "No")
             if activity_available
             else "Unknown"
         )
@@ -764,17 +854,26 @@ def build_management_tables(
 
     # Management KPIs
     kpis: List[list] = []
-    org_status = organization_status or {}
-    organizations = sorted({org for org, _ in reports} | set(members) | set(org_status), key=str.casefold)
+    org_status_norm = {k.casefold(): v for k, v in (organization_status or {}).items()}
+    members_norm = {k.casefold(): {login.lower() for login in v} for k, v in members.items()}
+    org_lookup: Dict[str, str] = {}
+    for org, _ in reports:
+        org_lookup.setdefault(org.casefold(), org)
+    for org in members:
+        org_lookup.setdefault(org.casefold(), org)
+    for org in (organization_status or {}):
+        org_lookup.setdefault(org.casefold(), org)
+    organizations = sorted(org_lookup.values(), key=str.casefold)
     month_start = end.astimezone(IST).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
     for org in organizations:
-        selected = [result for (owner, _), result in reports.items() if owner.casefold() == org.casefold()]
+        org_k = org.casefold()
+        selected = [result for (owner, _), result in reports.items() if owner.casefold() == org_k]
         events = [event for result in selected for event in result.events if since <= event[2] <= end]
         counts = Counter(metric for _, metric, _ in events)
         contributors = {login for login, _, _ in events if login}
-        org_members = {login.lower() for login in members.get(org, set())}
-        member_coverage = org in members
+        org_members = members_norm.get(org_k, set())
+        member_coverage = org_k in members_norm
         rolling = {
             login
             for result in selected
@@ -856,7 +955,7 @@ def build_management_tables(
         add(
             "Developer Activity",
             "Repositories active in last 7 days",
-            sum(any(when >= end - timedelta(days=7) for _, _, when in item.events) for item in selected),
+            sum(any(end - timedelta(days=7) <= when <= end for _, _, when in item.events) for item in selected),
             "Repositories with at least one tracked contribution in the last seven days. This does not measure logins or every kind of push.",
         )
         add(
@@ -948,7 +1047,7 @@ def build_management_tables(
         add(
             "Coverage",
             "Run status",
-            "Complete" if org_status.get(org, False) else "Partial",
+            "Complete" if org_status_norm.get(org.casefold(), False) else "Partial",
             "Complete means this organization's selected repositories and member list were collected without errors. A failure in another organization does not change this status.",
         )
 

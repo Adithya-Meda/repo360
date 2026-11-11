@@ -30,6 +30,8 @@ def print_runners_scorecard(
     org_runner_rows: List[list],
     xlsx_path: Path,
     elapsed_seconds: float,
+    org_runner_metrics: Optional[Dict[str, Any]] = None,
+    failures: Optional[List[Tuple[str, str]]] = None,
 ) -> None:
     """Print an executive color-coded scorecard to stdout."""
     G = "\033[92m"
@@ -41,12 +43,35 @@ def print_runners_scorecard(
 
     total_runners = len(runner_rows)
     online_count = sum(1 for r in runner_rows if len(r) > 9 and str(r[9]).capitalize() == "Online")
-    offline_count = sum(1 for r in runner_rows if len(r) > 9 and str(r[9]).capitalize() in ("Offline", "Ephemeral"))
+    offline_count = sum(1 for r in runner_rows if len(r) > 9 and str(r[9]).capitalize() == "Offline")
+    registered_count = online_count + offline_count
     busy_count = sum(1 for r in runner_rows if len(r) > 10 and str(r[10]).capitalize() == "Busy")
     ephemeral_count = sum(1 for r in runner_rows if len(r) > 8 and "Ephemeral" in str(r[8]))
-    total_jobs = sum(r[13] for r in runner_rows if len(r) > 13 and isinstance(r[13], int))
-    total_compute_hours = sum(r[19] for r in runner_rows if len(r) > 19 and isinstance(r[19], (int, float)))
-    total_sla_breaches = sum(r[26] for r in runner_rows if len(r) > 26 and isinstance(r[26], int))
+
+    avg_wait_display = "N/A"
+    p95_wait_display = "N/A"
+    if org_runner_metrics:
+        from .models import RunnerJobMetrics
+        fleet_metrics = RunnerJobMetrics()
+        for om in org_runner_metrics.values():
+            fleet_metrics.merge(om)
+        total_jobs = fleet_metrics.total_jobs
+        total_compute_hours = fleet_metrics.total_compute_hours
+        total_sla_breaches = fleet_metrics.queue_sla_breaches
+        if isinstance(fleet_metrics.avg_queue_seconds, (int, float)):
+            avg_wait_display = f"{fleet_metrics.avg_queue_seconds}s"
+        if isinstance(fleet_metrics.p95_queue_seconds, (int, float)):
+            p95_wait_display = f"{fleet_metrics.p95_queue_seconds}s"
+    else:
+        total_jobs = sum(o[10] for o in org_runner_rows if len(o) > 10 and isinstance(o[10], int)) if org_runner_rows else sum(
+            r[13] for r in runner_rows if len(r) > 13 and isinstance(r[13], int)
+        )
+        total_compute_hours = sum(o[16] for o in org_runner_rows if len(o) > 16 and isinstance(o[16], (int, float))) if org_runner_rows else sum(
+            r[19] for r in runner_rows if len(r) > 19 and isinstance(r[19], (int, float))
+        )
+        total_sla_breaches = sum(o[19] for o in org_runner_rows if len(o) > 19 and isinstance(o[19], int)) if org_runner_rows else sum(
+            r[26] for r in runner_rows if len(r) > 26 and isinstance(r[26], int)
+        )
 
     elapsed_str = (
         f"{int(elapsed_seconds // 60)}m {int(elapsed_seconds % 60)}s"
@@ -54,8 +79,16 @@ def print_runners_scorecard(
         else f"{elapsed_seconds:.1f}s"
     )
 
-    avail_pct = (online_count / total_runners * 100) if total_runners else 100.0
-    avail_color = G if avail_pct >= 80 else (Y if avail_pct >= 50 else R)
+    if registered_count > 0:
+        avail_pct = online_count / registered_count * 100
+        avail_color = G if avail_pct >= 80 else (Y if avail_pct >= 50 else R)
+        avail_str = f"{avail_color}{avail_pct:.1f}%{X}"
+    elif total_runners > 0:
+        avail_str = f"{C}N/A (Ephemeral Only){X}"
+    else:
+        avail_str = f"{Y}N/A{X}"
+
+    fail_count = len(failures) if failures else 0
 
     print(f"\n{C}{'=' * 76}{X}")
     print(f"{B}{C}   REPO360 ACTIONS SELF-HOSTED RUNNER FLEET SCORECARD{X}")
@@ -66,10 +99,13 @@ def print_runners_scorecard(
     print(f"   {B}Offline / Unreachable   :{X} {R if offline_count else G}{offline_count:<5} Offline{X}")
     print(f"   {B}Currently Busy (Active) :{X} {Y}{busy_count:<5} Busy{X}")
     print(f"   {B}Autoscaling (Ephemeral) :{X} {ephemeral_count:<5} Ephemeral")
-    print(f"   {B}Fleet Availability Rate :{X} {avail_color}{avail_pct:.1f}%{X}")
+    print(f"   {B}Fleet Availability Rate :{X} {avail_str}")
     print(f"   {B}Workflow Jobs Executed  :{X} {B}{total_jobs:,}{X}")
     print(f"   {B}Total Compute Consumed  :{X} {total_compute_hours:.2f} Hours")
+    print(f"   {B}Queue Wait (Avg / P95)  :{X} {avg_wait_display} / {p95_wait_display}")
     print(f"   {B}Queue SLA Delays (>60s) :{X} {R if total_sla_breaches else G}{total_sla_breaches} breaches{X}")
+    if fail_count:
+        print(f"   {B}Warnings / Errors       :{X} {Y}{fail_count} items (see workbook Summary){X}")
     print(f"   {B}Duration                :{X} {elapsed_str}")
     print(f"{C}{'-' * 76}{X}")
     print(f"   {B}Executive Workbook (XLSX) :{X} {xlsx_path}")
@@ -226,6 +262,7 @@ def run_runners_cli(argv: Optional[List[str]] = None) -> int:
         failures,
         execution_duration=elapsed,
         ai_engine=ai_engine,
+        org_runner_metrics=org_runner_metrics,
     )
 
     print_runners_scorecard(
@@ -233,5 +270,7 @@ def run_runners_cli(argv: Optional[List[str]] = None) -> int:
         org_runner_rows=org_runner_rows,
         xlsx_path=xlsx_path,
         elapsed_seconds=elapsed,
+        org_runner_metrics=org_runner_metrics,
+        failures=failures,
     )
     return 0

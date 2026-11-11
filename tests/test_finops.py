@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 import pytest
+import requests
 from openpyxl import load_workbook
 
 from src.finops.models import (
@@ -216,3 +217,110 @@ def test_write_finops_workbook(tmp_path: Path):
 
     summary_ws = wb["Executive Summary"]
     assert "Repo360 FinOps" in summary_ws["A1"].value
+
+
+def test_finops_hardened_packages_pagination_and_reconciliation(tmp_path: Path):
+    """Verify multi-page multi-version packages count toward totals, org-wide packages reconcile, and 403s surface."""
+    now = datetime.now(timezone.utc)
+    ts_str = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # 1. Paginated GraphQL across 2 pages and multi-version files
+    client = MagicMock()
+    page1 = {
+        "data": {
+            "organization": {
+                "packages": {
+                    "pageInfo": {"hasNextPage": True, "endCursor": "c1"},
+                    "nodes": [
+                        {
+                            "id": "pkg-1",
+                            "name": "img-a",
+                            "repository": {"name": "svc-a"},
+                            "versions": {
+                                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                                "nodes": [
+                                    {"files": {"nodes": [{"size": 10 * 1024 * 1024}]}},
+                                    {"files": {"nodes": [{"size": 5 * 1024 * 1024}]}},
+                                ],
+                            },
+                        }
+                    ],
+                }
+            }
+        }
+    }
+    page2 = {
+        "data": {
+            "organization": {
+                "packages": {
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    "nodes": [
+                        {
+                            "id": "pkg-2",
+                            "name": "org-base",
+                            "repository": None,
+                            "versions": {
+                                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                                "nodes": [{"files": {"nodes": [{"size": 20 * 1024 * 1024}]}}],
+                            },
+                        }
+                    ],
+                }
+            }
+        }
+    }
+    client.graphql.side_effect = [page1, page2]
+
+    def _fake_paginate(org, endpoint, params=None):
+        if params and params.get("package_type") == "container":
+            return [
+                {"id": 1, "name": "img-a", "package_type": "container", "version_count": 2, "created_at": ts_str, "updated_at": ts_str, "repository": {"name": "svc-a"}},
+                {"id": 2, "name": "org-base", "package_type": "container", "version_count": 1, "created_at": ts_str, "updated_at": ts_str, "repository": None},
+            ]
+        return []
+
+    client.paginate.side_effect = _fake_paginate
+    pkgs = collect_org_packages(client, "acme")
+    assert len(pkgs) == 2
+    img_a = next(p for p in pkgs if p.name == "img-a")
+    assert img_a.size_mb == 15.0  # Both versions summed (10 MB + 5 MB)
+
+    # 2. HTTP 403 artifact error propagates cleanly into errors_out
+    err_resp = requests.Response()
+    err_resp.status_code = 403
+    client.paginate_enveloped.side_effect = requests.HTTPError(response=err_resp)
+    errs = []
+    assert collect_repo_artifacts(client, "acme", "svc-a", errors_out=errs) == []
+    assert any("403 Forbidden" in e for e in errs)
+
+    # 3. Repo total_storage_mb includes package_mb, and unlinked org-base reconciles on Executive Summary
+    p = RepoStorageProfile(org="acme", repo="svc-a", disk_size_kb=10240, packages=[img_a], errors=errs)
+    assert p.package_mb == 15.0
+    assert p.total_storage_mb == 25.0  # 10 MB disk + 15 MB packages
+
+    repo_rows, org_rows, art_rows, cp_rows = build_finops_rows([p], {"acme": pkgs}, ["acme"])
+    assert org_rows[0][8] == 2  # Both linked + org-wide packages tracked
+    assert org_rows[0][9] == 45.0  # 10 MB disk + 35 MB packages
+
+    out_file = tmp_path / "finops_hardened.xlsx"
+    write_finops_workbook(
+        path=out_file,
+        cfg=FinOpsConfig(output_dir=str(tmp_path)),
+        now=now,
+        repo_rows=repo_rows,
+        org_rows=org_rows,
+        artifact_rows=art_rows,
+        cache_package_rows=cp_rows,
+        failures=[("acme/svc-a", errs[0])],
+    )
+    wb = load_workbook(out_file)
+    assert "Collection & Permission Gaps" in wb.sheetnames
+    exec_kpis = {
+        row[0].value: row[1].value
+        for row in wb["Executive Summary"].iter_rows()
+        if len(row) > 1 and row[0].value is not None
+    }
+    assert exec_kpis["Packages & Containers Tracked"] == 2
+    assert exec_kpis["Package & Container Storage (MB)"] == 35.0
+    assert exec_kpis["Total Storage Footprint (MB)"] == 45.0
+    assert exec_kpis["Collection / Permission Gaps"] == 1

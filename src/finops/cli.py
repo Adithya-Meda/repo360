@@ -32,6 +32,7 @@ def print_finops_scorecard(
     cache_package_rows: List[list],
     xlsx_path: Path,
     elapsed_seconds: float,
+    unaudited_count: int = 0,
 ) -> None:
     """Print an executive color-coded FinOps scorecard to stdout."""
     G = "\033[92m"
@@ -42,14 +43,22 @@ def print_finops_scorecard(
     X = "\033[0m"
 
     total_repos = len(repo_rows)
-    total_disk_mb = round(sum(r[3] for r in repo_rows if len(r) > 3 and isinstance(r[3], (int, float))), 2)
-    total_active_artifacts = sum(r[4] for r in repo_rows if len(r) > 4 and isinstance(r[4], int))
-    total_artifact_mb = round(sum(r[5] for r in repo_rows if len(r) > 5 and isinstance(r[5], (int, float))), 2)
-    total_90d_count = sum(r[6] for r in repo_rows if len(r) > 6 and isinstance(r[6], int))
-    total_caches = sum(r[7] for r in repo_rows if len(r) > 7 and isinstance(r[7], int))
-    total_cache_mb = round(sum(r[8] for r in repo_rows if len(r) > 8 and isinstance(r[8], (int, float))), 2)
-    total_packages = sum(r[9] for r in repo_rows if len(r) > 9 and isinstance(r[9], int))
-    total_footprint_mb = round(sum(r[10] for r in repo_rows if len(r) > 10 and isinstance(r[10], (int, float))), 2)
+    total_disk_mb = round(sum(r[2] for r in org_rows if len(r) > 2 and isinstance(r[2], (int, float))), 2)
+    total_active_artifacts = sum(r[3] for r in org_rows if len(r) > 3 and isinstance(r[3], int))
+    total_artifact_mb = round(sum(r[4] for r in org_rows if len(r) > 4 and isinstance(r[4], (int, float))), 2)
+    total_90d_count = sum(r[5] for r in org_rows if len(r) > 5 and isinstance(r[5], int))
+    total_caches = sum(r[6] for r in org_rows if len(r) > 6 and isinstance(r[6], int))
+    total_cache_mb = round(sum(r[7] for r in org_rows if len(r) > 7 and isinstance(r[7], (int, float))), 2)
+    total_packages = sum(r[8] for r in org_rows if len(r) > 8 and isinstance(r[8], int))
+    total_package_mb = round(
+        sum(
+            r[4]
+            for r in cache_package_rows
+            if len(r) > 4 and str(r[2]).startswith("Package (") and isinstance(r[4], (int, float))
+        ),
+        2,
+    )
+    total_footprint_mb = round(sum(r[9] for r in org_rows if len(r) > 9 and isinstance(r[9], (int, float))), 2)
     total_waste_mb = round(sum(r[10] for r in org_rows if len(r) > 10 and isinstance(r[10], (int, float))), 2)
 
     elapsed_str = (
@@ -69,9 +78,11 @@ def print_finops_scorecard(
     print(f"   {B}Active Workflow Artifacts      :{X} {total_active_artifacts:,} ({total_artifact_mb:,.2f} MB)")
     print(f"   {B}Default 90-Day Retention Ineff.:{X} {waste_color}{total_90d_count} artifacts (Retention policy override recommended){X}")
     print(f"   {B}Actions Caches Tracked         :{X} {total_caches:,} ({total_cache_mb:,.2f} MB)")
-    print(f"   {B}Packages & Containers          :{X} {total_packages:,}")
+    print(f"   {B}Packages & Containers          :{X} {total_packages:,} ({total_package_mb:,.2f} MB)")
     print(f"   {B}Total Storage Footprint        :{X} {B}{total_footprint_mb:,.2f} MB{X}")
     print(f"   {B}Est. Inefficient Storage Waste :{X} {waste_color}{total_waste_mb:,.2f} MB{X}")
+    if unaudited_count > 0:
+        print(f"   {B}Collection / Permission Gaps   :{X} {Y}{unaudited_count} signal check(s) skipped (403/API error){X}")
     print(f"   {B}Duration                       :{X} {elapsed_str}")
     print(f"{C}{'-' * 76}{X}")
     print(f"   {B}Executive FinOps Workbook (XLSX):{X} {xlsx_path}")
@@ -191,7 +202,14 @@ def run_finops_cli(argv: Optional[List[str]] = None) -> int:
 
     print(f"\033[96m[INFO]\033[0m Profiling repository storage, workflow artifacts, and caches across {len(orgs)} organization(s)...")
 
-    profiles, org_packages = collect_finops_data(client, orgs, targets, cfg, metadata_cache)
+    failures: List[Tuple[str, str]] = []
+    profiles, org_packages = collect_finops_data(
+        client, orgs, targets, cfg, metadata_cache, failures_out=failures
+    )
+    for p in profiles:
+        for err in p.errors:
+            failures.append((f"{p.org}/{p.repo}", err))
+
     repo_rows, org_rows, artifact_rows, cache_package_rows = build_finops_rows(profiles, org_packages, orgs, ai_engine=ai_engine)
 
     out_dir = Path(cfg.output_dir)
@@ -207,7 +225,7 @@ def run_finops_cli(argv: Optional[List[str]] = None) -> int:
         org_rows=org_rows,
         artifact_rows=artifact_rows,
         cache_package_rows=cache_package_rows,
-        failures=[],
+        failures=failures,
         execution_duration=elapsed,
     )
 
@@ -218,5 +236,6 @@ def run_finops_cli(argv: Optional[List[str]] = None) -> int:
         cache_package_rows=cache_package_rows,
         xlsx_path=xlsx_path,
         elapsed_seconds=elapsed,
+        unaudited_count=len(failures),
     )
     return 0

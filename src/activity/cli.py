@@ -40,6 +40,7 @@ def print_activity_scorecard(
     repos_count: int,
     xlsx_path: Path,
     elapsed_seconds: float,
+    failures: Optional[List[Tuple[str, str]]] = None,
 ) -> None:
     """Print an executive, color-coded terminal scorecard."""
     G = "\033[92m"
@@ -71,6 +72,8 @@ def print_activity_scorecard(
     print(f"   {B}Low Users             :{X} {low_count:<5} Low")
     print(f"   {B}Inactive Users        :{X} {inactive_count:<5} Inactive (0 contributions)")
     print(f"   {B}Total Activities      :{X} {B}{total_activities:,}{X}")
+    if failures:
+        print(f"   {B}Warnings / Errors     :{X} {Y}{len(failures)} items (see workbook Summary){X}")
     print(f"   {B}Duration              :{X} {elapsed_str}")
     print(f"{C}{'-' * 76}{X}")
     print(f"   {B}Executive Workbook (XLSX) :{X} {xlsx_path}")
@@ -270,19 +273,21 @@ def run_activity_cli(argv: Optional[List[str]] = None) -> int:
         client, orgs, cfg.exclude_bots
     )
 
-    results = {k: v.users for k, v in reports.items() if v.activity_complete}
+    results = {k: v.users for k, v in reports.items() if v.activity_complete or v.users}
     user_rows, repo_rows = build_rows(results, members, cfg, end, teams_by_user, org_team_complete)
     org_rows = build_org_rows(user_rows, results, all_orgs=orgs)
 
-    target_counts = Counter(org for org, _ in targets)
-    failed_orgs = {f[0].split("/")[0] for f in failures if "/" in f[0]}
+    target_counts = Counter(org.casefold() for org, _ in targets)
+    failed_orgs = {f[0].split("/")[0].split(" (")[0].casefold() for f in failures}
+    members_norm = {k.casefold() for k in members}
+    team_complete_norm = {k.casefold(): v for k, v in org_team_complete.items()}
     organization_status = {
         org: (
-            len([key for key in reports if key[0] == org]) == target_counts.get(org, 0)
-            and org in members
-            and org not in failed_orgs
-            and org_team_complete.get(org, False)
-            and all(not result.errors for (owner, _), result in reports.items() if owner == org)
+            len([key for key in reports if key[0].casefold() == org.casefold()]) == target_counts.get(org.casefold(), 0)
+            and org.casefold() in members_norm
+            and org.casefold() not in failed_orgs
+            and team_complete_norm.get(org.casefold(), False)
+            and all(not result.errors for (owner, _), result in reports.items() if owner.casefold() == org.casefold())
         )
         for org in orgs
     }
@@ -320,5 +325,6 @@ def run_activity_cli(argv: Optional[List[str]] = None) -> int:
         repos_count=len(targets),
         xlsx_path=xlsx_path,
         elapsed_seconds=elapsed,
+        failures=failures,
     )
     return 0

@@ -102,9 +102,12 @@ class BaseReporter(ABC):
             "branch_rulesets": "Branch Rulesets (Settings)",
             "rulesets_adoption": "Repository Rulesets (Settings)",
             "secret_scanning_push_protection": "Code Security (Settings)",
+            "saml_sso_enforcement": "Authentication / SAML SSO (Settings)",
             "default_workflow_permissions": "Actions Permissions (Settings)",
             "runner_groups_governance": "Actions Runner Groups (Settings)",
             "runner_groups_isolation": "Actions Runner Groups (Settings)",
+            "environment_protection_gates": "Repository Environments (Settings)",
+            "setup_documentation": "README.md / CONTRIBUTING.md",
         }
         return file_map.get(check_id, "Repository / Organization Config")
 
@@ -298,16 +301,23 @@ class BaseReporter(ABC):
 
         org_list: List[Dict[str, Any]] = []
         for org, data in sorted(org_data.items()):
-            effective = max(data["total"] - data["skipped"], 1)
-            score = round((data["passed"] / effective) * 100, 1)
+            effective = data["total"] - data["skipped"]
             repo_count = len(data["repos"])
 
-            if score >= 80:
+            if effective > 0:
+                score = round((data["passed"] / effective) * 100, 1)
+                if score >= 80:
+                    status_label = "COMPLIANT"
+                elif score >= 50:
+                    status_label = "REVIEW NEEDED"
+                else:
+                    status_label = "AT RISK"
+            elif data["total"] == 0:
+                score = 100.0
                 status_label = "COMPLIANT"
-            elif score >= 50:
-                status_label = "REVIEW NEEDED"
             else:
-                status_label = "AT RISK"
+                score = 0.0
+                status_label = "NOT EVALUATED"
 
             org_list.append({
                 "org_name": org,

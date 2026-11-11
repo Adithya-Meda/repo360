@@ -176,6 +176,7 @@ class Repo360Client:
         path: str,
         params: Optional[Dict[str, Any]] = None,
         allow_404: bool = False,
+        allow_403: bool = False,
         installation_id: Optional[int | str] = None,
         org: Optional[str] = None,
     ) -> Optional[Any]:
@@ -187,12 +188,13 @@ class Repo360Client:
         Args:
             path: Relative API path (e.g., '/repos/org/repo') or absolute URL.
             params: Optional query parameters.
-            allow_404: If True, returns None instead of raising an exception on 404.
+            allow_404: If True, returns None instead of raising an exception on 404/409/410.
+            allow_403: If True, returns None on standard 403 Forbidden instead of raising.
             installation_id: Optional specific installation ID to use for this request.
             org: Optional organization name override.
 
         Returns:
-            Parsed JSON object/list or None if 404 allowed.
+            Parsed JSON object/list or None if allowed status was returned.
         """
         url = path if path.startswith("http") else f"{self.base_url}/{path.lstrip('/')}"
         target_org = org or self._extract_org_from_path(url)
@@ -242,7 +244,7 @@ class Repo360Client:
 
                 # Standard 403 Forbidden (Permissions or feature not enabled on plan) - do NOT retry
                 if response.status_code == 403:
-                    if allow_404:
+                    if allow_403:
                         return None
                     response.raise_for_status()
 
@@ -270,7 +272,9 @@ class Repo360Client:
             except requests.exceptions.HTTPError as http_err:
                 # Deterministic HTTP client errors (400, 401, 403, 404, 409, 410, 422) should not be retried as network errors
                 if response is not None and response.status_code in (400, 401, 403, 404, 409, 410, 422):
-                    if allow_404 and response.status_code in (403, 404, 409, 410):
+                    if response.status_code == 403 and allow_403:
+                        return None
+                    if allow_404 and response.status_code in (404, 409, 410):
                         return None
                     raise http_err
                 if attempt == self.max_retries:
@@ -375,3 +379,35 @@ class Repo360Client:
             if len(data) < per_page:
                 break
             page += 1
+
+    def graphql(
+        self,
+        query: str,
+        variables: Optional[Dict[str, Any]] = None,
+        org: Optional[str] = None,
+        installation_id: Optional[int | str] = None,
+    ) -> Dict[str, Any]:
+        """Execute a GraphQL query against GitHub's GraphQL endpoint."""
+        if self.base_url.endswith("/api/v3"):
+            graphql_url = f"{self.base_url[:-7]}/api/graphql"
+        else:
+            graphql_url = f"{self.base_url}/graphql"
+
+        payload = {"query": query, "variables": variables or {}}
+        for attempt in range(1, self.max_retries + 1):
+            headers = dict(self.auth.get_auth_headers(installation_id=installation_id, org=org))
+            headers["Content-Type"] = "application/json"
+            response = self.session.post(
+                graphql_url,
+                headers=headers,
+                json=payload,
+                timeout=self.timeout_seconds,
+            )
+            self._handle_rate_limit(response, org=org)
+            if response.status_code in (500, 502, 503, 504) and attempt < self.max_retries:
+                self._interruptible_sleep(int(self.backoff_factor * (2 ** attempt)))
+                continue
+            response.raise_for_status()
+            data = response.json()
+            return data if isinstance(data, dict) else {}
+        return {}

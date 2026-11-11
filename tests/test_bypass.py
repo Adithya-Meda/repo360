@@ -2,7 +2,9 @@
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import MagicMock
 import pytest
+import requests
 from openpyxl import load_workbook
 
 from src.bypass.models import (
@@ -10,8 +12,9 @@ from src.bypass.models import (
     PushProtectionBypassRecord,
     RepoBypassProfile,
     RulesetBypassRecord,
+    classify_bypass_risk,
 )
-from src.bypass.collector import build_bypass_rows
+from src.bypass.collector import build_bypass_rows, collect_repo_push_bypasses, profile_repo_bypasses
 from src.bypass.reporter import write_bypass_workbook
 
 
@@ -166,3 +169,105 @@ def test_write_bypass_workbook(tmp_path: Path):
     assert "Push Protection Bypasses" in sheet_names
     assert "Ruleset Bypasses" in sheet_names
     assert "Actor Accountability Ledger" in sheet_names
+
+
+def test_bypass_hardened_accuracy_and_403_handling(tmp_path: Path):
+    """Verify closed non-bypass alerts are excluded, 403 surfaces as unaudited, and repo dedup is org-scoped."""
+    now = datetime.now(timezone.utc)
+    ts_str = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # 1. Resolved alert WITHOUT push_protection_bypassed=True must NOT count as a bypass
+    mock_client = MagicMock()
+    mock_client.paginate.return_value = [
+        {
+            "number": 101,
+            "secret_type_display_name": "GitHub Token",
+            "push_protection_bypassed": False,
+            "resolution": "revoked",
+            "resolved_by": {"login": "security-reviewer"},
+            "resolved_at": ts_str,
+            "created_at": ts_str,
+        },
+        {
+            "number": 102,
+            "secret_type_display_name": "AWS Secret Key",
+            "push_protection_bypassed": True,
+            "push_protection_bypassed_by": {"login": "BypassActor"},
+            "push_protection_bypassed_at": ts_str,
+            "resolution": None,
+            "created_at": ts_str,
+        },
+    ]
+    recs = collect_repo_push_bypasses(mock_client, "org-a", "api", now - timedelta(days=7))
+    assert len(recs) == 1
+    assert recs[0].alert_number == 102
+    assert recs[0].actor == "BypassActor"
+    assert recs[0].ai_risk_assessment == "High Risk"
+
+    # 2. HTTP 403 Forbidden recorded into profile.errors cleanly
+    err_resp = requests.Response()
+    err_resp.status_code = 403
+    blocked_client = MagicMock()
+    blocked_client.paginate.side_effect = requests.HTTPError(response=err_resp)
+    blocked_profile = profile_repo_bypasses(
+        blocked_client, "locked-org", "secret-repo", now - timedelta(days=7), {"pushed_at": ts_str}
+    )
+    assert len(blocked_profile.errors) >= 1
+
+    # 3. Same repo name in two orgs counts as 2 repositories with bypasses; partial org shows Unknown (Partial)
+    p1 = RepoBypassProfile(org="org-a", repo="api", push_bypasses=recs)
+    p2 = RepoBypassProfile(
+        org="org-b",
+        repo="api",
+        ruleset_bypasses=[
+            RulesetBypassRecord("org-b", "api", 55, "refs/heads/main", "bypassactor", timestamp=now)
+        ],
+    )
+    push_rows, rule_rows, org_rows, actor_rows = build_bypass_rows(
+        [p1, p2, blocked_profile], ["org-a", "org-b", "locked-org"]
+    )
+    locked_org_row = next(r for r in org_rows if r[0] == "locked-org")
+    assert locked_org_row[7] == "Unknown (Partial)"
+
+    assert classify_bypass_risk(0, 21) == "High"
+    assert classify_bypass_risk(0, 20) == "Medium"
+
+    out_file = tmp_path / "bypass_hardened.xlsx"
+    write_bypass_workbook(
+        path=out_file,
+        cfg=BypassConfig(output_dir=str(tmp_path), lookback_days=30),
+        since=now - timedelta(days=30),
+        end=now,
+        push_rows=push_rows,
+        ruleset_rows=rule_rows,
+        org_rows=org_rows,
+        actor_rows=actor_rows,
+        failures=[("locked-org/secret-repo", err) for err in blocked_profile.errors],
+        execution_duration=0.5,
+    )
+    wb = load_workbook(out_file)
+    assert "Unaudited & Permission Gaps" in wb.sheetnames
+    exec_text = {
+        ws_row[0].value: ws_row[1].value
+        for ws_row in wb["Executive Summary"].iter_rows()
+        if len(ws_row) > 1 and ws_row[0].value is not None
+    }
+    assert exec_text["Repositories with Bypasses"] == 2
+
+    # Zero-incident with failures reports Partial Coverage instead of Satisfactory
+    zero_file = tmp_path / "bypass_partial.xlsx"
+    write_bypass_workbook(
+        path=zero_file,
+        cfg=BypassConfig(output_dir=str(tmp_path), lookback_days=30),
+        since=now - timedelta(days=30),
+        end=now,
+        push_rows=[],
+        ruleset_rows=[],
+        org_rows=[["locked-org", 1, 0, 0, 0, 0, "None", "Unknown (Partial)"]],
+        actor_rows=[],
+        failures=[("locked-org/secret-repo", "403 Forbidden")],
+    )
+    wb_zero = load_workbook(zero_file)
+    zero_text = "\n".join(str(c.value) for row in wb_zero["Executive Summary"].iter_rows() for c in row if c.value)
+    assert "Partial Coverage" in zero_text
+    assert "Satisfactory (No Bypasses)" not in zero_text

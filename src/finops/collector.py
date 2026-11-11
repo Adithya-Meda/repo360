@@ -29,6 +29,7 @@ def collect_repo_artifacts(
     client: ResilientGitHubClient,
     org: str,
     repo: str,
+    errors_out: Optional[List[str]] = None,
 ) -> List[ArtifactRecord]:
     """Retrieve all workflow artifacts for a repository."""
     artifacts: List[ArtifactRecord] = []
@@ -60,10 +61,18 @@ def collect_repo_artifacts(
                     )
                 )
     except requests.HTTPError as err:
-        if err.response.status_code not in (404, 403):
+        status = getattr(getattr(err, "response", None), "status_code", None)
+        if status == 403:
+            if errors_out is not None:
+                errors_out.append("Actions artifacts blocked (403 Forbidden — grant actions:read)")
+        elif status != 404:
             logger.debug("Failed to retrieve artifacts for %s/%s: %s", org, repo, err)
+            if errors_out is not None:
+                errors_out.append(f"Actions artifacts HTTP {status}")
     except Exception as err:
         logger.debug("Unexpected error collecting artifacts for %s/%s: %s", org, repo, err)
+        if errors_out is not None:
+            errors_out.append(f"Actions artifacts error: {err}")
     return artifacts
 
 
@@ -71,6 +80,7 @@ def collect_repo_caches(
     client: ResilientGitHubClient,
     org: str,
     repo: str,
+    errors_out: Optional[List[str]] = None,
 ) -> List[CacheRecord]:
     """Retrieve Actions cache entries for a repository."""
     caches: List[CacheRecord] = []
@@ -97,32 +107,58 @@ def collect_repo_caches(
                     )
                 )
     except requests.HTTPError as err:
-        if err.response.status_code not in (404, 403):
+        status = getattr(getattr(err, "response", None), "status_code", None)
+        if status == 403:
+            if errors_out is not None:
+                errors_out.append("Actions caches blocked (403 Forbidden — grant actions:read)")
+        elif status != 404:
             logger.debug("Failed to retrieve caches for %s/%s: %s", org, repo, err)
+            if errors_out is not None:
+                errors_out.append(f"Actions caches HTTP {status}")
     except Exception as err:
         logger.debug("Unexpected error collecting caches for %s/%s: %s", org, repo, err)
+        if errors_out is not None:
+            errors_out.append(f"Actions caches error: {err}")
     return caches
 
 
 def collect_org_packages(
     client: ResilientGitHubClient,
     org: str,
+    errors_out: Optional[List[str]] = None,
 ) -> List[PackageRecord]:
-    """Retrieve packages published under an organization with GraphQL size and metadata enrichment."""
+    """Retrieve packages published under an organization with paginated GraphQL size enrichment."""
     packages: List[PackageRecord] = []
     seen_names: Set[str] = set()
 
-    # 1. Fetch exact file sizes and repository mappings via GraphQL
+    # 1. Paginate packages AND multi-version files via GraphQL to capture complete storage footprint
     gql_query = """
-    query($org: String!) {
+    query($org: String!, $cursor: String) {
       organization(login: $org) {
-        packages(first: 100) {
+        packages(first: 100, after: $cursor) {
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
           nodes {
             id
             name
             packageType
             repository {
               name
+            }
+            versions(first: 50) {
+              pageInfo {
+                hasNextPage
+                endCursor
+              }
+              nodes {
+                files(first: 50) {
+                  nodes {
+                    size
+                  }
+                }
+              }
             }
             latestVersion {
               version
@@ -137,28 +173,107 @@ def collect_org_packages(
       }
     }
     """
+    gql_versions_query = """
+    query($pkgId: ID!, $cursor: String) {
+      node(id: $pkgId) {
+        ... on Package {
+          versions(first: 50, after: $cursor) {
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+            nodes {
+              files(first: 50) {
+                nodes {
+                  size
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    """
+
+    def _sum_version_files(version_nodes: List[Dict[str, Any]]) -> int:
+        total = 0
+        for ver in version_nodes:
+            if not isinstance(ver, dict):
+                continue
+            files = (ver.get("files") or {}).get("nodes") or []
+            total += sum(int(f.get("size") or 0) for f in files if isinstance(f, dict))
+        return total
+
     def _fetch_gql_info() -> Dict[str, Tuple[int, Optional[str]]]:
         info: Dict[str, Tuple[int, Optional[str]]] = {}
         try:
-            data = client.graphql(org, gql_query, {"org": org})
-            nodes = (data.get("data") or {}).get("organization", {}).get("packages", {}).get("nodes") or []
-            for n in nodes:
-                pkg_name = n.get("name", "")
-                files = (n.get("latestVersion") or {}).get("files", {}).get("nodes") or []
-                total_bytes = sum(f.get("size", 0) for f in files if isinstance(f, dict))
-                repo = (n.get("repository") or {}).get("name")
-                if pkg_name:
-                    info[pkg_name.lower()] = (total_bytes, repo)
+            cursor: Optional[str] = None
+            seen_cursors: Set[str] = set()
+            for _ in range(50):  # bounded up to 5,000 packages
+                data = client.graphql(org, gql_query, {"org": org, "cursor": cursor})
+                pkgs_conn = (data.get("data") or {}).get("organization", {}).get("packages") or {}
+                nodes = pkgs_conn.get("nodes") or []
+                for n in nodes:
+                    if not isinstance(n, dict):
+                        continue
+                    pkg_name = n.get("name", "")
+                    versions_conn = n.get("versions") or {}
+                    ver_nodes = versions_conn.get("nodes") or []
+                    if ver_nodes:
+                        total_bytes = _sum_version_files(ver_nodes)
+                        v_page = versions_conn.get("pageInfo") or {}
+                        v_cursor = v_page.get("endCursor")
+                        v_has_next = bool(v_page.get("hasNextPage"))
+                        pkg_id = n.get("id")
+                        v_hops = 0
+                        while pkg_id and v_has_next and v_cursor and v_hops < 20:
+                            v_hops += 1
+                            v_data = client.graphql(org, gql_versions_query, {"pkgId": pkg_id, "cursor": v_cursor})
+                            next_conn = ((v_data.get("data") or {}).get("node") or {}).get("versions") or {}
+                            next_nodes = next_conn.get("nodes") or []
+                            if not next_nodes:
+                                break
+                            total_bytes += _sum_version_files(next_nodes)
+                            next_page = next_conn.get("pageInfo") or {}
+                            v_has_next = bool(next_page.get("hasNextPage"))
+                            next_cursor = next_page.get("endCursor")
+                            if not next_cursor or next_cursor == v_cursor:
+                                break
+                            v_cursor = next_cursor
+                    else:
+                        files = ((n.get("latestVersion") or {}).get("files") or {}).get("nodes") or []
+                        total_bytes = sum(int(f.get("size") or 0) for f in files if isinstance(f, dict))
+
+                    repo = (n.get("repository") or {}).get("name")
+                    if pkg_name:
+                        info[pkg_name.lower()] = (total_bytes, repo)
+
+                page_info = pkgs_conn.get("pageInfo") or {}
+                if not page_info.get("hasNextPage"):
+                    break
+                next_cursor = page_info.get("endCursor")
+                if not next_cursor or next_cursor in seen_cursors:
+                    break
+                seen_cursors.add(next_cursor)
+                cursor = next_cursor
         except Exception as err:
             logger.debug("GraphQL package query failed for %s: %s", org, err)
+            if errors_out is not None:
+                errors_out.append(f"GraphQL package size enrichment unavailable: {err}")
         return info
+
+    rest_errors: List[str] = []
 
     def _fetch_rest_pkg_type(pkg_type: str) -> List[Dict[str, Any]]:
         try:
             return list(client.paginate(org, f"/orgs/{org}/packages", {"package_type": pkg_type}))
         except requests.HTTPError as err:
-            if err.response.status_code not in (404, 403, 400):
+            status = getattr(getattr(err, "response", None), "status_code", None)
+            if status == 403:
+                rest_errors.append(f"Packages REST API blocked for '{pkg_type}' (403 Forbidden — grant packages:read)")
+            elif status not in (404, 400):
                 logger.debug("Package query failed for %s (type %s): %s", org, pkg_type, err)
+                rest_errors.append(f"Packages API HTTP {status} for '{pkg_type}'")
         except Exception:
             pass
         return []
@@ -176,6 +291,9 @@ def collect_org_packages(
         raise
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
+
+    if errors_out is not None and rest_errors:
+        errors_out.extend(sorted(set(rest_errors)))
 
     # Assemble package records deterministically
     for pkg_type, items in raw_by_type:
@@ -240,8 +358,8 @@ def profile_single_repo(
     if is_empty_repo(repo_meta):
         return profile
 
-    profile.artifacts = collect_repo_artifacts(client, org, repo)
-    profile.caches = collect_repo_caches(client, org, repo)
+    profile.artifacts = collect_repo_artifacts(client, org, repo, errors_out=profile.errors)
+    profile.caches = collect_repo_caches(client, org, repo, errors_out=profile.errors)
     return profile
 
 
@@ -251,6 +369,7 @@ def collect_finops_data(
     targets: List[Tuple[str, str]],
     cfg: FinOpsConfig,
     metadata_cache: Dict[Tuple[str, str], Dict[str, Any]],
+    failures_out: Optional[List[Tuple[str, str]]] = None,
 ) -> Tuple[List[RepoStorageProfile], Dict[str, List[PackageRecord]]]:
     """Collect storage profiles and packages across all targets using thread pooling."""
     profiles: List[RepoStorageProfile] = []
@@ -258,15 +377,23 @@ def collect_finops_data(
 
     # 1. Collect organization-level packages concurrently across organizations
     if orgs:
+        def _collect_org_with_errors(org_name: str) -> Tuple[str, List[PackageRecord], List[str]]:
+            errs: List[str] = []
+            pkgs = collect_org_packages(client, org_name, errors_out=errs)
+            return org_name, pkgs, errs
+
         org_pkg_batches = map_concurrent(
             orgs,
-            lambda o: (o, collect_org_packages(client, o)),
+            _collect_org_with_errors,
             max_workers=min(8, len(orgs)),
             max_cap=8,
             thread_name_prefix="finops-org-pkgs",
         )
-        for o, pkgs in org_pkg_batches:
+        for o, pkgs, errs in org_pkg_batches:
             org_packages[o] = pkgs
+            if failures_out is not None:
+                for err_msg in errs:
+                    failures_out.append((o, err_msg))
 
     # Index packages by (org.lower(), repo.lower()) for O(1) lookup per repo
     pkg_index: Dict[Tuple[str, str], List[PackageRecord]] = {}
@@ -433,28 +560,25 @@ def build_finops_rows(
                 f"{pkg.version_count} versions",
             ])
 
-    # Organization aggregation rows
+    # Organization aggregation rows — sum raw bytes before MB conversion to prevent rounding drift
     for org in orgs:
         p_list = org_profiles.get(org, [])
         pkgs = org_packages.get(org, [])
-        total_disk_mb = round(sum(p.disk_size_mb for p in p_list), 2)
+        total_disk_mb = round(sum(p.disk_size_kb for p in p_list) / 1024, 2)
         total_art_count = sum(len(p.active_artifacts) for p in p_list)
-        total_art_mb = round(sum(p.active_artifact_mb for p in p_list), 2)
+        total_art_bytes = sum(p.active_artifact_bytes for p in p_list)
+        total_art_mb = format_bytes_to_mb(total_art_bytes)
         total_90d_count = sum(p.default_90_day_count for p in p_list)
         total_cache_count = sum(len(p.caches) for p in p_list)
-        total_cache_mb = round(sum(p.cache_mb for p in p_list), 2)
-        total_footprint_mb = round(sum(p.total_storage_mb for p in p_list), 2)
+        total_cache_bytes = sum(p.cache_bytes for p in p_list)
+        total_cache_mb = format_bytes_to_mb(total_cache_bytes)
+        total_pkg_bytes = sum(pkg.size_in_bytes for pkg in pkgs)
+        total_pkg_mb = format_bytes_to_mb(total_pkg_bytes)
+        total_footprint_mb = round(total_disk_mb + total_art_mb + total_cache_mb + total_pkg_mb, 2)
 
-        # Estimate waste from 90-day retention inefficiencies (sum size of 90-day artifacts * ~0.8)
-        inefficient_art_mb = round(
-            sum(sum(a.size_mb for a in p.default_90_day_artifacts) for p in p_list),
-            2,
-        )
-        stale_cache_mb = round(
-            sum(sum(c.size_mb for c in p.caches if c.is_stale) for p in p_list),
-            2,
-        )
-        est_waste_mb = round(inefficient_art_mb + stale_cache_mb, 2)
+        inefficient_art_bytes = sum(a.size_in_bytes for p in p_list for a in p.default_90_day_artifacts)
+        stale_cache_bytes = sum(c.size_in_bytes for p in p_list for c in p.caches if c.is_stale)
+        est_waste_mb = format_bytes_to_mb(inefficient_art_bytes + stale_cache_bytes)
 
         savings_potential = "Low"
         if est_waste_mb > 500 or total_90d_count > 20:

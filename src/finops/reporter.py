@@ -72,14 +72,22 @@ def write_finops_workbook(
     )
     summary["A2"].font = Font(italic=True, color="595959")
 
-    total_disk_mb = round(sum(r[3] for r in repo_rows if len(r) > 3 and isinstance(r[3], (int, float))), 2)
-    total_active_artifacts = sum(r[4] for r in repo_rows if len(r) > 4 and isinstance(r[4], int))
-    total_artifact_mb = round(sum(r[5] for r in repo_rows if len(r) > 5 and isinstance(r[5], (int, float))), 2)
-    total_90d_count = sum(r[6] for r in repo_rows if len(r) > 6 and isinstance(r[6], int))
-    total_caches = sum(r[7] for r in repo_rows if len(r) > 7 and isinstance(r[7], int))
-    total_cache_mb = round(sum(r[8] for r in repo_rows if len(r) > 8 and isinstance(r[8], (int, float))), 2)
-    total_packages = sum(r[9] for r in repo_rows if len(r) > 9 and isinstance(r[9], int))
-    total_footprint_mb = round(sum(r[10] for r in repo_rows if len(r) > 10 and isinstance(r[10], (int, float))), 2)
+    total_disk_mb = round(sum(r[2] for r in org_rows if len(r) > 2 and isinstance(r[2], (int, float))), 2)
+    total_active_artifacts = sum(r[3] for r in org_rows if len(r) > 3 and isinstance(r[3], int))
+    total_artifact_mb = round(sum(r[4] for r in org_rows if len(r) > 4 and isinstance(r[4], (int, float))), 2)
+    total_90d_count = sum(r[5] for r in org_rows if len(r) > 5 and isinstance(r[5], int))
+    total_caches = sum(r[6] for r in org_rows if len(r) > 6 and isinstance(r[6], int))
+    total_cache_mb = round(sum(r[7] for r in org_rows if len(r) > 7 and isinstance(r[7], (int, float))), 2)
+    total_packages = sum(r[8] for r in org_rows if len(r) > 8 and isinstance(r[8], int))
+    total_package_mb = round(
+        sum(
+            r[4]
+            for r in cache_package_rows
+            if len(r) > 4 and str(r[2]).startswith("Package (") and isinstance(r[4], (int, float))
+        ),
+        2,
+    )
+    total_footprint_mb = round(sum(r[9] for r in org_rows if len(r) > 9 and isinstance(r[9], (int, float))), 2)
     total_waste_mb = round(sum(r[10] for r in org_rows if len(r) > 10 and isinstance(r[10], (int, float))), 2)
 
     kpis = [
@@ -93,8 +101,10 @@ def write_finops_workbook(
         ["Actions Caches Tracked", total_caches],
         ["Actions Cache Storage (MB)", total_cache_mb],
         ["Packages & Containers Tracked", total_packages],
+        ["Package & Container Storage (MB)", total_package_mb],
         ["Total Storage Footprint (MB)", total_footprint_mb],
         ["Estimated Storage Waste / Savings Potential (MB)", total_waste_mb],
+        ["Collection / Permission Gaps", len(failures)],
     ]
     curr_row = write_table(summary, 4, ("Metric", "Fleet Aggregate"), kpis) + 2
 
@@ -152,5 +162,11 @@ def write_finops_workbook(
             FINOPS_CACHE_PACKAGE_HEADERS,
             "No Actions caches or packages found on target organizations.",
         )
+
+    if failures:
+        gap_ws = wb.create_sheet("Collection & Permission Gaps")
+        gap_rows = [[target, msg] for target, msg in failures]
+        last_gap = write_table(gap_ws, 1, ("Target Scope", "API / Permission Gap Detail"), gap_rows)
+        finalize_sheet(gap_ws, 1, last_gap, 2, "B2")
 
     wb.save(path)

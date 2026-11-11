@@ -9,6 +9,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Set, Tuple
+from urllib.parse import quote
 
 import requests
 
@@ -26,6 +27,7 @@ from .models import (
     get_lttc_tier,
     get_mttr_tier,
     get_rework_tier,
+    resolve_stream_key,
 )
 
 logger = logging.getLogger("repo360.dora")
@@ -191,14 +193,7 @@ def _is_deploy_workflow_name(wf_name: str, wf_path: str = "", include_non_prod: 
     return bool(_DEPLOY_WORKFLOW_RE.search(name_clean) or _DEPLOY_WORKFLOW_RE.search(path_clean))
 
 
-def _resolve_stream_key(ev: DeploymentRecord) -> str:
-    """Return logical recovery stream identifier so unrelated workflows never cancel each other's failures."""
-    if ev.stream_key:
-        return ev.stream_key
-    env_key = (ev.environment or "production").strip().lower()
-    if ev.event_type == "Workflow Run":
-        return f"workflow:{ev.name.strip().lower()}:{env_key}"
-    return f"{ev.event_type.lower()}:{env_key}"
+_resolve_stream_key = resolve_stream_key
 
 
 def _extract_inline_deployment_hints(node: Dict[str, Any]) -> Dict[str, Any]:
@@ -476,6 +471,7 @@ def collect_repo_releases(
     end: datetime,
     include_non_prod: bool = False,
     baseline_out: Optional[Dict[str, str]] = None,
+    errors_out: Optional[List[str]] = None,
 ) -> List[DeploymentRecord]:
     """Retrieve published production GitHub Release records within lookback window."""
     releases: List[DeploymentRecord] = []
@@ -523,7 +519,9 @@ def collect_repo_releases(
                 )
             )
     except requests.HTTPError as err:
-        if err.response is not None and err.response.status_code not in (404, 403):
+        if err.response is not None and err.response.status_code == 403 and errors_out is not None:
+            errors_out.append(f"Releases API forbidden (HTTP 403) on {org}/{repo}")
+        elif err.response is not None and err.response.status_code not in (404, 403):
             logger.debug("Releases query failed for %s/%s: %s", org, repo, err)
     except Exception as err:
         logger.debug("Error retrieving releases for %s/%s: %s", org, repo, err)
@@ -540,6 +538,7 @@ def collect_deploy_workflow_runs(
     include_non_prod: bool = False,
     hints_out: Optional[Dict[str, Dict[str, Any]]] = None,
     baseline_out: Optional[Dict[str, str]] = None,
+    errors_out: Optional[List[str]] = None,
 ) -> List[DeploymentRecord]:
     """Retrieve completed production-branch deployment workflow runs (excluding PR/CI checks)."""
     runs: List[DeploymentRecord] = []
@@ -622,11 +621,51 @@ def collect_deploy_workflow_runs(
                 }
             runs.append(rec)
     except requests.HTTPError as err:
-        if err.response is not None and err.response.status_code not in (404, 403):
+        if err.response is not None and err.response.status_code == 403 and errors_out is not None:
+            errors_out.append(f"Actions workflow runs API forbidden (HTTP 403) on {org}/{repo}")
+        elif err.response is not None and err.response.status_code not in (404, 403):
             logger.debug("Actions runs query failed for %s/%s: %s", org, repo, err)
     except Exception as err:
         logger.debug("Error retrieving workflow runs for %s/%s: %s", org, repo, err)
     return runs
+
+
+def _resolve_commit_pr_signal(
+    client: ResilientGitHubClient,
+    org: str,
+    repo: str,
+    ev: DeploymentRecord,
+    hints: Dict[str, Any],
+    rework_keywords: Tuple[str, ...],
+    pr_cache: Dict[str, Optional[datetime]],
+    pr_rework_cache: Dict[str, bool],
+) -> Optional[datetime]:
+    """Resolve earliest associated PR creation timestamp and rework flags for a deployment commit."""
+    pr_ts = hints.get("pr_created_ts")
+    sha = (ev.commit_sha or "").strip()
+    if pr_ts is None and sha:
+        if sha not in pr_cache:
+            created_dt: Optional[datetime] = None
+            rework_hit = False
+            try:
+                pulls = client.get(org, f"/repos/{org}/{repo}/commits/{quote(sha, safe='')}/pulls")
+                if isinstance(pulls, list) and pulls:
+                    created_dates = [parse_ts(p["created_at"]) for p in pulls if p.get("created_at")]
+                    created_dt = min(created_dates) if created_dates else None
+                    for p in pulls:
+                        if _is_rework_text(
+                            f"{p.get('title', '')} {(p.get('head') or {}).get('ref', '')}",
+                            rework_keywords,
+                        ):
+                            rework_hit = True
+            except Exception:
+                created_dt = None
+            pr_cache[sha] = created_dt
+            pr_rework_cache[sha] = rework_hit
+        pr_ts = pr_cache.get(sha)
+        if pr_rework_cache.get(sha):
+            ev.is_rework = True
+    return pr_ts
 
 
 def _enrich_lead_times_from_commits(
@@ -644,6 +683,7 @@ def _enrich_lead_times_from_commits(
 
     compare_cache: Dict[Tuple[str, str], Optional[Dict[str, Any]]] = {}
     pr_cache: Dict[str, Optional[datetime]] = {}
+    pr_rework_cache: Dict[str, bool] = {}
     compare_calls = 0
     prev_success_by_stream: Dict[str, str] = dict(baseline_refs or {})
 
@@ -674,13 +714,15 @@ def _enrich_lead_times_from_commits(
         # 1. Primary: Compare commit range (prev_success_ref...curr_ref) for true batch commit lead time
         resolved_hours: Optional[float] = None
         method = ""
+        single_commit_batch = False
         if prev_success_ref and curr_ref and prev_success_ref != curr_ref and compare_calls < _MAX_COMPARE_CALLS_PER_REPO:
             cache_key = (prev_success_ref, curr_ref)
             if cache_key not in compare_cache:
                 compare_calls += 1
                 try:
                     compare_cache[cache_key] = client.get(
-                        org, f"/repos/{org}/{repo}/compare/{prev_success_ref}...{curr_ref}"
+                        org,
+                        f"/repos/{org}/{repo}/compare/{quote(prev_success_ref, safe='')}...{quote(curr_ref, safe='')}",
                     )
                 except Exception:
                     compare_cache[cache_key] = None
@@ -697,6 +739,7 @@ def _enrich_lead_times_from_commits(
                     prev_success_by_stream[stream_key] = curr_ref
                     continue
 
+                single_commit_batch = len(commits or []) == 1
                 deltas: List[float] = []
                 for c in commits or []:
                     c_info = c.get("commit") or {}
@@ -716,29 +759,21 @@ def _enrich_lead_times_from_commits(
                     method = "commit_to_deploy"
 
         # 2. Secondary: Associated Pull Request creation -> deployment completion
-        if resolved_hours is None:
-            pr_ts = hints.get("pr_created_ts")
-            if pr_ts is None and ev.commit_sha and ev.commit_sha not in pr_cache:
-                try:
-                    pulls = client.get(org, f"/repos/{org}/{repo}/commits/{ev.commit_sha}/pulls")
-                    if isinstance(pulls, list) and pulls:
-                        created_dates = [parse_ts(p["created_at"]) for p in pulls if p.get("created_at")]
-                        pr_cache[ev.commit_sha] = min(created_dates) if created_dates else None
-                        for p in pulls:
-                            if _is_rework_text(f"{p.get('title', '')} {(p.get('head') or {}).get('ref', '')}", rework_keywords):
-                                ev.is_rework = True
-                    else:
-                        pr_cache[ev.commit_sha] = None
-                except Exception:
-                    pr_cache[ev.commit_sha] = None
-            if pr_ts is None and ev.commit_sha:
-                pr_ts = pr_cache.get(ev.commit_sha)
-
+        # Also evaluate single-commit compare batches (Squash & Merge) so PR development/review
+        # cycle time is captured instead of only post-merge CI runtime.
+        if resolved_hours is None or (
+            single_commit_batch and (hints.get("pr_created_ts") is not None or bool(ev.commit_sha))
+        ):
+            pr_ts = _resolve_commit_pr_signal(
+                client, org, repo, ev, hints, rework_keywords, pr_cache, pr_rework_cache
+            )
             if pr_ts is not None:
                 diff_hours = (deploy_ts - pr_ts).total_seconds() / 3600.0
                 if -0.25 <= diff_hours <= 365.0 * 24.0:
-                    resolved_hours = max(0.01, round(diff_hours, 2))
-                    method = "pr_to_deploy"
+                    pr_hours = max(0.01, round(diff_hours, 2))
+                    if resolved_hours is None or pr_hours > resolved_hours:
+                        resolved_hours = pr_hours
+                        method = "pr_to_deploy"
 
         # 3. Tertiary: Single commit timestamp -> deployment completion (initial baseline only)
         if resolved_hours is None:
@@ -764,6 +799,7 @@ def _collect_rework_prs(
     end: datetime,
     default_branch: str,
     cfg: DORAConfig,
+    errors_out: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """Collect merged rollback, revert, and hotfix PRs targeting production branches."""
     rework_prs: List[Dict[str, Any]] = []
@@ -800,7 +836,9 @@ def _collect_rework_prs(
                     "merge_commit_sha": pr.get("merge_commit_sha"),
                 })
     except requests.HTTPError as err:
-        if err.response is not None and err.response.status_code not in (404, 403):
+        if err.response is not None and err.response.status_code == 403 and errors_out is not None:
+            errors_out.append(f"Pull requests API forbidden (HTTP 403) on {org}/{repo}")
+        elif err.response is not None and err.response.status_code not in (404, 403):
             logger.debug("Pulls query failed for %s/%s: %s", org, repo, err)
     except Exception as err:
         logger.debug("Error retrieving rework PRs for %s/%s: %s", org, repo, err)
@@ -815,6 +853,7 @@ def _collect_incident_issues(
     since: datetime,
     end: datetime,
     cfg: DORAConfig,
+    errors_out: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """Collect GitHub Issues labeled as production incidents within the lookback window."""
     incidents: List[Dict[str, Any]] = []
@@ -849,7 +888,9 @@ def _collect_incident_issues(
                 "state": str(issue.get("state") or "open").lower(),
             })
     except requests.HTTPError as err:
-        if err.response is not None and err.response.status_code not in (404, 403):
+        if err.response is not None and err.response.status_code == 403 and errors_out is not None:
+            errors_out.append(f"Issues API forbidden (HTTP 403) on {org}/{repo}")
+        elif err.response is not None and err.response.status_code not in (404, 403):
             logger.debug("Issues query failed for %s/%s: %s", org, repo, err)
     except Exception as err:
         logger.debug("Error retrieving incident issues for %s/%s: %s", org, repo, err)
@@ -1063,6 +1104,7 @@ def profile_repo_dora(
         end,
         include_non_prod=active_cfg.include_non_prod,
         baseline_out=baseline_refs,
+        errors_out=metrics.errors,
     )
     wf_runs = collect_deploy_workflow_runs(
         client,
@@ -1074,6 +1116,7 @@ def profile_repo_dora(
         include_non_prod=active_cfg.include_non_prod,
         hints_out=hints_map,
         baseline_out=baseline_refs,
+        errors_out=metrics.errors,
     )
 
     metrics.total_releases = len(rels)
@@ -1097,6 +1140,11 @@ def profile_repo_dora(
         metrics.signal_mode = "No Production Activity"
 
     metrics.deployments = sorted(combined_events, key=lambda d: d.created_at)
+    metrics.stalled_deploys_count = sum(
+        1
+        for d in metrics.deployments
+        if d.status == "IN_PROGRESS" and (end - d.created_at).total_seconds() > 86400.0
+    )
 
     # Enrich commit/PR-to-deployment lead times & native GitHub incident/rework signals ONLY for active repos
     if metrics.deployments:
@@ -1110,8 +1158,12 @@ def profile_repo_dora(
             baseline_refs=baseline_refs,
         )
         metrics.incidents = calculate_recovery_incidents(metrics.deployments)
-        rework_prs = _collect_rework_prs(client, org, repo, since, end, default_branch, active_cfg)
-        incident_issues = _collect_incident_issues(client, org, repo, since, end, active_cfg)
+        rework_prs = _collect_rework_prs(
+            client, org, repo, since, end, default_branch, active_cfg, errors_out=metrics.errors
+        )
+        incident_issues = _collect_incident_issues(
+            client, org, repo, since, end, active_cfg, errors_out=metrics.errors
+        )
         _apply_native_incident_and_rework_signals(metrics, rework_prs, incident_issues)
 
     return metrics
@@ -1219,7 +1271,11 @@ def build_dora_rows(
         rework_tier = m.rework_tier
 
         if m.total_deploys == 0:
-            flow_advisory = "-"
+            flow_advisory = (
+                f"Stalled: {m.stalled_deploys_count} deployment(s) IN_PROGRESS >24h without completion."
+                if m.stalled_deploys_count > 0
+                else "-"
+            )
         elif idx in ai_advisories:
             flow_advisory = ai_advisories[idx]
         else:
@@ -1230,12 +1286,19 @@ def build_dora_rows(
                 flow_advisory = "High deployment rework rate from hotfixes/reverts. Enforce stricter PR validation and staged rollouts."
             elif m.open_incidents_count > 0:
                 flow_advisory = f"{m.open_incidents_count} open recovery incident(s) detected. Prioritize service restoration and automated rollback verification."
+            elif m.code_change_deploys == 0 and m.no_op_deploys > 0:
+                flow_advisory = (
+                    f"Only same-SHA/zero-diff rebuilds observed ({m.no_op_deploys} no-op redeploy(s)); "
+                    "no new production code changes shipped in window."
+                )
             elif lttc_tier in ("Low", "Medium"):
                 flow_advisory = "Elevated commit-to-production lead time. Reduce PR batch sizes, streamline code review SLAs, and parallelize CI."
             elif df_tier in ("Low", "Medium") and cfr_tier in ("Elite", "High"):
                 flow_advisory = "Low deployment frequency despite strong stability. Automate continuous delivery triggers and ship smaller increments."
             elif mttr_tier in ("Low", "Medium"):
                 flow_advisory = "Extended recovery duration. Adopt automated zero-downtime rollbacks and healthcheck-driven alerts."
+            if m.stalled_deploys_count > 0:
+                flow_advisory = f"{flow_advisory} ({m.stalled_deploys_count} stalled IN_PROGRESS deploy(s) >24h.)"
         m.flow_advisory = flow_advisory
 
         repo_rows.append([
@@ -1260,6 +1323,14 @@ def build_dora_rows(
             rework_tier,
             m.open_incidents_count,
             m.signal_mode,
+            m.code_change_deploys,
+            m.no_op_deploys,
+            m.lttc_coverage_pct if m.lttc_coverage_pct is not None else "N/A",
+            m.stalled_deploys_count,
+            m.effective_failed_changes,
+            m.rework_deploys,
+            m.redundant_failure_retries,
+            m.telemetry_scope,
         ])
 
         for d in m.deployments:
@@ -1268,6 +1339,11 @@ def build_dora_rows(
             run_str = str(d.run_id) if d.run_id else "-"
             method_label = d.lead_time_source or ("unavailable" if d.lead_time_hours is None else "measured")
             rework_label = "Yes" if d.is_rework else "No"
+            completed_str = (
+                fmt_timestamp(d.completed_at)
+                if d.completed_at is not None
+                else ("Pending" if d.status == "IN_PROGRESS" else "-")
+            )
             deployment_rows.append([
                 m.org,
                 m.repo,
@@ -1281,6 +1357,7 @@ def build_dora_rows(
                 run_str,
                 method_label,
                 rework_label,
+                completed_str,
             ])
 
         for inc in m.incidents:
@@ -1308,6 +1385,10 @@ def build_dora_rows(
         inactive_repos = len(p_list) - active_deploy_repos
 
         total_org_deploys = sum(m.total_deploys for m in active_repos)
+        total_org_successful = sum(m.successful_deploys for m in active_repos)
+        total_org_code_change = sum(m.code_change_deploys for m in active_repos)
+        total_org_collapsed = sum(m.redundant_failure_retries for m in active_repos)
+        org_cfr_denom = max(0, total_org_deploys - total_org_collapsed)
         total_org_failed_changes = sum(m.effective_failed_changes for m in active_repos)
         total_org_rework = sum(m.rework_deploys for m in active_repos)
         total_org_open_incidents = sum(m.open_incidents_count for m in active_repos)
@@ -1320,10 +1401,10 @@ def build_dora_rows(
             org_df = 0.0
             org_df_tier = "N/A"
 
-        if total_org_deploys > 0:
-            org_cfr: Optional[float] = round((total_org_failed_changes / total_org_deploys) * 100, 2)
+        if org_cfr_denom > 0:
+            org_cfr: Optional[float] = round((total_org_failed_changes / org_cfr_denom) * 100, 2)
             org_cfr_tier = get_cfr_tier(org_cfr)
-            org_rework: Optional[float] = round((total_org_rework / total_org_deploys) * 100, 2)
+            org_rework: Optional[float] = round((total_org_rework / org_cfr_denom) * 100, 2)
             org_rework_tier = get_rework_tier(org_rework)
         else:
             org_cfr = None
@@ -1356,6 +1437,13 @@ def build_dora_rows(
                 [org_df_tier, org_lttc_tier, org_cfr_tier, org_mttr_tier],
                 cfr_tier=org_cfr_tier,
                 rework_tier=org_rework_tier,
+                df_tier=org_df_tier,
+                lttc_tier=org_lttc_tier,
+                mttr_tier=org_mttr_tier,
+                has_open_incidents=total_org_open_incidents > 0,
+                successful_deploys=total_org_successful,
+                code_change_deploys=total_org_code_change,
+                window_days=window_days,
             )
 
         org_rows.append([

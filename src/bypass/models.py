@@ -125,3 +125,12 @@ class BypassConfig:
     include_archived: bool = False
     output_dir: str = "./repo360-output"
     file_prefix: str = "repo360_bypass"
+
+
+def classify_bypass_risk(total_push: int, total_incidents: int) -> str:
+    """Classify enterprise/org bypass risk tier with unified compliance thresholds."""
+    if total_push > 10 or total_incidents > 20:
+        return "High"
+    if total_push > 0 or total_incidents > 5:
+        return "Medium"
+    return "Low"

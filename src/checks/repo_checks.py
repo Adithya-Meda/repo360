@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import re
 from typing import Any, Dict, List
+import requests
 
+from ._helpers import get_permission_gap, is_http_forbidden, make_permission_skipped_result
 from .base import BaseCheck, CheckResult, CheckSeverity, CheckStatus, Persona
 from ..collector.repo_inspector import RepoInspector
 
@@ -34,10 +36,13 @@ class CodeownersCheck(BaseCheck):
         )
 
         if content and content.strip():
-            # Check if default wildcard rule exists
-            has_wildcard = any(
-                line.strip().startswith("*") for line in content.splitlines()
-            )
+            # Check if a real non-comment default wildcard rule with owner handle exists
+            has_wildcard = False
+            for line in content.splitlines():
+                stripped = line.split("#", 1)[0].strip()
+                if stripped and re.match(r"^\*\s+\S+", stripped):
+                    has_wildcard = True
+                    break
             if has_wildcard:
                 return CheckResult(
                     check_id=self.check_id,
@@ -105,21 +110,72 @@ class BranchRulesetsCheck(BaseCheck):
         default_branch: str,
         thresholds: Dict[str, Any],
     ) -> CheckResult:
-        required_approvals = thresholds.get("minimum_approvals", 2)
-        if isinstance(required_approvals, dict):
-            required_approvals = 2
+        doc_url = "https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets"
+        raw_req = thresholds.get("minimum_approvals", 2)
+        required_approvals = raw_req if isinstance(raw_req, int) else 2
 
-        # Check repo rulesets first
-        rulesets = inspector.get_repo_rulesets(org, repo)
-        active_rulesets = [
-            r for r in rulesets if r.get("enforcement") in ("active", "evaluate")
-        ]
+        try:
+            rulesets = inspector.get_repo_rulesets(org, repo)
+            branch_rules_fn = getattr(inspector, "get_repo_branch_rules", None)
+            raw_branch_rules = branch_rules_fn(org, repo, default_branch) if callable(branch_rules_fn) else []
+            branch_rules = raw_branch_rules if isinstance(raw_branch_rules, list) else []
+            protection = inspector.get_branch_protection(org, repo, default_branch)
+        except requests.exceptions.HTTPError as err:
+            if is_http_forbidden(err):
+                return make_permission_skipped_result(
+                    self, org, "HTTP 403 Forbidden inspecting branch rulesets or protection.", doc_url, repo=repo
+                )
+            raise
 
-        # Check classic branch protection
-        protection = inspector.get_branch_protection(org, repo, default_branch)
+        perm_err = (
+            get_permission_gap(inspector, org, "repo_branch_rules", repo=repo)
+            or get_permission_gap(inspector, org, "repo_rulesets", repo=repo)
+            or get_permission_gap(inspector, org, "branch_protection", repo=repo)
+        )
 
-        has_protection = bool(active_rulesets or protection)
-        if not has_protection:
+        rulesets_list = rulesets if isinstance(rulesets, list) else []
+        active_rulesets = [r for r in rulesets_list if isinstance(r, dict) and r.get("enforcement") == "active"]
+        evaluate_rulesets = [r for r in rulesets_list if isinstance(r, dict) and r.get("enforcement") == "evaluate"]
+
+        # Gather detailed rules from active repo rulesets if effective branch rules list was unavailable
+        inline_rules: List[Dict[str, Any]] = []
+        if active_rulesets and not branch_rules:
+            details_fn = getattr(inspector, "get_repo_ruleset_details", None)
+            for rs in active_rulesets:
+                if isinstance(rs.get("rules"), list):
+                    inline_rules.extend(r for r in rs["rules"] if isinstance(r, dict))
+                elif rs.get("id") and callable(details_fn):
+                    det = details_fn(org, repo, rs["id"])
+                    if isinstance(det, dict) and isinstance(det.get("rules"), list):
+                        inline_rules.extend(r for r in det["rules"] if isinstance(r, dict))
+
+        effective_rules = branch_rules or inline_rules
+        protection_dict = protection if isinstance(protection, dict) else None
+
+        has_active_control = bool(active_rulesets or effective_rules or protection_dict)
+        if not has_active_control:
+            if perm_err:
+                return make_permission_skipped_result(self, org, perm_err, doc_url, repo=repo)
+            if evaluate_rulesets:
+                return CheckResult(
+                    check_id=self.check_id,
+                    check_name=self.check_name,
+                    persona=self.persona,
+                    category=self.category,
+                    status=CheckStatus.WARN,
+                    severity=self.severity,
+                    org_name=org,
+                    repo_name=repo,
+                    current_state=(
+                        f"Branch '{default_branch}' only has {len(evaluate_rulesets)} ruleset(s) in 'evaluate' "
+                        "(dry-run) mode and no active enforcement or branch protection."
+                    ),
+                    recommended_state=f"Enable 'Active' enforcement on rulesets targeting '{default_branch}' with {required_approvals} approvals.",
+                    explanation="Evaluate-mode rulesets do not block non-compliant merges or direct pushes.",
+                    remediation_snippet_before="Enforcement status: Evaluate (non-blocking)",
+                    remediation_snippet_after="Enforcement status: Active",
+                    documentation_url=doc_url,
+                )
             return CheckResult(
                 check_id=self.check_id,
                 check_name=self.check_name,
@@ -129,21 +185,73 @@ class BranchRulesetsCheck(BaseCheck):
                 severity=self.severity,
                 org_name=org,
                 repo_name=repo,
-                current_state=f"Default branch '{default_branch}' has no rulesets or protection enabled.",
-                recommended_state=f"Apply a ruleset requiring PR approvals (min {required_approvals}).",
+                current_state=f"Default branch '{default_branch}' has no active rulesets or protection enabled.",
+                recommended_state=f"Apply an active ruleset requiring PR approvals (min {required_approvals}).",
                 explanation=f"Default branch must enforce peer reviews and status checks prior to merging into {default_branch}.",
                 remediation_snippet_before="Direct push allowed to main without PR review or status checks.",
                 remediation_snippet_after=f"Repository Ruleset targeting '{default_branch}':\n- Require Pull Request with {required_approvals} approvals\n- Require status checks to pass\n- Block force pushes and deletions",
-                documentation_url="https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets",
+                documentation_url=doc_url,
             )
 
-        # Inspect required approvals if classic protection exists
+        # Evaluate actual approval count across active rulesets (/rules/branches) and classic protection
         current_approvals = 0
-        if protection and isinstance(protection, dict):
-            pr_reviews = protection.get("required_pull_request_reviews", {})
-            current_approvals = pr_reviews.get("required_approving_review_count", 0)
+        has_linear_history = False
+        has_signed_commits = False
+        blocks_force_pushes = False
+        blocks_deletions = False
+        inspected_rule_details = False
 
+        if protection_dict is not None:
+            inspected_rule_details = True
+            pr_reviews = protection_dict.get("required_pull_request_reviews") or {}
+            if isinstance(pr_reviews, dict):
+                current_approvals = max(current_approvals, int(pr_reviews.get("required_approving_review_count") or 0))
+            if (protection_dict.get("required_linear_history") or {}).get("enabled"):
+                has_linear_history = True
+            if (protection_dict.get("required_signatures") or {}).get("enabled"):
+                has_signed_commits = True
+            allow_fp = protection_dict.get("allow_force_pushes")
+            if isinstance(allow_fp, dict):
+                blocks_force_pushes = not bool(allow_fp.get("enabled", False))
+            else:
+                blocks_force_pushes = True
+            allow_del = protection_dict.get("allow_deletions")
+            if isinstance(allow_del, dict):
+                blocks_deletions = not bool(allow_del.get("enabled", False))
+            else:
+                blocks_deletions = True
+
+        for rule in effective_rules:
+            if not isinstance(rule, dict):
+                continue
+            inspected_rule_details = True
+            r_type = rule.get("type")
+            params = rule.get("parameters") or {}
+            if r_type == "pull_request" and isinstance(params, dict):
+                current_approvals = max(current_approvals, int(params.get("required_approving_review_count") or 0))
+            elif r_type == "required_linear_history":
+                has_linear_history = True
+            elif r_type == "required_signatures":
+                has_signed_commits = True
+            elif r_type == "non_fast_forward":
+                blocks_force_pushes = True
+            elif r_type == "deletion":
+                blocks_deletions = True
+
+        gaps: List[str] = []
         if current_approvals < required_approvals:
+            gaps.append(f"approvals ({current_approvals} < policy min {required_approvals})")
+        if inspected_rule_details:
+            if thresholds.get("require_linear_history") and not has_linear_history:
+                gaps.append("linear history not required")
+            if thresholds.get("require_signed_commits") and not has_signed_commits:
+                gaps.append("signed commits not required")
+            if thresholds.get("disallow_force_pushes") and not blocks_force_pushes:
+                gaps.append("force pushes permitted")
+            if thresholds.get("disallow_deletions") and not blocks_deletions:
+                gaps.append("branch deletions permitted")
+
+        if gaps:
             return CheckResult(
                 check_id=self.check_id,
                 check_name=self.check_name,
@@ -153,12 +261,15 @@ class BranchRulesetsCheck(BaseCheck):
                 severity=CheckSeverity.HIGH,
                 org_name=org,
                 repo_name=repo,
-                current_state=f"Approval count ({current_approvals}) is below policy threshold ({required_approvals}).",
-                recommended_state=f"Increase required approving review count to at least {required_approvals}.",
-                explanation=f"Pull requests require at least {required_approvals} approving reviews to protect code quality.",
-                remediation_snippet_before=f"Required approvals: {current_approvals}",
-                remediation_snippet_after=f"Required approvals: {required_approvals} (with dismissal of stale reviews)",
-                documentation_url="https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets",
+                current_state=f"Branch '{default_branch}' protection gaps: {'; '.join(gaps)}.",
+                recommended_state=(
+                    f"Enforce >= {required_approvals} PR approvals and policy hardening "
+                    "controls on the default branch."
+                ),
+                explanation=f"Default branch '{default_branch}' lacks full policy compliance: {'; '.join(gaps)}.",
+                remediation_snippet_before=f"Approvals={current_approvals}; gaps: {', '.join(gaps)}",
+                remediation_snippet_after=f"Required approvals: {required_approvals}, block force pushes & deletions, dismiss stale reviews",
+                documentation_url=doc_url,
             )
 
         approval_noun = "approval" if required_approvals == 1 else "approvals"
@@ -172,9 +283,125 @@ class BranchRulesetsCheck(BaseCheck):
             org_name=org,
             repo_name=repo,
             current_state=f"Branch ruleset/protection active on '{default_branch}' compliant with {required_approvals} {approval_noun} standard.",
-            recommended_state=f"Maintain branch protection policy.",
-            explanation="Default branch has active protection rules enforcing reviews.",
-            documentation_url="https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets",
+            recommended_state="Maintain branch protection policy.",
+            explanation="Default branch has active protection rules enforcing reviews and safeguards.",
+            documentation_url=doc_url,
+        )
+
+
+class EnvironmentProtectionGatesCheck(BaseCheck):
+    """Verifies deployment environments configure reviewers or branch protection gates."""
+
+    check_id = "environment_protection_gates"
+    check_name = "Deployment Environment Protection Gates"
+    persona = Persona.REPO_ADMIN
+    category = "Release & Deployment Governance"
+    severity = CheckSeverity.HIGH
+
+    PROD_ENV_KEYWORDS = ("prod", "production", "prd", "live", "release", "staging", "stage")
+
+    def evaluate(
+        self,
+        inspector: RepoInspector,
+        org: str,
+        repo: str,
+        default_branch: str,
+        thresholds: Dict[str, Any],
+    ) -> CheckResult:
+        doc_url = "https://docs.github.com/en/actions/managing-workflow-runs-and-deployments/managing-deployments/managing-environments-for-deployment"
+        try:
+            raw_envs = inspector.get_environments(org, repo)
+        except requests.exceptions.HTTPError as err:
+            if is_http_forbidden(err):
+                return make_permission_skipped_result(
+                    self, org, "HTTP 403 Forbidden inspecting /environments.", doc_url, repo=repo
+                )
+            raise
+
+        perm_err = get_permission_gap(inspector, org, "repo_environments", repo=repo)
+        if perm_err and not raw_envs:
+            return make_permission_skipped_result(self, org, perm_err, doc_url, repo=repo)
+
+        envs = raw_envs if isinstance(raw_envs, list) else []
+        if not envs:
+            return CheckResult(
+                check_id=self.check_id,
+                check_name=self.check_name,
+                persona=self.persona,
+                category=self.category,
+                status=CheckStatus.SKIPPED,
+                severity=CheckSeverity.INFO,
+                org_name=org,
+                repo_name=repo,
+                current_state="No GitHub deployment environments configured in repository.",
+                recommended_state="Configure protected deployment environments when managing staged releases.",
+                explanation="Repository has no defined deployment environments to audit.",
+                documentation_url=doc_url,
+            )
+
+        unprotected_prod: List[str] = []
+        unprotected_non_prod: List[str] = []
+        for env in envs:
+            if not isinstance(env, dict):
+                continue
+            env_name = str(env.get("name") or "unnamed")
+            rules = env.get("protection_rules") or []
+            branch_policy = env.get("deployment_branch_policy")
+            has_gate = bool(rules) or isinstance(branch_policy, dict)
+            if not has_gate:
+                lowered = env_name.lower()
+                if any(tok in lowered for tok in self.PROD_ENV_KEYWORDS):
+                    unprotected_prod.append(env_name)
+                else:
+                    unprotected_non_prod.append(env_name)
+
+        if unprotected_prod:
+            return CheckResult(
+                check_id=self.check_id,
+                check_name=self.check_name,
+                persona=self.persona,
+                category=self.category,
+                status=CheckStatus.FAIL,
+                severity=self.severity,
+                org_name=org,
+                repo_name=repo,
+                current_state=f"Production/staged environments lack protection rules: {', '.join(unprotected_prod)}.",
+                recommended_state="Configure required reviewers and deployment branch policies on production environments.",
+                explanation="Unprotected deployment environments allow any workflow run or branch to access production secrets and deploy.",
+                remediation_snippet_before=f"Environment '{unprotected_prod[0]}': 0 protection rules",
+                remediation_snippet_after="Environment Settings -> Required reviewers + Selected branches (main/release tags only)",
+                documentation_url=doc_url,
+            )
+
+        if unprotected_non_prod:
+            return CheckResult(
+                check_id=self.check_id,
+                check_name=self.check_name,
+                persona=self.persona,
+                category=self.category,
+                status=CheckStatus.WARN,
+                severity=CheckSeverity.MEDIUM,
+                org_name=org,
+                repo_name=repo,
+                current_state=f"Non-production environments lack protection rules or branch policies: {', '.join(unprotected_non_prod)}.",
+                recommended_state="Add branch policies to restrict which branches can deploy to shared environments.",
+                explanation="Environments without deployment branch policies allow feature branches to read environment secrets.",
+                documentation_url=doc_url,
+            )
+
+        return CheckResult(
+            check_id=self.check_id,
+            check_name=self.check_name,
+            persona=self.persona,
+            category=self.category,
+            status=CheckStatus.PASS,
+            severity=self.severity,
+            org_name=org,
+            repo_name=repo,
+            current_state=f"All {len(envs)} deployment environment(s) enforce protection rules or branch policies.",
+            recommended_state="Maintain reviewer approvals and branch restrictions on deployment environments.",
+            explanation="Deployment environments restrict secrets and release approvals to authorized reviewers and branches.",
+            documentation_url=doc_url,
         )
 
 
@@ -188,9 +415,23 @@ class WorkflowShaPinningCheck(BaseCheck):
     severity = CheckSeverity.HIGH
 
     MUTABLE_TAG_PATTERN = re.compile(
-        r"uses:\s*([a-zA-Z0-9_\-\.]+\/[a-zA-Z0-9_\-\.]+)(?:@[a-zA-Z0-9_\-\.]+)"
+        r"uses:\s*['\"]?([a-zA-Z0-9_.\-]+(?:/[a-zA-Z0-9_.\-]+)+)@([^\s'\"#]+)"
     )
-    SHA_PATTERN = re.compile(r"@[a-f0-9]{40}")
+    SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
+
+    @staticmethod
+    def _strip_yaml_comment(line: str) -> str:
+        """Strip trailing # YAML comment while preserving # inside quoted strings."""
+        in_single = False
+        in_double = False
+        for idx, ch in enumerate(line):
+            if ch == "'" and not in_double:
+                in_single = not in_single
+            elif ch == '"' and not in_single:
+                in_double = not in_double
+            elif ch == "#" and not in_single and not in_double:
+                return line[:idx]
+        return line
 
     def evaluate(
         self,
@@ -200,7 +441,20 @@ class WorkflowShaPinningCheck(BaseCheck):
         default_branch: str,
         thresholds: Dict[str, Any],
     ) -> CheckResult:
-        workflows = inspector.list_workflows(org, repo)
+        doc_url = "https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions#using-third-party-actions"
+        try:
+            workflows = inspector.list_workflows(org, repo)
+        except requests.exceptions.HTTPError as err:
+            if is_http_forbidden(err):
+                return make_permission_skipped_result(
+                    self, org, "HTTP 403 Forbidden listing /actions/workflows.", doc_url, repo=repo
+                )
+            raise
+
+        perm_err = get_permission_gap(inspector, org, "repo_workflows", repo=repo)
+        if perm_err and not workflows:
+            return make_permission_skipped_result(self, org, perm_err, doc_url, repo=repo)
+
         if not workflows:
             return CheckResult(
                 check_id=self.check_id,
@@ -214,7 +468,7 @@ class WorkflowShaPinningCheck(BaseCheck):
                 current_state="No GitHub Actions workflows configured in repository.",
                 recommended_state="Use immutable SHAs when adopting Actions.",
                 explanation="No workflow YAML files to inspect.",
-                documentation_url="https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions#using-third-party-actions",
+                documentation_url=doc_url,
             )
 
         unpinned_actions: List[str] = []
@@ -226,15 +480,18 @@ class WorkflowShaPinningCheck(BaseCheck):
             if not content:
                 continue
 
-            for line in content.splitlines():
-                if "uses:" in line and not line.strip().startswith("#"):
-                    # Exclude local actions (./) or docker actions (docker://)
-                    if "./" in line or "docker://" in line:
-                        continue
-                    if not self.SHA_PATTERN.search(line):
-                        match = self.MUTABLE_TAG_PATTERN.search(line)
-                        if match:
-                            unpinned_actions.append(f"{wf.get('name')}: {match.group(0).strip()}")
+            for raw_line in content.splitlines():
+                clean_line = self._strip_yaml_comment(raw_line).strip()
+                if not clean_line or "uses:" not in clean_line:
+                    continue
+                after_uses = clean_line.split("uses:", 1)[1].strip().strip("'\"")
+                if after_uses.startswith(("./", "docker://")):
+                    continue
+                match = self.MUTABLE_TAG_PATTERN.search(clean_line)
+                if match:
+                    ref = match.group(2).strip()
+                    if not self.SHA_PATTERN.match(ref):
+                        unpinned_actions.append(f"{wf.get('name')}: uses: {match.group(1)}@{ref}")
 
         if unpinned_actions:
             sample_unpinned = unpinned_actions[:3]
@@ -288,7 +545,20 @@ class WorkflowConcurrencyGroupsCheck(BaseCheck):
         default_branch: str,
         thresholds: Dict[str, Any],
     ) -> CheckResult:
-        workflows = inspector.list_workflows(org, repo)
+        doc_url = "https://docs.github.com/en/actions/using-jobs/using-concurrency"
+        try:
+            workflows = inspector.list_workflows(org, repo)
+        except requests.exceptions.HTTPError as err:
+            if is_http_forbidden(err):
+                return make_permission_skipped_result(
+                    self, org, "HTTP 403 Forbidden listing /actions/workflows.", doc_url, repo=repo
+                )
+            raise
+
+        perm_err = get_permission_gap(inspector, org, "repo_workflows", repo=repo)
+        if perm_err and not workflows:
+            return make_permission_skipped_result(self, org, perm_err, doc_url, repo=repo)
+
         if not workflows:
             return CheckResult(
                 check_id=self.check_id,
@@ -302,7 +572,7 @@ class WorkflowConcurrencyGroupsCheck(BaseCheck):
                 current_state="No workflows present.",
                 recommended_state="Add concurrency controls when workflows are created.",
                 explanation="No workflow files found.",
-                documentation_url="https://docs.github.com/en/actions/using-jobs/using-concurrency",
+                documentation_url=doc_url,
             )
 
         missing_concurrency: List[str] = []
@@ -311,7 +581,13 @@ class WorkflowConcurrencyGroupsCheck(BaseCheck):
             if not wf_path:
                 continue
             content = inspector.get_file_content(org, repo, wf_path, default_branch)
-            if content and "concurrency:" not in content:
+            if not content:
+                continue
+            has_concurrency_key = any(
+                re.match(r"^\s*concurrency\s*:", line.split("#", 1)[0])
+                for line in content.splitlines()
+            )
+            if not has_concurrency_key:
                 missing_concurrency.append(wf.get("name", wf_path))
 
         if missing_concurrency:

@@ -289,3 +289,105 @@ class PreCommitHooksCheck(BaseCheck):
             remediation_snippet_after="repos:\n  - repo: https://github.com/pre-commit/pre-commit-hooks\n    rev: v4.6.0\n    hooks:\n      - id: trailing-whitespace\n      - id: end-of-file-fixer\n      - id: check-added-large-files",
             documentation_url="https://pre-commit.com/",
         )
+
+
+class SetupDocumentationCheck(BaseCheck):
+    """Verifies onboarding documentation (README setup instructions & CONTRIBUTING guide)."""
+
+    check_id = "setup_documentation"
+    check_name = "Local Setup & Contributing Documentation"
+    persona = Persona.CONTRIBUTOR
+    category = "Developer Ergonomics (DX)"
+    severity = CheckSeverity.LOW
+
+    SETUP_KEYWORDS = ("install", "setup", "getting started", "quickstart", "prerequisites", "running locally", "usage")
+
+    def evaluate(
+        self,
+        inspector: RepoInspector,
+        org: str,
+        repo: str,
+        default_branch: str,
+        thresholds: Dict[str, Any],
+    ) -> CheckResult:
+        doc_url = "https://docs.github.com/en/communities/setting-up-your-project-for-healthy-contributions/setting-guidelines-for-repository-contributors"
+        has_readme = any(
+            inspector.check_file_exists(org, repo, path, default_branch)
+            for path in ("README.md", "README.rst", "readme.md")
+        )
+        has_contributing = any(
+            inspector.check_file_exists(org, repo, path, default_branch)
+            for path in ("CONTRIBUTING.md", ".github/CONTRIBUTING.md", "docs/CONTRIBUTING.md", "SETUP.md")
+        )
+
+        if has_contributing and has_readme:
+            return CheckResult(
+                check_id=self.check_id,
+                check_name=self.check_name,
+                persona=self.persona,
+                category=self.category,
+                status=CheckStatus.PASS,
+                severity=self.severity,
+                org_name=org,
+                repo_name=repo,
+                current_state="README.md and CONTRIBUTING.md / setup documentation present.",
+                recommended_state="Keep onboarding setup commands and architecture overview updated.",
+                explanation="Clear setup and contribution docs accelerate engineer onboarding and reduce support toil.",
+                documentation_url=doc_url,
+            )
+
+        if has_readme:
+            readme_content = (
+                inspector.get_file_content(org, repo, "README.md", default_branch)
+                or inspector.get_file_content(org, repo, "README.rst", default_branch)
+                or ""
+            ).lower()
+            if any(kw in readme_content for kw in self.SETUP_KEYWORDS):
+                return CheckResult(
+                    check_id=self.check_id,
+                    check_name=self.check_name,
+                    persona=self.persona,
+                    category=self.category,
+                    status=CheckStatus.PASS,
+                    severity=self.severity,
+                    org_name=org,
+                    repo_name=repo,
+                    current_state="README contains setup/getting-started documentation.",
+                    recommended_state="Consider extracting detailed PR/test conventions into CONTRIBUTING.md.",
+                    explanation="Setup instructions inside README enable engineers to run and validate changes locally.",
+                    documentation_url=doc_url,
+                )
+
+            return CheckResult(
+                check_id=self.check_id,
+                check_name=self.check_name,
+                persona=self.persona,
+                category=self.category,
+                status=CheckStatus.WARN,
+                severity=self.severity,
+                org_name=org,
+                repo_name=repo,
+                current_state="README exists, but lacks explicit setup/install section or CONTRIBUTING.md.",
+                recommended_state="Add local setup commands to README.md and create CONTRIBUTING.md.",
+                explanation="New contributors need copy-pasteable setup, test, and environment steps to onboard rapidly.",
+                remediation_snippet_before="[README without setup or CONTRIBUTING.md]",
+                remediation_snippet_after="## Local Setup\n1. Install dependencies\n2. Run tests locally\n\nSee CONTRIBUTING.md for PR conventions.",
+                documentation_url=doc_url,
+            )
+
+        return CheckResult(
+            check_id=self.check_id,
+            check_name=self.check_name,
+            persona=self.persona,
+            category=self.category,
+            status=CheckStatus.WARN,
+            severity=self.severity,
+            org_name=org,
+            repo_name=repo,
+            current_state="Missing README.md and setup/contributing documentation.",
+            recommended_state="Add README.md with setup steps and CONTRIBUTING.md.",
+            explanation="Without onboarding documentation, new engineers struggle to bootstrap local development and testing.",
+            remediation_snippet_before="[No README.md or CONTRIBUTING.md]",
+            remediation_snippet_after="# Service Overview\n\n## Getting Started\n...",
+            documentation_url=doc_url,
+        )

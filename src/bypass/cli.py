@@ -19,7 +19,7 @@ from ..common.inventory import (
 )
 from ..credentials import resolve_runtime_credentials
 from .collector import build_bypass_rows, collect_bypass_data
-from .models import BypassConfig
+from .models import BypassConfig, classify_bypass_risk
 from .reporter import write_bypass_workbook
 
 logger = logging.getLogger("repo360.bypass")
@@ -33,6 +33,7 @@ def print_bypass_scorecard(
     xlsx_path: Path,
     elapsed_seconds: float,
     lookback_days: int,
+    unaudited_count: int = 0,
 ) -> None:
     """Print an executive color-coded Bypass compliance scorecard to stdout."""
     G = "\033[92m"
@@ -53,17 +54,20 @@ def print_bypass_scorecard(
         else f"{elapsed_seconds:.1f}s"
     )
 
-    incident_color = R if total_push > 10 or total_incidents > 20 else (Y if total_incidents > 0 else G)
+    risk_tier = classify_bypass_risk(total_push, total_incidents)
+    incident_color = R if risk_tier == "High" else (Y if total_incidents > 0 or risk_tier == "Medium" else G)
 
     print(f"\n{C}{'=' * 76}{X}")
     print(f"{B}{C}   REPO360 PUSH PROTECTION & RULESET BYPASS LEDGER SCORECARD{X}")
     print(f"{C}{'=' * 76}{X}")
     print(f"   {B}Organizations Monitored        :{X} {len(org_rows)}")
     print(f"   {B}Analysis Lookback Window       :{X} {lookback_days} Days")
-    print(f"   {B}Push Protection Bypasses       :{X} {R if total_push else G}{total_push} secrets exposed{X}")
+    print(f"   {B}Push Protection Bypasses       :{X} {R if total_push else G}{total_push} overrides{X}")
     print(f"   {B}Branch Ruleset Bypasses        :{X} {Y if total_ruleset else G}{total_ruleset} policy overrides{X}")
     print(f"   {B}Total Policy Bypass Incidents  :{X} {incident_color}{B}{total_incidents}{X}")
     print(f"   {B}Unique Bypassing Actors        :{X} {unique_actors}")
+    if unaudited_count > 0:
+        print(f"   {B}Unaudited / Permission Gaps    :{X} {Y}{unaudited_count} signal check(s) skipped (403/missing permission){X}")
     print(f"   {B}Duration                       :{X} {elapsed_str}")
     print(f"{C}{'-' * 76}{X}")
     print(f"   {B}Executive Compliance Ledger    :{X} {xlsx_path}")
@@ -193,6 +197,11 @@ def run_bypass_cli(argv: Optional[List[str]] = None) -> int:
 
     profiles = collect_bypass_data(client, orgs, targets, since, cfg, metadata_cache, ai_engine=ai_engine)
     push_rows, ruleset_rows, org_rows, actor_rows = build_bypass_rows(profiles, orgs)
+    failures: List[Tuple[str, str]] = [
+        (f"{p.org}/{p.repo}", err)
+        for p in profiles
+        for err in p.errors
+    ]
 
     out_dir = Path(cfg.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -208,7 +217,7 @@ def run_bypass_cli(argv: Optional[List[str]] = None) -> int:
         ruleset_rows=ruleset_rows,
         org_rows=org_rows,
         actor_rows=actor_rows,
-        failures=[],
+        failures=failures,
         execution_duration=elapsed,
     )
 
@@ -220,5 +229,6 @@ def run_bypass_cli(argv: Optional[List[str]] = None) -> int:
         xlsx_path=xlsx_path,
         elapsed_seconds=elapsed,
         lookback_days=cfg.lookback_days,
+        unaudited_count=len(failures),
     )
     return 0

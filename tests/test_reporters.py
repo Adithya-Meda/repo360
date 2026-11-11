@@ -318,3 +318,70 @@ def test_finops_and_dora_baseline_rows_suppress_repetitive_advice() -> None:
     dora_rows, _, _, _ = build_dora_rows([zero_deploy_metrics], ["acme"], window_days=30, ai_engine=ai_spy)
     assert dora_rows[0][14] == "-"
     ai_spy.diagnose_dora_flow.assert_not_called()
+
+
+def test_audit_score_consistency_excludes_skipped(capsys) -> None:
+    """Verify terminal scorecard and BaseReporter exclude SKIPPED checks consistently."""
+    from src.checks.base import CheckResult, CheckSeverity, CheckStatus, Persona
+    from src.main import print_terminal_scorecard
+    from src.reporters.base_reporter import BaseReporter
+
+    results = [
+        CheckResult(
+            check_id="c1",
+            check_name="Check 1",
+            persona=Persona.ORG_ADMIN,
+            category="Security",
+            status=CheckStatus.PASS,
+            severity=CheckSeverity.HIGH,
+            org_name="acme",
+            repo_name="repo1",
+            current_state="OK",
+            recommended_state="OK",
+            explanation="OK",
+            documentation_url="https://docs.example.com",
+        ),
+        CheckResult(
+            check_id="c2",
+            check_name="Check 2",
+            persona=Persona.REPO_ADMIN,
+            category="CI/CD",
+            status=CheckStatus.SKIPPED,
+            severity=CheckSeverity.INFO,
+            org_name="acme",
+            repo_name="repo1",
+            current_state="Skipped",
+            recommended_state="N/A",
+            explanation="Skipped",
+            documentation_url="https://docs.example.com",
+        ),
+        CheckResult(
+            check_id="c3",
+            check_name="Check 3",
+            persona=Persona.ORG_ADMIN,
+            category="Security",
+            status=CheckStatus.SKIPPED,
+            severity=CheckSeverity.INFO,
+            org_name="locked-org",
+            repo_name="Organization-Wide",
+            current_state="403 Forbidden",
+            recommended_state="Grant perms",
+            explanation="Skipped due to 403",
+            documentation_url="https://docs.example.com",
+        ),
+    ]
+    org_metrics = BaseReporter.build_organization_metrics(results)
+    acme = next(m for m in org_metrics if m["org_name"] == "acme")
+    locked = next(m for m in org_metrics if m["org_name"] == "locked-org")
+    assert acme["compliance_score"] == 100.0
+    assert acme["status"] == "COMPLIANT"
+    assert locked["status"] == "NOT EVALUATED"
+
+    print_terminal_scorecard(
+        results[:2],
+        [RepoTarget(org_name="acme", repo_name="repo1", target_personas={"all"})],
+        {"xlsx": "out.xlsx"},
+    )
+    out = capsys.readouterr().out
+    assert "100.0%" in out
+    assert "SKIPPED" in out

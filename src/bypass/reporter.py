@@ -26,11 +26,13 @@ from .models import (
     BYPASS_PUSH_PROTECTION_HEADERS,
     BYPASS_RULESET_HEADERS,
     BypassConfig,
+    classify_bypass_risk,
 )
 
 RISK_TIER_STYLES = {
     "High": ("FFC7CE", "9C0006"),
     "Medium": ("FFEB9C", "9C5700"),
+    "Unknown (Partial)": ("FFEB9C", "9C5700"),
     "Low": ("C6EFCE", "006100"),
 }
 
@@ -70,13 +72,20 @@ def write_bypass_workbook(
     total_ruleset = len(ruleset_rows)
     total_incidents = total_push + total_ruleset
     unique_actors = len(actor_rows)
-    repos_with_bypasses = len({r[1] for r in push_rows} | {r[1] for r in ruleset_rows})
+    repos_with_bypasses = len(
+        {(str(r[0]).casefold(), str(r[1]).casefold()) for r in push_rows}
+        | {(str(r[0]).casefold(), str(r[1]).casefold()) for r in ruleset_rows}
+    )
 
-    compliance_posture = "Satisfactory (No Bypasses)"
-    if total_push > 10 or total_incidents > 25:
+    risk_tier = classify_bypass_risk(total_push, total_incidents)
+    if risk_tier == "High":
         compliance_posture = "Critical Concern (High Bypass Volume)"
-    elif total_push > 0 or total_incidents > 5:
+    elif risk_tier == "Medium":
         compliance_posture = "Review Required (Moderate Bypasses)"
+    elif failures:
+        compliance_posture = f"Partial Coverage ({len(failures)} Unaudited / Permission Gap(s))"
+    else:
+        compliance_posture = "Satisfactory (No Bypasses)"
 
     kpis = [
         ["Total Duration", duration_str],
@@ -86,6 +95,7 @@ def write_bypass_workbook(
         ["Push Protection Secret Bypasses", total_push],
         ["Branch Ruleset Policy Bypasses", total_ruleset],
         ["Unique Bypassing Actors", unique_actors],
+        ["Unaudited / API Permission Gaps", len(failures)],
         ["Enterprise Compliance Posture", compliance_posture],
     ]
     curr_row = write_table(summary, 4, ("Metric", "Fleet Aggregate"), kpis) + 2
@@ -99,6 +109,12 @@ def write_bypass_workbook(
 
     autofit(summary, skip_rows=2)
     summary.sheet_view.showGridLines = False
+
+    if failures:
+        gap_ws = wb.create_sheet("Unaudited & Permission Gaps")
+        gap_rows = [[target, msg] for target, msg in failures]
+        last_gap = write_table(gap_ws, 1, ("Target Scope", "API / Permission Gap Detail"), gap_rows)
+        finalize_sheet(gap_ws, 1, last_gap, 2, "B2")
 
     # Sheet 2: Push Protection Bypasses
     push_ws = wb.create_sheet("Push Protection Bypasses")

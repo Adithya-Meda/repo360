@@ -110,6 +110,11 @@ def write_dora_workbook(
     lttc_median_val = (
         summary_data["median_lttc_hours"] if summary_data["median_lttc_hours"] is not None else "N/A"
     )
+    lttc_cov_str = (
+        f"{summary_data['lttc_coverage_pct']}%"
+        if summary_data.get("lttc_coverage_pct") is not None
+        else "N/A"
+    )
     mttr_median_val = (
         summary_data["median_mttr_hours"] if summary_data["median_mttr_hours"] is not None else "N/A"
     )
@@ -123,12 +128,14 @@ def write_dora_workbook(
         ["Fleet Overall DORA Performance Tier", summary_data["fleet_tier"]],
         ["Total Completed Deployments & Releases", summary_data["total_deploys"]],
         ["Successful Deployments", summary_data["total_successful"]],
+        ["Code-Change Deployments (Unique Changes)", summary_data["code_change_deploys"]],
         ["Failed Deployments (Direct)", summary_data["total_failed_deploys"]],
         ["Effective Failed Changes (Inc. Incidents/Hotfixes)", summary_data["effective_failed"]],
         ["Open Unresolved Incidents", summary_data["open_incidents"]],
         ["Fleet Median Deployment Frequency (/week)", df_median_val],
         ["Fleet Total Deployment Throughput (/week)", summary_data["total_df_weekly"]],
         ["Fleet Median Lead Time for Changes (Hours)", lttc_median_val],
+        ["LTTC Signal Coverage (%)", lttc_cov_str],
         ["Fleet Change Failure Rate (%)", cfr_str],
         ["Fleet Median Failed Deployment Recovery Time (Hours)", mttr_median_val],
         ["Fleet Deployment Rework Rate (%)", rework_str],
@@ -138,10 +145,23 @@ def write_dora_workbook(
         ["Low Tier Repositories", tier_counts.get("Low", 0)],
         ["Inactive / N/A Repositories", tier_counts.get("N/A", 0)],
     ]
-    if summary_data.get("incomplete_deploys", 0) > 0:
+    if summary_data.get("no_op_deploys", 0) > 0:
         kpis.insert(
             9,
+            ["No-Op / Same-SHA Redeploys (Excluded DF)", summary_data["no_op_deploys"]],
+        )
+    if summary_data.get("collapsed_retries", 0) > 0:
+        kpis.insert(
+            12 if summary_data.get("no_op_deploys", 0) > 0 else 11,
+            ["Collapsed Workflow Failure Retries (CFR)", summary_data["collapsed_retries"]],
+        )
+    if summary_data.get("incomplete_deploys", 0) > 0:
+        kpis.append(
             ["Pending / Incomplete Deployments (Excluded)", summary_data["incomplete_deploys"]],
+        )
+    if summary_data.get("stalled_deploys", 0) > 0:
+        kpis.append(
+            ["Stalled Deployments (>24h IN_PROGRESS)", summary_data["stalled_deploys"]],
         )
     if summary_data["permission_gap_repos"] > 0:
         kpis.append(["Deployments API Permission Gap Repos", summary_data["permission_gap_repos"]])
@@ -157,27 +177,37 @@ def write_dora_workbook(
         if cfg.include_non_prod
         else f"Production environments ({', '.join(cfg.prod_environments)}) & default/release branches"
     )
+    pr_lttc_count = summary_data.get("pr_lttc_count", 0)
+    commit_lttc_count = summary_data.get("commit_lttc_count", 0)
     methodology_rows = [
         ["Production Scope", env_scope],
         [
             "Deployment Frequency",
-            "Completed production deployments per week per active repo (0.0 if none succeeded; zero-deploy repos marked N/A).",
+            "Unique value-delivering code-change deployments per week per active repo (same-SHA/zero-diff cron rebuilds excluded; 0-change or <3 multi-week repos capped at Medium).",
         ],
         [
             "Lead Time for Changes",
-            "Hours from commit authored/pushed or associated PR creation to successful deploy (<24h Elite; skips failed/in-progress/no-diff runs).",
+            "Hours from commit authored/pushed or associated PR creation (prioritized on single-commit squash merges) to completion (<24h Elite; skips failed/in-progress/no-diff runs).",
         ],
         [
             "Change Failure Rate",
-            "Unique failed production changes divided by completed deployments (excluding in-progress/inactive attempts).",
+            "Unique failed production changes divided by deduplicated completed deployments (consecutive same-SHA retry bursts collapsed; <=5% Elite, <=10% High, <=20% Medium, >20% Low).",
         ],
         [
             "Recovery Time (MTTR)",
-            "Stream-scoped failure-to-next-success recovery plus resolved incident issues; unresolved incidents stay Open.",
+            "Stream-scoped failure-to-next-success recovery plus resolved incident issues (timestamps in IST; Ledger includes Completed/Updated timestamp). Open unresolved incidents cap tier at Medium.",
         ],
         [
             "Deployment Rework Rate",
-            "Percentage of completed deployments matched to revert, rollback, hotfix, or emergency remediation work.",
+            "Percentage of deduplicated deployments matched to revert, rollback, hotfix, or emergency remediation work.",
+        ],
+        [
+            "Telemetry Coverage",
+            (
+                f"LTTC coverage: {lttc_cov_str} "
+                f"({pr_lttc_count} PR-linked squash/PR cycle, {commit_lttc_count} commit-linked); "
+                "repositories without labeled GitHub incident issues rely on pipeline-only recovery signals."
+            ),
         ],
     ]
     if summary_data["permission_gap_repos"] > 0:
@@ -200,6 +230,13 @@ def write_dora_workbook(
 
     curr_row = section_title(summary, curr_row, "Native GitHub Signal Methodology & Scope")
     curr_row = write_table(summary, curr_row, ("Metric", "Methodology & Compliance Scope"), methodology_rows) + 2
+
+    if failures:
+        curr_row = section_title(summary, curr_row, "Collection Errors & Permission Gaps")
+        failure_rows = [[target, reason] for target, reason in failures]
+        curr_row = write_table(
+            summary, curr_row, ("Target Repository", "Error / Permission Detail"), failure_rows
+        ) + 2
 
     autofit(summary, skip_rows=2)
     summary.sheet_view.showGridLines = False

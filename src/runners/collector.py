@@ -31,8 +31,12 @@ def collect_runners_and_metrics(
     runner_metrics: Dict[Tuple[str, str], RunnerJobMetrics] = defaultdict(RunnerJobMetrics)
     org_runner_metrics: Dict[str, RunnerJobMetrics] = defaultdict(RunnerJobMetrics)
 
-    known_runner_names: Set[str] = set()
-    known_runner_ids: Set[int] = set()
+    org_known_names: Dict[str, Set[str]] = defaultdict(set)
+    org_known_ids: Dict[str, Set[int]] = defaultdict(set)
+    org_id_to_name: Dict[str, Dict[int, str]] = defaultdict(dict)
+    org_name_map: Dict[str, Dict[str, str]] = defaultdict(dict)
+    seen_runners: Set[Tuple[str, str, int, str]] = set()
+    seen_ephemeral_keys: Set[Tuple[str, str]] = set()
 
     # 1. Discover Organization-Level Runners & Groups concurrently across organizations
     def _discover_org_runners(org: str) -> Tuple[List[RunnerInfo], Optional[Tuple[str, str]]]:
@@ -100,9 +104,14 @@ def collect_runners_and_metrics(
     )
     for org_runners, org_fail in org_results:
         for r in org_runners:
+            ok = r.org.casefold()
             runners.append(r)
-            known_runner_names.add(r.name.casefold())
-            known_runner_ids.add(r.id)
+            org_known_names[ok].add(r.name.casefold())
+            org_name_map[ok][r.name.casefold()] = r.name
+            if r.id:
+                org_known_ids[ok].add(r.id)
+                org_id_to_name[ok][r.id] = r.name
+            seen_runners.add((ok, "", r.id or 0, r.name.casefold()))
         if org_fail:
             failures.append(org_fail)
 
@@ -119,15 +128,18 @@ def collect_runners_and_metrics(
         List[RunnerInfo],
         Dict[Tuple[str, str], RunnerJobMetrics],
         Dict[str, RunnerJobMetrics],
-        Optional[Tuple[str, str]],
+        List[Tuple[str, str]],
     ]:
         org, repo = target
+        org_k = org.casefold()
         loc_runners: List[RunnerInfo] = []
         loc_runner_metrics: Dict[Tuple[str, str], RunnerJobMetrics] = defaultdict(RunnerJobMetrics)
         loc_org_metrics: Dict[str, RunnerJobMetrics] = defaultdict(RunnerJobMetrics)
-        loc_known_names = set(known_runner_names)
-        loc_known_ids = set(known_runner_ids)
-        fail_item = None
+        loc_known_names: Set[str] = set(org_known_names.get(org_k, ()))
+        loc_known_ids: Set[int] = set(org_known_ids.get(org_k, ()))
+        loc_id_to_name: Dict[int, str] = dict(org_id_to_name.get(org_k, {}))
+        loc_name_map: Dict[str, str] = dict(org_name_map.get(org_k, {}))
+        repo_failures: List[Tuple[str, str]] = []
 
         # Check repo-level runners
         try:
@@ -153,15 +165,24 @@ def collect_runners_and_metrics(
                         )
                     )
                     loc_known_names.add(name.casefold())
-                    loc_known_ids.add(r_id)
-        except Exception:
-            pass
+                    loc_name_map[name.casefold()] = name
+                    if r_id:
+                        loc_known_ids.add(r_id)
+                        loc_id_to_name[r_id] = name
+        except Exception as exc:
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            if status_code == 403:
+                repo_failures.append(
+                    (f"{org}/{repo} (Repo-level runners)", "403 Forbidden (requires 'administration: read' repository permission)")
+                )
+            elif status_code != 404:
+                repo_failures.append((f"{org}/{repo} (Repo-level runners)", str(exc)))
 
         # Check completed workflow runs
         try:
             runs_checked = 0
-            consecutive_github_hosted = 0
-            has_seen_self_hosted = False
+            truncated_runs = False
+            jobs_error_recorded = False
 
             run_params = {
                 "status": "completed",
@@ -181,63 +202,82 @@ def collect_runners_and_metrics(
 
                 runs_checked += 1
                 if runs_checked > cfg.max_runner_runs_per_repo:
+                    truncated_runs = True
                     break
 
                 run_id = run_item.get("id")
                 try:
                     jobs = list(client.paginate_enveloped(org, f"/repos/{org}/{repo}/actions/runs/{run_id}/jobs", "jobs"))
-                except Exception:
+                except Exception as exc:
+                    if not jobs_error_recorded:
+                        status_code = getattr(getattr(exc, "response", None), "status_code", None)
+                        if status_code != 404:
+                            repo_failures.append((f"{org}/{repo} (Workflow run jobs)", str(exc)))
+                            jobs_error_recorded = True
                     continue
 
-                run_had_self_hosted = False
                 for job in jobs:
                     if not isinstance(job, dict):
                         continue
+                    conclusion = str(job.get("conclusion") or "other").casefold()
+                    if conclusion == "skipped":
+                        continue
+
                     labels = [str(l).casefold() for l in job.get("labels", []) if isinstance(l, str)]
                     r_id = job.get("runner_id")
-                    r_name = job.get("runner_name") or ""
+                    r_name = (job.get("runner_name") or "").strip()
 
                     is_self_hosted = (
                         "self-hosted" in labels
-                        or (r_id and r_id in loc_known_ids)
-                        or (r_name and r_name.casefold() in loc_known_names)
+                        or bool(r_id and r_id in loc_known_ids)
+                        or bool(r_name and r_name.casefold() in loc_known_names)
                     )
                     if not is_self_hosted:
                         continue
 
-                    run_had_self_hosted = True
-                    has_seen_self_hosted = True
-                    matched_name = r_name or (f"runner-{r_id}" if r_id else "self-hosted-runner")
-
-                    if matched_name.casefold() not in loc_known_names:
-                        loc_known_names.add(matched_name.casefold())
-                        loc_runners.append(
-                            RunnerInfo(
-                                id=r_id or 0,
-                                name=matched_name,
-                                os=job.get("os", "Linux"),
-                                status="Ephemeral",
-                                busy=False,
-                                labels=tuple(job.get("labels", ["self-hosted"])),
-                                runner_group_name=job.get("runner_group_name") or "Default",
-                                org=org,
-                                repo=None,
-                                arch=job.get("arch", "x64"),
-                                runner_version="Unknown",
-                                ephemeral=True,
-                            )
-                        )
-
                     created_at = parse_ts(job["created_at"]) if job.get("created_at") else None
                     started_at = parse_ts(job["started_at"]) if job.get("started_at") else None
                     completed_at = parse_ts(job["completed_at"]) if job.get("completed_at") else None
-                    conclusion = str(job.get("conclusion", "other")).casefold()
 
                     queue_sec = max(0.0, (started_at - created_at).total_seconds()) if (started_at and created_at) else None
                     duration_sec = max(0.0, (completed_at - started_at).total_seconds()) if (completed_at and started_at) else None
                     job_end = completed_at or started_at
 
-                    for target_bucket in (loc_runner_metrics[(org, matched_name)], loc_org_metrics[org]):
+                    if not r_id and not r_name:
+                        target_buckets: Tuple[RunnerJobMetrics, ...] = (loc_org_metrics[org],)
+                    else:
+                        if r_id and r_id in loc_id_to_name:
+                            matched_name = loc_id_to_name[r_id]
+                        elif r_name and r_name.casefold() in loc_name_map:
+                            matched_name = loc_name_map[r_name.casefold()]
+                        else:
+                            matched_name = r_name or f"runner-{r_id}"
+
+                        if matched_name.casefold() not in loc_known_names:
+                            loc_known_names.add(matched_name.casefold())
+                            loc_name_map[matched_name.casefold()] = matched_name
+                            if r_id:
+                                loc_known_ids.add(r_id)
+                                loc_id_to_name[r_id] = matched_name
+                            loc_runners.append(
+                                RunnerInfo(
+                                    id=r_id or 0,
+                                    name=matched_name,
+                                    os=job.get("os", "Linux"),
+                                    status="Ephemeral",
+                                    busy=False,
+                                    labels=tuple(job.get("labels", ["self-hosted"])),
+                                    runner_group_name=job.get("runner_group_name") or "Default",
+                                    org=org,
+                                    repo=None,
+                                    arch=job.get("arch", "x64"),
+                                    runner_version="Unknown",
+                                    ephemeral=True,
+                                )
+                            )
+                        target_buckets = (loc_runner_metrics[(org, matched_name)], loc_org_metrics[org])
+
+                    for target_bucket in target_buckets:
                         target_bucket.total_jobs += 1
                         target_bucket.repos_served.add(repo)
                         if conclusion == "success":
@@ -268,15 +308,20 @@ def collect_runners_and_metrics(
                                 if target_bucket.last_job_time else job_end
                             )
 
-                if not run_had_self_hosted and not has_seen_self_hosted:
-                    consecutive_github_hosted += 1
-                    if consecutive_github_hosted >= 3:
-                        break
+            if truncated_runs:
+                repo_failures.append(
+                    (
+                        f"{org}/{repo} (Run history truncated)",
+                        f"Inspected latest {cfg.max_runner_runs_per_repo} runs; earlier runs exist in window (increase --max-runs for full capture)",
+                    )
+                )
 
         except Exception as exc:
-            fail_item = (f"{org}/{repo} (Actions workflow runs)", str(exc))
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            if status_code != 404:
+                repo_failures.append((f"{org}/{repo} (Actions workflow runs)", str(exc)))
 
-        return loc_runners, loc_runner_metrics, loc_org_metrics, fail_item
+        return loc_runners, loc_runner_metrics, loc_org_metrics, repo_failures
 
     # Run workflow runs collection across worker pool
     if not active_targets:
@@ -288,13 +333,21 @@ def collect_runners_and_metrics(
     try:
         futures = {pool.submit(_scan_repo_runs, target): target for target in active_targets}
         for fut in iter_completed(futures):
-            loc_r, loc_rm, loc_om, failure = fut.result()
-            if failure:
-                failures.append(failure)
+            loc_r, loc_rm, loc_om, repo_fails = fut.result()
+            if repo_fails:
+                failures.extend(repo_fails)
             for r in loc_r:
-                if r.name.casefold() not in known_runner_names:
-                    known_runner_names.add(r.name.casefold())
-                    runners.append(r)
+                ok = r.org.casefold()
+                if r.repo:
+                    dedup_key = (ok, r.repo.casefold(), r.id or 0, r.name.casefold())
+                    if dedup_key not in seen_runners:
+                        seen_runners.add(dedup_key)
+                        runners.append(r)
+                else:
+                    eph_key = (ok, r.name.casefold())
+                    if r.name.casefold() not in org_known_names[ok] and eph_key not in seen_ephemeral_keys:
+                        seen_ephemeral_keys.add(eph_key)
+                        runners.append(r)
             for k, m in loc_rm.items():
                 runner_metrics[k].merge(m)
             for ok, om in loc_om.items():
@@ -315,11 +368,19 @@ def build_runner_rows(
     orgs: Optional[List[str]] = None,
 ) -> Tuple[List[list], List[list]]:
     """Compile formatted tabular records for individual runners and organization aggregates."""
+    norm_runner_metrics: Dict[Tuple[str, str], RunnerJobMetrics] = defaultdict(RunnerJobMetrics)
+    for (m_org, m_name), m_val in runner_metrics.items():
+        norm_runner_metrics[(m_org.casefold(), m_name.casefold())].merge(m_val)
+
+    norm_org_metrics: Dict[str, RunnerJobMetrics] = defaultdict(RunnerJobMetrics)
+    for m_org, m_val in org_runner_metrics.items():
+        norm_org_metrics[m_org.casefold()].merge(m_val)
+
     runner_rows: List[list] = []
     org_runner_rows: List[list] = []
 
     for r in sorted(runners, key=lambda x: (x.org.casefold(), x.name.casefold())):
-        metrics = runner_metrics.get((r.org, r.name), RunnerJobMetrics())
+        metrics = norm_runner_metrics.get((r.org.casefold(), r.name.casefold()), RunnerJobMetrics())
         scope = f"Repo: {r.repo}" if r.repo else "Organization"
         runner_rows.append([
             r.org,
@@ -353,18 +414,33 @@ def build_runner_rows(
             fmt_timestamp(metrics.last_job_time),
         ])
 
-    all_orgs = sorted(set(orgs or []) | {r.org for r in runners} | set(org_runner_metrics), key=str.casefold)
+    org_lookup: Dict[str, str] = {}
+    for o in (orgs or []):
+        org_lookup.setdefault(o.casefold(), o)
+    for r in runners:
+        org_lookup.setdefault(r.org.casefold(), r.org)
+    for m_org in org_runner_metrics:
+        org_lookup.setdefault(m_org.casefold(), m_org)
+
+    all_orgs = sorted(org_lookup.values(), key=str.casefold)
     for org in all_orgs:
-        org_runners = [r for r in runners if r.org.casefold() == org.casefold()]
+        org_k = org.casefold()
+        org_runners = [r for r in runners if r.org.casefold() == org_k]
         total_count = len(org_runners)
         org_level_count = sum(1 for r in org_runners if not r.repo)
         repo_level_count = sum(1 for r in org_runners if r.repo)
         online_count = sum(1 for r in org_runners if r.status.casefold() == "online")
-        offline_count = sum(1 for r in org_runners if r.status.casefold() in ("offline", "ephemeral"))
+        offline_count = sum(1 for r in org_runners if r.status.casefold() == "offline")
+        registered_count = online_count + offline_count
         busy_count = sum(1 for r in org_runners if r.busy)
         ephemeral_count = sum(1 for r in org_runners if r.ephemeral)
-        availability = round(online_count / total_count * 100, 2) if total_count else "N/A"
-        metrics = org_runner_metrics.get(org, RunnerJobMetrics())
+        if registered_count > 0:
+            availability: Any = round(online_count / registered_count * 100, 2)
+        elif total_count > 0:
+            availability = "N/A (Ephemeral Only)"
+        else:
+            availability = "N/A"
+        metrics = norm_org_metrics.get(org_k, RunnerJobMetrics())
 
         org_runner_rows.append([
             org,

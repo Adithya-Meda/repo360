@@ -198,7 +198,13 @@ class ExcelReporter(BaseReporter):
         skipped = sum(1 for r in results if r.status == CheckStatus.SKIPPED)
         ai_count = sum(1 for r in results if self.is_ai_result(r))
 
-        compliance_rate = (passed / max(total - skipped, 1)) * 100
+        effective = total - skipped
+        if effective > 0:
+            compliance_str = f"{(passed / effective) * 100:.1f}%"
+        elif total == 0:
+            compliance_str = "100.0%"
+        else:
+            compliance_str = "N/A (All Skipped)"
 
         # Section 1: Fleet-Wide Metrics (Columns B-C)
         metrics = [
@@ -208,7 +214,7 @@ class ExcelReporter(BaseReporter):
             ("Warning Risks (WARN)", warned),
             ("Failed Checks (FAIL)", failed),
             ("Skipped / Not Applicable", skipped),
-            ("Overall Compliance Score", f"{compliance_rate:.1f}%"),
+            ("Overall Compliance Score", compliance_str),
             ("AI-Tailored Remediations Synthesized", ai_count),
         ]
 
@@ -255,6 +261,11 @@ class ExcelReporter(BaseReporter):
         org_start_row = 6
         for r_offset, org_info in enumerate(org_metrics):
             row_idx = org_start_row + r_offset
+            score_display = (
+                "N/A"
+                if org_info["status"] == "NOT EVALUATED"
+                else f"{org_info['compliance_score']:.1f}%"
+            )
             row_vals = [
                 org_info["org_name"],
                 org_info["repo_count"],
@@ -263,7 +274,7 @@ class ExcelReporter(BaseReporter):
                 org_info["failed"],
                 org_info["warned"],
                 org_info["critical_high"],
-                f"{org_info['compliance_score']:.1f}%",
+                score_display,
                 org_info["status"],
             ]
             for col_idx, val in enumerate(row_vals, start=5):
@@ -285,13 +296,16 @@ class ExcelReporter(BaseReporter):
                     cell.fill = self.fill_warn
                     cell.font = self.font_bold
                 elif col_idx == 12:  # Compliance score
-                    score_val = org_info["compliance_score"]
-                    cell.fill = self.fill_pass if score_val >= 80 else (self.fill_warn if score_val >= 50 else self.fill_fail)
+                    if org_info["status"] == "NOT EVALUATED":
+                        cell.fill = self.fill_warn
+                    else:
+                        score_val = org_info["compliance_score"]
+                        cell.fill = self.fill_pass if score_val >= 80 else (self.fill_warn if score_val >= 50 else self.fill_fail)
                     cell.font = self.font_bold
                 elif col_idx == 13:  # Status
                     if org_info["status"] == "COMPLIANT":
                         cell.fill = self.fill_pass
-                    elif org_info["status"] == "REVIEW NEEDED":
+                    elif org_info["status"] in ("REVIEW NEEDED", "NOT EVALUATED"):
                         cell.fill = self.fill_warn
                     else:
                         cell.fill = self.fill_fail

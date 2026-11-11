@@ -317,3 +317,157 @@ def test_build_management_tables_and_sheets(tmp_path):
     assert "Repository Inventory" in sheet_names
     assert "Top Active Repositories" in sheet_names
     assert "Management KPIs" in sheet_names
+
+
+def test_activity_hardened_dormancy_partial_errors_reviews_and_normalization():
+    from datetime import timedelta
+    from src.activity.collector import (
+        build_management_tables,
+        collect_repository,
+        fetch_team_access,
+    )
+
+    # 1. IST month boundary for commit_months (2026-10-31 20:00 UTC == 2026-11-01 01:30 IST)
+    boundary_act = Activity()
+    boundary_act.add("commits", datetime(2026, 10, 31, 20, 0, tzinfo=timezone.utc))
+    assert (2026, 11) in boundary_act.commit_months
+
+    # 2. Case-insensitive org & user login normalization across build_rows & build_org_rows
+    end = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
+    since_7d = end - timedelta(days=7)
+    u_rows, r_rows = build_rows(
+        results={("Acme-Org", "svc"): {"Alice": boundary_act}},
+        members={"acme-org": {"alice", "bob"}},
+        cfg=ActivityConfig(),
+        end=end,
+        teams_by_user={("acme-org", "ALICE"): {"Platform"}},
+        org_team_complete={"acme-org": True},
+    )
+    assert len(u_rows) == 2  # Alice merged with member 'alice', plus bob
+    alice_r = next(r for r in u_rows if r[1].lower() == "alice")
+    assert alice_r[17] == "Yes"  # Member matched case-insensitively
+    assert alice_r[18] == "Platform"
+    o_rows = build_org_rows(u_rows, {("Acme-Org", "svc"): {"Alice": boundary_act}}, all_orgs=["acme-org"])
+    assert len(o_rows) == 1
+
+    # 3. Dormancy window uses collected_since (30d), plus ruleset detection & 403 -> activity_complete=False
+    class _ForbiddenResp:
+        status_code = 403
+
+    class _ForbiddenErr(Exception):
+        response = _ForbiddenResp()
+
+    class _HardenedClient:
+        def __init__(self):
+            self.gql_calls = []
+
+        def get(self, org, endpoint, params=None):
+            if endpoint.endswith("/rules/branches/main"):
+                return [{"type": "pull_request"}]
+            if endpoint.endswith("/git/trees/main"):
+                return {"tree": []}
+            return {}
+
+        def paginate(self, org, endpoint, params=None):
+            if endpoint.endswith("/commits"):
+                return iter([{
+                    "author": {"login": "alice"},
+                    "commit": {"author": {"date": "2026-10-05T10:00:00Z"}},  # 15 days ago (>7d since, <30d rolling!)
+                }])
+            if endpoint.endswith("/issues"):
+                raise _ForbiddenErr("issues forbidden")
+            if endpoint == "/orgs/acme-org/teams":
+                return iter([{"slug": "sec"}, {"slug": "infra"}])
+            if endpoint == "/orgs/acme-org/teams/sec/members":
+                return iter([{"login": "alice"}])
+            if endpoint == "/orgs/acme-org/teams/infra/members":
+                raise RuntimeError("team forbidden")
+            return iter([])
+
+        def graphql(self, org, query, variables=None):
+            self.gql_calls.append(variables or {})
+            if variables and "revCursor" in variables:
+                return {
+                    "data": {
+                        "node": {
+                            "reviews": {
+                                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                                "nodes": [{"author": {"login": "carol"}, "submittedAt": "2026-10-18T10:00:00Z", "state": "APPROVED"}],
+                            }
+                        }
+                    }
+                }
+            if variables and variables.get("cursor") is None:
+                return {
+                    "data": {
+                        "repository": {
+                            "pullRequests": {
+                                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                                "nodes": [{
+                                    "id": "PR_123",
+                                    "number": 1,
+                                    "createdAt": "2026-10-16T10:00:00Z",
+                                    "mergedAt": None,
+                                    "updatedAt": "2026-10-18T10:00:00Z",
+                                    "author": {"login": "alice"},
+                                    "reviews": {
+                                        "pageInfo": {"hasNextPage": True, "endCursor": "rev_c1"},
+                                        "nodes": [{"author": {"login": "bob"}, "submittedAt": "2026-10-17T10:00:00Z", "state": "COMMENTED"}],
+                                    },
+                                }],
+                            }
+                        }
+                    }
+                }
+            return {}
+
+    client = _HardenedClient()
+    meta_15d = {
+        "size": 100,
+        "pushed_at": "2026-10-05T10:00:00Z",
+        "updated_at": "2026-10-05T10:00:00Z",
+        "default_branch": "main",
+        "has_pull_requests": True,
+        "has_issues": True,
+        "archived": False,
+        "visibility": "private",
+    }
+    report = collect_repository(
+        client=client,
+        org="acme-org",
+        repo="svc",
+        since=since_7d,
+        end=end,
+        exclude_bots=True,
+        cached_metadata=meta_15d,
+    )
+    # 15d old commit must be captured into rolling 30d events despite 7d lookback
+    assert any(ev[0] == "alice" and ev[1] == "commits" for ev in report.events)
+    # GraphQL paginated review #2 ('carol') via node(id)
+    assert ("carol", "reviews", datetime(2026, 10, 18, 10, 0, tzinfo=timezone.utc)) in report.events
+    assert any("revCursor" in call for call in client.gql_calls)
+    # Ruleset detected even without legacy branch protection
+    assert report.protected == "Yes"
+    assert "main (Ruleset)" in report.protected_branches
+    # 403 on issues -> activity_complete MUST be False & Coverage == 'Partial'
+    assert report.activity_complete is False
+    assert any("Issues: 403 Forbidden" in e for e in report.errors)
+
+    mgmt = build_management_tables(
+        reports={("acme-org", "svc"): report},
+        members={"acme-org": {"alice"}},
+        since=since_7d,
+        end=end,
+        organization_status={"acme-org": False},
+    )
+    inv_row = mgmt["Repository Inventory"][1][0]
+    assert inv_row[11] == "N/A"  # Total Activities N/A when incomplete
+    assert inv_row[23] == "Partial"
+    kpi_rows = mgmt["Management KPIs"][1]
+    rolling_30 = next(r for r in kpi_rows if r[2] == "Rolling 30-day active users")
+    assert rolling_30[3] >= 3  # alice (15d commit + PR), bob (review), carol (paginated review)
+
+    # 4. fetch_team_access marks incomplete when any team member call fails
+    teams_by_user, team_complete = fetch_team_access(client, ["acme-org"], exclude_bots=True)
+    assert team_complete["acme-org"] is False
+    assert "sec" in teams_by_user[("acme-org", "alice")]

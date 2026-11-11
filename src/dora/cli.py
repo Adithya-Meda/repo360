@@ -7,7 +7,7 @@ import logging
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from ..auth.github_app_auth import GitHubAppAuth
 from ..common.client import ResilientGitHubClient
@@ -31,6 +31,7 @@ def print_dora_scorecard(
     xlsx_path: Path,
     elapsed_seconds: float,
     lookback_days: int,
+    failures: Optional[List[Tuple[str, str]]] = None,
 ) -> None:
     """Print an executive color-coded DORA metrics scorecard to stdout."""
     G = "\033[92m"
@@ -51,6 +52,11 @@ def print_dora_scorecard(
     inactive_repos = summary_data["inactive_repos"]
     total_deploys = summary_data["total_deploys"]
     total_successful = summary_data["total_successful"]
+    code_change_deploys = summary_data["code_change_deploys"]
+    no_op_deploys = summary_data["no_op_deploys"]
+    stalled_deploys = summary_data["stalled_deploys"]
+    collapsed_retries = summary_data["collapsed_retries"]
+    lttc_coverage = summary_data.get("lttc_coverage_pct")
     effective_failed = summary_data["effective_failed"]
     median_df_weekly = summary_data["median_df_weekly"]
     total_df_weekly = summary_data["total_df_weekly"]
@@ -71,15 +77,20 @@ def print_dora_scorecard(
         if median_df_weekly is not None
         else "N/A (no production deployments)"
     )
-    lttc_str = f"{median_lttc:.1f} hrs" if median_lttc is not None else "N/A"
-    cfr_color = R if (cfr_overall is not None and cfr_overall > 15.0) else G
+    cov_suffix = f" ({lttc_coverage:.1f}% coverage)" if lttc_coverage is not None else ""
+    lttc_str = f"{median_lttc:.1f} hrs{cov_suffix}" if median_lttc is not None else "N/A"
+    cfr_color = R if (cfr_overall is not None and cfr_overall > 20.0) else (
+        Y if (cfr_overall is not None and cfr_overall > 10.0) else G
+    )
     cfr_str = (
         f"{cfr_color}{cfr_overall:.1f}%{X} ({effective_failed} failed changes)"
         if cfr_overall is not None
         else "N/A"
     )
     mttr_str = f"{median_mttr:.1f} hrs" if median_mttr is not None else "N/A"
-    rework_color = R if (rework_overall is not None and rework_overall > 15.0) else G
+    rework_color = R if (rework_overall is not None and rework_overall > 15.0) else (
+        Y if (rework_overall is not None and rework_overall > 8.0) else G
+    )
     rework_str = f"{rework_color}{rework_overall:.1f}%{X}" if rework_overall is not None else "N/A"
 
     elapsed_str = (
@@ -98,7 +109,15 @@ def print_dora_scorecard(
     )
     print(f"   {B}Analysis Lookback Window       :{X} {lookback_days} Days")
     print(f"   {B}Fleet Overall DORA Tier        :{X} {t_color}{B}{fleet_tier}{X}")
-    print(f"   {B}Total Deployments & Releases   :{X} {B}{total_deploys:,}{X} ({total_successful:,} successful)")
+    print(
+        f"   {B}Total Deployments & Releases   :{X} {B}{total_deploys:,}{X} "
+        f"({total_successful:,} successful, {code_change_deploys:,} code-change)"
+    )
+    if no_op_deploys > 0 or collapsed_retries > 0:
+        print(
+            f"   {B}Normalized Signal Adjustments  :{X} "
+            f"{no_op_deploys} no-op redeploy(s), {collapsed_retries} collapsed failure retry(s)"
+        )
     print(f"   {B}Deployment Frequency (Median)  :{X} {df_str}")
     print(f"   {B}Median Lead Time (LTTC)        :{X} {lttc_str}")
     print(f"   {B}Change Failure Rate (CFR)      :{X} {cfr_str}")
@@ -106,10 +125,18 @@ def print_dora_scorecard(
     print(f"   {B}Deployment Rework Rate         :{X} {rework_str}")
     print(f"   {B}Recovery Incidents Tracked     :{X} {resolved_count} resolved, {open_incidents} open")
     print(f"   {B}Duration                       :{X} {elapsed_str}")
+    if stalled_deploys > 0:
+        print(
+            f"   {Y}{B}[WARN]{X} {stalled_deploys} deployment(s) stalled IN_PROGRESS >24h."
+        )
     if permission_gap_repos > 0:
         print(
             f"   {Y}{B}[WARN]{X} {permission_gap_repos} repo(s) lacked GitHub App "
             "'deployments: read' permission (403); run 'repo360 setup' to update manifest."
+        )
+    if failures:
+        print(
+            f"   {Y}{B}[WARN]{X} {len(failures)} collection/permission issue(s) recorded in Executive Summary."
         )
     print(f"{C}{'-' * 76}{X}")
     print(f"   {B}Executive DORA Workbook (XLSX) :{X} {xlsx_path}")
@@ -261,6 +288,16 @@ def run_dora_cli(argv: Optional[List[str]] = None) -> int:
     metrics_list = collect_dora_data(client, orgs, targets, since, end, cfg, metadata_cache)
     repo_rows, org_rows, deployment_rows, recovery_rows = build_dora_rows(metrics_list, orgs, cfg.lookback_days, ai_engine=ai_engine)
 
+    failures: List[Tuple[str, str]] = []
+    for m in metrics_list:
+        target_name = f"{m.org}/{m.repo}"
+        if m.deployments_api_forbidden:
+            failures.append(
+                (target_name, "HTTP 403 on /deployments API (grant GitHub App 'deployments: read')")
+            )
+        for err_msg in m.errors:
+            failures.append((target_name, err_msg))
+
     out_dir = Path(cfg.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     xlsx_path = out_dir / f"{cfg.file_prefix}_{stamp}.xlsx"
@@ -275,7 +312,7 @@ def run_dora_cli(argv: Optional[List[str]] = None) -> int:
         org_rows=org_rows,
         deployment_rows=deployment_rows,
         recovery_rows=recovery_rows,
-        failures=[],
+        failures=failures,
         execution_duration=elapsed,
     )
 
@@ -287,5 +324,6 @@ def run_dora_cli(argv: Optional[List[str]] = None) -> int:
         xlsx_path=xlsx_path,
         elapsed_seconds=elapsed,
         lookback_days=cfg.lookback_days,
+        failures=failures,
     )
     return 0

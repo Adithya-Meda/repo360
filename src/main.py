@@ -158,16 +158,26 @@ def print_terminal_scorecard(
     passed = sum(1 for r in results if r.status == CheckStatus.PASS)
     warned = sum(1 for r in results if r.status == CheckStatus.WARN)
     failed = sum(1 for r in results if r.status == CheckStatus.FAIL)
-    health_score = (passed / total * 100) if total > 0 else 100.0
+    skipped = sum(1 for r in results if r.status == CheckStatus.SKIPPED)
+    effective = total - skipped
 
     G = "\033[92m"  # Green
     Y = "\033[93m"  # Yellow
     R = "\033[91m"  # Red
     C = "\033[96m"  # Cyan
     B = "\033[1m"   # Bold
+    D = "\033[2m"   # Dim
     X = "\033[0m"   # Reset
 
-    score_color = G if health_score >= 80 else (Y if health_score >= 60 else R)
+    if effective > 0:
+        health_score = (passed / effective) * 100
+        score_color = G if health_score >= 80 else (Y if health_score >= 50 else R)
+        score_str = f"{score_color}{health_score:.1f}%{X}"
+    elif total == 0:
+        score_str = f"{G}100.0%{X}"
+    else:
+        score_str = f"{Y}N/A (All Skipped){X}"
+
     ai_status = (
         f"{G}ONLINE ({ai_engine.model_name}){X}"
         if (ai_engine and ai_engine.is_available())
@@ -195,7 +205,9 @@ def print_terminal_scorecard(
     print(f"   {B}Controls Present     :{X} {G}{passed:<4} EXISTS{X}")
     print(f"   {B}Controls Missing     :{X} {R}{failed:<4} MISSING{X}")
     print(f"   {B}Items Needing Review :{X} {Y}{warned:<4} REVIEW{X}")
-    print(f"   {B}Overall Posture Score:{X} {score_color}{health_score:.1f}%{X}")
+    if skipped > 0:
+        print(f"   {B}Skipped / Not App.   :{X} {D}{skipped:<4} SKIPPED{X}")
+    print(f"   {B}Overall Posture Score:{X} {score_str}")
     print(f"   {B}AI Remediation Engine:{X} {ai_status}")
     if elapsed_seconds > 0:
         print(f"   {B}Execution Duration   :{X} {elapsed_str}")
@@ -772,6 +784,11 @@ def _run_cli() -> int:
         default=0,
         help="Optional concurrency worker thread count (defaults to auto-tuning up to 32 for large inventories).",
     )
+    parser.add_argument(
+        "--include-archived",
+        action="store_true",
+        help="Include archived repositories in governance checks (skipped by default).",
+    )
 
     args = parser.parse_args()
 
@@ -983,6 +1000,9 @@ def _run_cli() -> int:
                     max_cap=8,
                     thread_name_prefix="audit-discovery",
                 )
+                include_archived = bool(getattr(args, "include_archived", False))
+                skipped_archived = 0
+                skipped_empty = 0
                 for org_login, repo_sel, discovered in install_batches:
                     if repo_sel != "all":
                         logger.warning(
@@ -991,6 +1011,12 @@ def _run_cli() -> int:
                             org_login,
                         )
                     for r in discovered:
+                        if r.get("archived") and not include_archived:
+                            skipped_archived += 1
+                            continue
+                        if "size" in r and r.get("size", 0) == 0 and not r.get("pushed_at"):
+                            skipped_empty += 1
+                            continue
                         owner = r.get("owner", {}).get("login", "") or org_login
                         name = r.get("name", "")
                         default_branch = r.get("default_branch", "main") or "main"
@@ -1004,6 +1030,12 @@ def _run_cli() -> int:
                                     default_branch=default_branch,
                                 )
                             )
+                if skipped_archived or skipped_empty:
+                    logger.info(
+                        "Filtered out %d archived and %d empty repository(ies) during discovery.",
+                        skipped_archived,
+                        skipped_empty,
+                    )
 
                 installed_org_logins = [
                     inst.get("account", {}).get("login", "")

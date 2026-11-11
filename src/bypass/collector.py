@@ -18,6 +18,7 @@ from .models import (
     PushProtectionBypassRecord,
     RepoBypassProfile,
     RulesetBypassRecord,
+    classify_bypass_risk,
 )
 
 logger = logging.getLogger("repo360.bypass")
@@ -29,19 +30,19 @@ def collect_repo_push_bypasses(
     repo: str,
     since: datetime,
     ai_engine: Optional[Any] = None,
+    errors_out: Optional[List[str]] = None,
 ) -> List[PushProtectionBypassRecord]:
-    """Retrieve secret scanning alerts with push protection bypass flags or resolved exemptions."""
+    """Retrieve secret scanning alerts where push protection was explicitly bypassed."""
     records: List[PushProtectionBypassRecord] = []
     try:
         endpoint = f"/repos/{org}/{repo}/secret-scanning/alerts"
-        # Query both open and resolved alerts
+        # Query both open and resolved alerts, but filter strictly for genuine push-protection overrides
         for alert in client.paginate(org, endpoint, {"state": "all"}):
             is_bypassed = bool(alert.get("push_protection_bypassed"))
-            resolution = alert.get("resolution")
-
-            if not is_bypassed and not resolution:
+            if not is_bypassed:
                 continue
 
+            resolution = alert.get("resolution")
             alert_num = alert.get("number", 0)
             secret_type = alert.get("secret_type_display_name") or alert.get("secret_type", "Secret")
             html_url = alert.get("html_url", "")
@@ -52,14 +53,19 @@ def collect_repo_push_bypasses(
             resolved_by = alert.get("resolved_by") or {}
             actor = bypassed_by.get("login") or resolved_by.get("login") or "Unknown"
 
-            bypassed_at_str = alert.get("push_protection_bypassed_at") or alert.get("resolved_at") or alert.get("created_at")
+            bypassed_at_str = alert.get("push_protection_bypassed_at") or alert.get("created_at")
             ts = parse_ts(bypassed_at_str) if bypassed_at_str else None
 
             if ts and ts < since:
                 continue
 
-            # Assess risk using AI engine or deterministic policy defaults
-            risk = "Moderate Risk"
+            # Assess risk using AI engine or resolution-aware deterministic policy defaults
+            if not resolution or resolution in ("wont_fix", "revoked"):
+                risk = "High Risk"
+            elif resolution in ("false_positive", "used_in_tests") and comment != "-":
+                risk = "Moderate Risk"
+            else:
+                risk = "Moderate Risk"
             advisory = f"Push protection was bypassed by {actor}. Review resolution comment: '{comment}'."
             if ai_engine is not None:
                 risk, advisory = ai_engine.analyze_push_protection_bypass(
@@ -77,19 +83,27 @@ def collect_repo_push_bypasses(
                     secret_type=secret_type,
                     actor=actor,
                     timestamp=ts,
-                    resolution=resolution or "Push Override",
+                    resolution=resolution or "Open / Unresolved",
                     resolution_comment=comment,
-                    push_protection_bypassed=is_bypassed,
+                    push_protection_bypassed=True,
                     html_url=html_url,
                     ai_risk_assessment=risk,
                     ai_security_advisory=advisory,
                 )
             )
     except requests.HTTPError as err:
-        if err.response.status_code not in (404, 403):
+        status = getattr(getattr(err, "response", None), "status_code", None)
+        if status == 403:
+            if errors_out is not None:
+                errors_out.append("Push protection alerts blocked (403 Forbidden — grant secret_scanning_alerts:read)")
+        elif status != 404:
             logger.debug("Secret scanning alert query failed for %s/%s: %s", org, repo, err)
+            if errors_out is not None:
+                errors_out.append(f"Secret scanning alerts HTTP {status}")
     except Exception as err:
         logger.debug("Error collecting push protection bypasses for %s/%s: %s", org, repo, err)
+        if errors_out is not None:
+            errors_out.append(f"Secret scanning alert collection error: {err}")
     return records
 
 
@@ -98,6 +112,7 @@ def collect_repo_ruleset_bypasses(
     org: str,
     repo: str,
     since: datetime,
+    errors_out: Optional[List[str]] = None,
 ) -> List[RulesetBypassRecord]:
     """Retrieve branch and repository ruleset evaluation events where rules were bypassed."""
     records: List[RulesetBypassRecord] = []
@@ -140,10 +155,18 @@ def collect_repo_ruleset_bypasses(
                 )
             )
     except requests.HTTPError as err:
-        if err.response.status_code not in (404, 403):
+        status = getattr(getattr(err, "response", None), "status_code", None)
+        if status == 403:
+            if errors_out is not None:
+                errors_out.append("Ruleset rule-suites blocked (403 Forbidden — grant administration:read)")
+        elif status != 404:
             logger.debug("Ruleset rule-suites query failed for %s/%s: %s", org, repo, err)
+            if errors_out is not None:
+                errors_out.append(f"Ruleset rule-suites HTTP {status}")
     except Exception as err:
         logger.debug("Error collecting ruleset bypasses for %s/%s: %s", org, repo, err)
+        if errors_out is not None:
+            errors_out.append(f"Ruleset rule-suites error: {err}")
     return records
 
 
@@ -169,10 +192,16 @@ def profile_repo_bypasses(
         if ss_status == "disabled" and pp_status == "disabled":
             push_disabled_in_meta = True
 
-    if check_push and not push_disabled_in_meta:
-        profile.push_bypasses = collect_repo_push_bypasses(client, org, repo, since, ai_engine=ai_engine)
+    if not check_push:
+        profile.errors.append("Secret scanning alerts disabled/unpermitted on org App installation (secret_scanning_alerts:read missing)")
+    elif not push_disabled_in_meta:
+        profile.push_bypasses = collect_repo_push_bypasses(
+            client, org, repo, since, ai_engine=ai_engine, errors_out=profile.errors
+        )
     if not is_dormant_repo(meta, since, parse_ts):
-        profile.ruleset_bypasses = collect_repo_ruleset_bypasses(client, org, repo, since)
+        profile.ruleset_bypasses = collect_repo_ruleset_bypasses(
+            client, org, repo, since, errors_out=profile.errors
+        )
     return profile
 
 
@@ -293,8 +322,9 @@ def build_bypass_rows(
                 push.html_url or "-",
             ])
 
-            # Actor accumulation
-            acc = actor_stats[(p.org, push.actor)]
+            # Actor accumulation (case-insensitive actor identity within org)
+            acc = actor_stats[(p.org, push.actor.casefold())]
+            acc.setdefault("display", push.actor)
             acc["push"] += 1
             acc["secrets"][push.secret_type] += 1
             if push.timestamp:
@@ -315,20 +345,21 @@ def build_bypass_rows(
                 ts_ist,
             ])
 
-            # Actor accumulation
-            acc = actor_stats[(p.org, rule.actor)]
+            # Actor accumulation (case-insensitive actor identity within org)
+            acc = actor_stats[(p.org, rule.actor.casefold())]
+            acc.setdefault("display", rule.actor)
             acc["ruleset"] += 1
             if rule.timestamp:
                 acc["last_ts"] = max(acc["last_ts"], rule.timestamp) if acc["last_ts"] else rule.timestamp
 
     # Actor rows
-    for (org, actor), stat in sorted(actor_stats.items(), key=lambda item: -(item[1]["push"] + item[1]["ruleset"])):
+    for (org, _actor_key), stat in sorted(actor_stats.items(), key=lambda item: -(item[1]["push"] + item[1]["ruleset"])):
         top_sec = stat["secrets"].most_common(1)[0][0] if stat["secrets"] else "-"
         last_ist = fmt_timestamp(stat["last_ts"])
         total = stat["push"] + stat["ruleset"]
         actor_rows.append([
             org,
-            actor,
+            stat.get("display", _actor_key),
             stat["push"],
             stat["ruleset"],
             total,
@@ -344,19 +375,21 @@ def build_bypass_rows(
         total_incidents = total_push + total_ruleset
         unique_org_actors = set()
         sec_counter = Counter()
+        org_had_errors = False
 
         for p in p_list:
-            unique_org_actors.update(p.unique_actors)
+            unique_org_actors.update(a.casefold() for a in p.unique_actors)
+            if p.errors:
+                org_had_errors = True
             for push in p.push_bypasses:
                 sec_counter[push.secret_type] += 1
 
         top_secret = sec_counter.most_common(1)[0][0] if sec_counter else "None"
 
-        risk_tier = "Low"
-        if total_push > 10 or total_incidents > 25:
-            risk_tier = "High"
-        elif total_push > 0 or total_incidents > 5:
-            risk_tier = "Medium"
+        if total_incidents == 0 and org_had_errors:
+            risk_tier = "Unknown (Partial)"
+        else:
+            risk_tier = classify_bypass_risk(total_push, total_incidents)
 
         org_rows.append([
             org,
