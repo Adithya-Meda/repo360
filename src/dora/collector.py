@@ -1253,6 +1253,12 @@ def build_dora_rows(
                 rework_pct=item[1].rework_rate_pct,
                 rework_tier=item[1].rework_tier,
                 open_incidents=item[1].open_incidents_count,
+                signal_mode=item[1].signal_mode,
+                code_change_deploys=item[1].code_change_deploys,
+                no_op_deploys=item[1].no_op_deploys,
+                stalled_deploys=item[1].stalled_deploys_count,
+                collapsed_retries=item[1].redundant_failure_retries,
+                total_deploys=item[1].total_deploys,
             ),
             ai_engine=ai_engine,
             max_workers=8,
@@ -1276,28 +1282,33 @@ def build_dora_rows(
                 if m.stalled_deploys_count > 0
                 else "-"
             )
-        elif idx in ai_advisories:
-            flow_advisory = ai_advisories[idx]
         else:
-            flow_advisory = "Delivery throughput and stability are within standard benchmarks."
-            if cfr_tier in ("Low", "Medium"):
-                flow_advisory = "Elevated change failure rate. Strengthen pre-deploy regression suites, canary checks, and rollback automation."
-            elif rework_tier in ("Low", "Medium"):
-                flow_advisory = "High deployment rework rate from hotfixes/reverts. Enforce stricter PR validation and staged rollouts."
-            elif m.open_incidents_count > 0:
-                flow_advisory = f"{m.open_incidents_count} open recovery incident(s) detected. Prioritize service restoration and automated rollback verification."
-            elif m.code_change_deploys == 0 and m.no_op_deploys > 0:
-                flow_advisory = (
-                    f"Only same-SHA/zero-diff rebuilds observed ({m.no_op_deploys} no-op redeploy(s)); "
-                    "no new production code changes shipped in window."
-                )
-            elif lttc_tier in ("Low", "Medium"):
-                flow_advisory = "Elevated commit-to-production lead time. Reduce PR batch sizes, streamline code review SLAs, and parallelize CI."
-            elif df_tier in ("Low", "Medium") and cfr_tier in ("Elite", "High"):
-                flow_advisory = "Low deployment frequency despite strong stability. Automate continuous delivery triggers and ship smaller increments."
-            elif mttr_tier in ("Low", "Medium"):
-                flow_advisory = "Extended recovery duration. Adopt automated zero-downtime rollbacks and healthcheck-driven alerts."
-            if m.stalled_deploys_count > 0:
+            if idx in ai_advisories:
+                flow_advisory = ai_advisories[idx]
+            else:
+                flow_advisory = "Delivery throughput and stability are within standard benchmarks."
+                if cfr_tier in ("Low", "Medium"):
+                    flow_advisory = "Elevated change failure rate. Strengthen pre-deploy regression suites, canary checks, and rollback automation."
+                elif rework_tier in ("Low", "Medium"):
+                    flow_advisory = "High deployment rework rate from hotfixes/reverts. Enforce stricter PR validation and staged rollouts."
+                elif m.open_incidents_count > 0:
+                    flow_advisory = f"{m.open_incidents_count} open recovery incident(s) detected. Prioritize service restoration and automated rollback verification."
+                elif m.code_change_deploys == 0 and m.no_op_deploys > 0:
+                    flow_advisory = (
+                        f"Only same-SHA/zero-diff rebuilds observed ({m.no_op_deploys} no-op redeploy(s)); "
+                        "no new production code changes shipped in window."
+                    )
+                elif lttc_tier in ("Low", "Medium"):
+                    flow_advisory = "Elevated commit-to-production lead time. Reduce PR batch sizes, streamline code review SLAs, and parallelize CI."
+                elif df_tier in ("Low", "Medium") and cfr_tier in ("Elite", "High"):
+                    flow_advisory = "Low deployment frequency despite strong stability. Automate continuous delivery triggers and ship smaller increments."
+                elif mttr_tier in ("Low", "Medium"):
+                    flow_advisory = "Extended recovery duration. Adopt automated zero-downtime rollbacks and healthcheck-driven alerts."
+            if (
+                m.stalled_deploys_count > 0
+                and "stalled" not in flow_advisory.lower()
+                and "in_progress" not in flow_advisory.lower()
+            ):
                 flow_advisory = f"{flow_advisory} ({m.stalled_deploys_count} stalled IN_PROGRESS deploy(s) >24h.)"
         m.flow_advisory = flow_advisory
 

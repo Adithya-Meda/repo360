@@ -495,5 +495,97 @@ def test_ai_circuit_breaker_on_rate_limit(mock_client_cls: MagicMock) -> None:
     assert mock_client.models.generate_content.call_count == 0
 
 
+def test_diagnose_dora_flow_grounding_markdown_strip_and_no_op_awareness(monkeypatch) -> None:
+    """Verify DORA AI advisor grounds no-op/stalled signals, strips Markdown, and blocks hallucinations."""
+    # 1. Deterministic offline rules differentiate pure same-SHA no-op rebuilds & stalled deploys
+    offline = AIEngine(enabled=False)
+    noop_diag = offline.diagnose_dora_flow(
+        repo="org/pages-site",
+        df_weekly=0.0,
+        df_tier="Low",
+        lead_time_hours=None,
+        lttc_tier="N/A",
+        cfr_pct=0.0,
+        cfr_tier="Elite",
+        mttr_hours=None,
+        mttr_tier="N/A",
+        composite_tier="Medium",
+        signal_mode="Production Workflows",
+        code_change_deploys=0,
+        no_op_deploys=11,
+        total_deploys=11,
+    )
+    assert "same-SHA rebuilds" in noop_diag
+    assert "11" in noop_diag
+
+    stalled_diag = offline.diagnose_dora_flow(
+        repo="org/broken-app",
+        df_weekly=0.0,
+        df_tier="Low",
+        cfr_pct=100.0,
+        cfr_tier="Low",
+        composite_tier="Low",
+        signal_mode="GitHub Deployments",
+        code_change_deploys=0,
+        no_op_deploys=0,
+        stalled_deploys=14,
+        collapsed_retries=3,
+        total_deploys=12,
+    )
+    assert "3 duplicate retry" in stalled_diag
+    assert "14 stalled IN_PROGRESS" in stalled_diag
+
+    # 2. Online mode strips Markdown formatting and includes grounded metrics in prompt
+    online = AIEngine(api_key="mock-key", provider="openai", enabled=True)
+    captured_prompts = []
+
+    def _fake_generate_md(prompt: str, retry_on_rate_limit: bool = True) -> str:
+        captured_prompts.append(prompt)
+        return "- Increase **deployment frequency** (`0.2/wk`) via `GitHub Actions` triggers."
+
+    monkeypatch.setattr(online, "_generate_text", _fake_generate_md)
+    cleaned = online.diagnose_dora_flow(
+        repo="org/svc",
+        df_weekly=0.23,
+        df_tier="Low",
+        cfr_pct=0.0,
+        cfr_tier="Elite",
+        composite_tier="Medium",
+        signal_mode="GitHub Releases",
+        code_change_deploys=3,
+        no_op_deploys=2,
+        total_deploys=5,
+    )
+    assert "**" not in cleaned
+    assert "`" not in cleaned
+    assert not cleaned.startswith("-")
+    assert "GitHub Releases" in captured_prompts[0]
+    assert "Unique Code-Change Deploys: 3, No-Op Same-SHA Rebuilds: 2" in captured_prompts[0]
+
+    # 3. Contradictory LLM hallucination claiming missing pipelines on active repos falls back safely
+    monkeypatch.setattr(
+        online,
+        "_generate_text",
+        lambda prompt, retry_on_rate_limit=True: (
+            "The primary delivery constraint is a complete absence of automated deployment pipelines."
+        ),
+    )
+    grounded = online.diagnose_dora_flow(
+        repo="org/pages-site",
+        df_weekly=0.0,
+        df_tier="Low",
+        cfr_pct=0.0,
+        cfr_tier="Elite",
+        composite_tier="Medium",
+        signal_mode="Production Workflows",
+        code_change_deploys=0,
+        no_op_deploys=11,
+        total_deploys=11,
+    )
+    assert "absence of automated deployment pipelines" not in grounded
+    assert "same-SHA rebuilds" in grounded
+
+
+
 
 

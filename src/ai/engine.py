@@ -714,6 +714,24 @@ ADVISORY: <1 concise sentence specifying verification action for SecOps>"""
         except Exception:
             return default_risk, default_advisory
 
+    @staticmethod
+    def _to_plain_advisory(text: str) -> str:
+        """Strip Markdown emphasis, inline code ticks, and list prefixes for clean Excel cells."""
+        cleaned = (text or "").strip()
+        cleaned = re.sub(r"```[\s\S]*?```", " ", cleaned)
+        cleaned = re.sub(r"`([^`]+)`", r"\1", cleaned)
+        cleaned = re.sub(r"\*\*([^*]+)\*\*", r"\1", cleaned)
+        cleaned = re.sub(r"__([^_]+)__", r"\1", cleaned)
+        cleaned = re.sub(r"(?<!\w)\*([^*]+)\*(?!\w)", r"\1", cleaned)
+        cleaned = re.sub(r"(?m)^\s*(?:[-*•]+|\d+\.)\s+", "", cleaned)
+        cleaned = re.sub(r"(?m)^\s*#{1,6}\s+", "", cleaned)
+        return re.sub(r"\s+", " ", cleaned).strip()
+
+    _NO_PIPELINE_HALLUCINATION_RE = re.compile(
+        r"\b(?:complete\s+absence\s+of|absence\s+of|zero|no|lack(?:ing)?)\s+(?:automated\s+)?(?:deployment\s+)?(?:pipelines?|deployment\s+automation|ci/cd)\b",
+        re.IGNORECASE,
+    )
+
     def diagnose_dora_flow(
         self,
         repo: str = "",
@@ -729,43 +747,110 @@ ADVISORY: <1 concise sentence specifying verification action for SecOps>"""
         rework_pct: Optional[float] = None,
         rework_tier: str = "N/A",
         open_incidents: int = 0,
+        signal_mode: str = "",
+        code_change_deploys: Optional[int] = None,
+        no_op_deploys: int = 0,
+        stalled_deploys: int = 0,
+        collapsed_retries: int = 0,
+        total_deploys: Optional[int] = None,
     ) -> str:
         """Diagnose delivery flow bottlenecks and prescribe actionable engineering improvements."""
-        lt_str = f"{lead_time_hours:.1f}h" if lead_time_hours is not None else "N/A"
-        mttr_str = f"{mttr_hours:.1f}h" if mttr_hours is not None else "N/A"
+        lt_str = f"{lead_time_hours:.2f}h" if lead_time_hours is not None else "N/A"
+        mttr_str = f"{mttr_hours:.2f}h" if mttr_hours is not None else "N/A"
         rework_str = f"{rework_pct:.1f}%" if rework_pct is not None else "N/A"
 
+        stalled_addressed = False
         if cfr_pct > 15.0 or cfr_tier in ("Low", "Medium"):
-            default_rec = f"Elevated change failure rate ({cfr_pct:.1f}%). Strengthen automated regression testing, integration gates, and canary deployment stages."
+            retry_note = f" ({collapsed_retries} duplicate retry run(s) collapsed)" if collapsed_retries > 0 else ""
+            default_rec = (
+                f"Elevated change failure rate ({cfr_pct:.1f}%{retry_note}). "
+                "Strengthen automated regression gates, pre-deploy checks, and rollback verification."
+            )
+        elif stalled_deploys > 0 and (total_deploys == 0 or (code_change_deploys == 0 and no_op_deploys == 0)):
+            stalled_addressed = True
+            default_rec = (
+                f"{stalled_deploys} deployment(s) remained IN_PROGRESS >24h without finalizing status. "
+                "Configure workflow timeout-minutes and explicit GitHub Deployment completion/failure callbacks."
+            )
         elif (rework_pct is not None and rework_pct > 8.0) or rework_tier in ("Low", "Medium"):
-            default_rec = f"High deployment rework rate ({rework_str}). Enforce pre-merge integration verification and staged rollouts to curb hotfixes and reverts."
+            default_rec = (
+                f"High deployment rework rate ({rework_str}). Enforce pre-merge integration verification "
+                "and staged rollouts to curb hotfixes and reverts."
+            )
         elif open_incidents > 0:
-            default_rec = f"{open_incidents} open recovery incident(s) pending resolution. Prioritize automated rollback verification and incident triage."
+            default_rec = (
+                f"{open_incidents} open recovery incident(s) pending resolution. "
+                "Prioritize automated rollback verification and incident triage."
+            )
+        elif code_change_deploys == 0 and no_op_deploys > 0:
+            default_rec = (
+                f"All {no_op_deploys} successful pipeline run(s) were same-SHA rebuilds with zero new code changes. "
+                "Trigger production releases from code commits or release tags rather than scheduled rebuilds alone."
+            )
         elif (lead_time_hours is not None and lead_time_hours > 168.0) or lttc_tier in ("Low", "Medium"):
-            default_rec = f"Lead time bottleneck ({lt_str}). Reduce PR batch size, enforce single-piece flow, and parallelize CI build/test steps."
+            default_rec = (
+                f"Lead time bottleneck ({lt_str}). Reduce PR batch size, enforce smaller reviews, "
+                "and parallelize CI build/test steps."
+            )
         elif df_weekly < 1.0 or df_tier in ("Low", "Medium"):
-            default_rec = f"Deployment cadence is low ({df_weekly:.1f}/week). Decouple release branches and transition to trunk-based continuous delivery."
+            noop_note = (
+                f" (excluding {no_op_deploys} same-SHA no-op rebuild(s))"
+                if no_op_deploys > 0
+                else ""
+            )
+            default_rec = (
+                f"Code-change deployment cadence is low ({df_weekly:.2f}/week{noop_note}). "
+                "Decouple manual release gates and ship smaller, automated merge-to-production increments."
+            )
         elif composite_tier == "Elite":
             default_rec = "Elite DORA delivery performance. Maintain automated testing coverage and current trunk-based release cadence."
         else:
             default_rec = "Balanced engineering flow. Continue monitoring pull request review turnaround and test pipeline duration."
 
+        if stalled_deploys > 0 and not stalled_addressed:
+            default_rec = f"{default_rec} Also resolve {stalled_deploys} stalled IN_PROGRESS deployment(s) stuck >24h."
+
         if not self.is_available():
             return default_rec
 
-        prompt = f"""You are a Principal DevOps and Delivery Flow Architect. Diagnose delivery bottlenecks for repository '{self.sanitize_text(repo)}':
+        safe_repo = self.sanitize_text(repo)
+        safe_signal = self.sanitize_text(signal_mode) or "GitHub Native Signals"
+        code_change_str = str(code_change_deploys) if code_change_deploys is not None else "Unknown"
+        total_str = str(total_deploys) if total_deploys is not None else "Unknown"
+        has_active_pipeline = (
+            no_op_deploys > 0
+            or (total_deploys is not None and total_deploys > 0)
+            or (bool(signal_mode) and "no production activity" not in signal_mode.lower() and "permission gap" not in signal_mode.lower())
+        )
+
+        prompt = f"""You are a Principal DevOps and Delivery Flow Architect. Diagnose delivery bottlenecks for repository '{safe_repo}':
 - Composite Performance Tier: {composite_tier}
-- Deployment Frequency: {df_weekly:.1f} per week ({df_tier})
+- Delivery Signal Mode: {safe_signal}
+- Total Completed Deployments: {total_str} (Unique Code-Change Deploys: {code_change_str}, No-Op Same-SHA Rebuilds: {no_op_deploys})
+- Collapsed Same-SHA Failure Retries: {collapsed_retries} | Stalled Deploys (>24h IN_PROGRESS): {stalled_deploys}
+- Code-Change Deployment Frequency: {df_weekly:.2f} per week ({df_tier})
 - Lead Time for Changes: {lt_str} ({lttc_tier})
 - Change Failure Rate: {cfr_pct:.1f}% ({cfr_tier})
 - Failed Deployment Recovery Time (MTTR): {mttr_str} ({mttr_tier})
 - Deployment Rework Rate: {rework_str} ({rework_tier})
 - Open Incidents: {open_incidents}
 
-Provide ONLY 1-2 concise, highly actionable sentences identifying the primary delivery constraint and prescribing concrete platform engineering changes to reach Elite tier. No chat or filler."""
+Strict Grounding & Output Rules:
+1. Only cite facts consistent with the telemetry above. Never claim deployment pipelines or automation are absent when Delivery Signal Mode shows active workflows/deployments/releases or Total/No-Op Deploys > 0.
+2. If No-Op Same-SHA Rebuilds dominate and Unique Code-Change Deploys is 0, explain that pipelines run on schedule/rebuilds without shipping new code changes.
+3. If Stalled Deploys > 0, explicitly call out cleaning up hung IN_PROGRESS deployment statuses and workflow timeouts.
+4. Keep remediation grounded in native GitHub capabilities (GitHub Actions, Deployments, Releases, Pages, PR/environment protection gates) unless another tool is evidenced.
+5. Output PLAIN TEXT ONLY: NO Markdown bold/italic (** or *), NO backticks, NO bullet lists. Provide ONLY 1-2 concise sentences."""
 
         res = self._generate_text(prompt)
-        return res.strip() if res else default_rec
+        if not res:
+            return default_rec
+        cleaned = self._to_plain_advisory(res)
+        if not cleaned:
+            return default_rec
+        if has_active_pipeline and self._NO_PIPELINE_HALLUCINATION_RE.search(cleaned):
+            return default_rec
+        return cleaned
 
     def generate_finops_advisory(
         self,

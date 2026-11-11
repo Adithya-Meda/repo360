@@ -1199,3 +1199,35 @@ def test_run_dora_cli_forwards_permission_and_api_failures(monkeypatch, tmp_path
     assert "Issues API forbidden (HTTP 403) on acme/locked" in exec_text
 
 
+def test_build_dora_rows_passes_grounded_ai_context_and_stalled_suffix():
+    now = datetime(2026, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
+    seen_kwargs = []
+
+    class _FakeAI:
+        def diagnose_dora_flow(self, **kwargs):
+            seen_kwargs.append(kwargs)
+            return "Reduce direct-push failures using required CI status checks."
+
+    m = RepoDORAMetrics(
+        org="acme",
+        repo="unstable",
+        signal_mode="GitHub Deployments",
+        deployments=[
+            DeploymentRecord("Deployment", "f1", "prod", "production", "FAILURE", "main", now - timedelta(days=2), commit_sha="s1"),
+            DeploymentRecord("Deployment", "f2", "prod", "production", "FAILURE", "main", now - timedelta(days=1), commit_sha="s1"),
+            DeploymentRecord("Deployment", "p1", "prod", "production", "IN_PROGRESS", "main", now - timedelta(hours=36), commit_sha="s2"),
+        ],
+        stalled_deploys_count=1,
+    )
+
+    repo_rows, _, _, _ = build_dora_rows([m], ["acme"], window_days=90, ai_engine=_FakeAI())
+    assert len(seen_kwargs) == 1
+    assert seen_kwargs[0]["signal_mode"] == "GitHub Deployments"
+    assert seen_kwargs[0]["no_op_deploys"] == 0
+    assert seen_kwargs[0]["stalled_deploys"] == 1
+    assert seen_kwargs[0]["collapsed_retries"] == 1
+    assert seen_kwargs[0]["total_deploys"] == 2
+    assert "1 stalled IN_PROGRESS deploy(s) >24h." in repo_rows[0][14]
+
+
+
