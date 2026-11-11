@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 import requests
 
+from .common.interrupts import run_interruptible_subprocess
 from .credentials import get_credentials_path, get_secrets_dir
 
 logger = logging.getLogger("repo360.upgrade")
@@ -161,7 +162,7 @@ def check_remote_status(repo_url: str = DEFAULT_REPO_URL) -> Tuple[bool, str]:
 
     # Protocol-level fallback via 'git ls-remote' when GitHub REST API rate limit is exceeded
     try:
-        res = subprocess.run(
+        res = run_interruptible_subprocess(
             ["git", "ls-remote", repo_url, "HEAD"],
             capture_output=True,
             text=True,
@@ -185,7 +186,7 @@ def get_remote_commit_sha(repo_url: str = DEFAULT_REPO_URL) -> Optional[str]:
     """
     # 1. Primary: Use 'git ls-remote' - protocol-level query with zero REST API rate limit
     try:
-        res = subprocess.run(
+        res = run_interruptible_subprocess(
             ["git", "ls-remote", repo_url, "HEAD"],
             capture_output=True,
             text=True,
@@ -271,7 +272,7 @@ def _git_head_for_dir(repo_dir: Path) -> Optional[str]:
     if not repo_dir.is_dir():
         return None
     try:
-        res = subprocess.run(
+        res = run_interruptible_subprocess(
             ["git", "-C", str(repo_dir), "rev-parse", "HEAD"],
             capture_output=True,
             text=True,
@@ -464,10 +465,9 @@ def execute_upgrade(candidates: List[Tuple[str, List[str]]], dry_run: bool = Fal
     for strategy_name, cmd in candidates:
         logger.debug("Executing upgrade via %s: %s", strategy_name, " ".join(cmd))
         try:
-            result = subprocess.run(
+            result = run_interruptible_subprocess(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
                 text=True,
                 check=False,
                 timeout=300,

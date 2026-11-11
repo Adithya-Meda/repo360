@@ -28,6 +28,13 @@ from typing import Optional
 import requests
 
 from .auth.github_app_auth import GitHubAppAuth
+from .common.interrupts import (
+    finalize_interrupt_exit,
+    interruptible_sleep,
+    is_shutting_down,
+    register_closable,
+    unregister_closable,
+)
 from .credentials import (
     save_private_key,
     save_user_credentials,
@@ -450,15 +457,19 @@ def run_wizard(
 
     socketserver.TCPServer.allow_reuse_address = True
     server = socketserver.TCPServer((LOOPBACK_HOST, PORT), ManifestCallbackHandler)
-    server.timeout = 0.5
+    server.timeout = 0.25
+    register_closable(server)
     if open_browser:
         webbrowser.open(f"http://{LOOPBACK_HOST}:{PORT}/")
 
-    # Wait for the single callback request (timeout=0.5 ensures responsive Ctrl+C handling on Windows)
+    # Wait for the single callback request (short timeout + shutdown flag ensures prompt Ctrl+C)
     try:
-        while ManifestCallbackHandler.conversion_result is None:
+        while ManifestCallbackHandler.conversion_result is None and not is_shutting_down():
             server.handle_request()
+        if is_shutting_down():
+            raise KeyboardInterrupt
     finally:
+        unregister_closable(server)
         server.server_close()
 
     result = ManifestCallbackHandler.conversion_result
@@ -530,7 +541,9 @@ def run_wizard(
                     org_login = selected.get("account", {}).get("login", org_name)
                     print(f"-> [SUCCESS] Auto-detected Installation ID: {installation_id} for '{org_login}'!")
                     break
-                time.sleep(2)
+                if is_shutting_down():
+                    raise KeyboardInterrupt
+                interruptible_sleep(2, sleep_fn=time.sleep)
 
             if not installation_id:
                 print("Could not auto-detect active installation yet.")
@@ -684,7 +697,7 @@ def main() -> None:
         return 0
     except KeyboardInterrupt:
         print("\n\nOperation cancelled by user (Ctrl+C). Exiting...")
-        return 130
+        return finalize_interrupt_exit(130)
 
 
 if __name__ == "__main__":

@@ -19,6 +19,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from ..auth.github_app_auth import GitHubAppAuth
+from ..common.interrupts import interruptible_sleep, is_shutting_down, register_closable
 
 logger = logging.getLogger(__name__)
 
@@ -68,22 +69,19 @@ class Repo360Client:
         adapter = HTTPAdapter(max_retries=retries, pool_connections=100, pool_maxsize=100)
         self.session.mount("https://", adapter)
         self.session.mount("http://", adapter)
+        register_closable(self.session)
 
     def _interruptible_sleep(self, seconds: float) -> None:
-        """Sleep in small 0.5s intervals to ensure immediate responsiveness to Ctrl+C."""
-        remaining = float(seconds)
-        while remaining > 0:
-            chunk = min(remaining, 0.5)
-            time.sleep(chunk)
-            remaining -= chunk
+        """Sleep up to ``seconds`` while waking instantaneously on Ctrl+C."""
+        interruptible_sleep(float(seconds), sleep_fn=time.sleep)
 
     def _sleep_with_heartbeat(self, seconds: int) -> None:
         """Sleep for the specified seconds while logging a progress heartbeat every 30 seconds."""
         remaining = float(seconds)
         last_heartbeat = time.time()
         while remaining > 0:
-            chunk = min(remaining, 0.5)
-            time.sleep(chunk)
+            chunk = min(remaining, 1.0)
+            interruptible_sleep(chunk, sleep_fn=time.sleep)
             remaining -= chunk
             if time.time() - last_heartbeat >= 30 and remaining > 0:
                 logger.info("Rate limit cooldown in progress: %d seconds remaining...", int(remaining))
@@ -146,11 +144,11 @@ class Repo360Client:
 
         # Adaptive micro-delay: execute at full wire speed when rate limit quota is healthy;
         # throttle gracefully only when remaining quota is low or approaching reset
-        if self.adaptive_delay_ms > 0:
+        if self.adaptive_delay_ms > 0 and not is_shutting_down():
             if rem is not None and rem < 500:
-                time.sleep((self.adaptive_delay_ms * 2) / 1000.0)
+                interruptible_sleep((self.adaptive_delay_ms * 2) / 1000.0, sleep_fn=time.sleep)
             elif rem is not None and rem < 1000:
-                time.sleep((self.adaptive_delay_ms / 2) / 1000.0)
+                interruptible_sleep((self.adaptive_delay_ms / 2) / 1000.0, sleep_fn=time.sleep)
 
     @staticmethod
     def _extract_org_from_path(path_or_url: str) -> Optional[str]:

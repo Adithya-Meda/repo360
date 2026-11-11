@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Sequence, TypeVar
+
+from .interrupts import is_shutting_down, iter_completed
 
 T = TypeVar("T")
 R = TypeVar("R")
@@ -59,7 +61,7 @@ def map_concurrent(
         future_to_idx = {
             executor.submit(worker_fn, item): idx for idx, item in enumerate(items)
         }
-        for future in as_completed(future_to_idx):
+        for future in iter_completed(future_to_idx):
             idx = future_to_idx[future]
             results[idx] = future.result()
     except (KeyboardInterrupt, SystemExit):
@@ -78,6 +80,8 @@ def run_concurrent_ai(
     max_workers: int = 8,
 ) -> List[R]:
     """Execute AI advisory calls concurrently when live LLM synthesis is active."""
+    if is_shutting_down():
+        raise KeyboardInterrupt
     if not items:
         return []
     is_avail_fn = getattr(ai_engine, "is_available", None)

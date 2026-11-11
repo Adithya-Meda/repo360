@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -283,10 +283,11 @@ def collect_runners_and_metrics(
         return runners, runner_metrics, org_runner_metrics
 
     workers = resolve_worker_count(cfg.max_workers, len(active_targets), max_cap=32)
+    from ..common.interrupts import iter_completed
     pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="runner-pool")
     try:
         futures = {pool.submit(_scan_repo_runs, target): target for target in active_targets}
-        for fut in as_completed(futures):
+        for fut in iter_completed(futures):
             loc_r, loc_rm, loc_om, failure = fut.result()
             if failure:
                 failures.append(failure)

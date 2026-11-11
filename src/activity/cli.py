@@ -8,7 +8,7 @@ import os
 import sys
 import time
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -229,6 +229,7 @@ def run_activity_cli(argv: Optional[List[str]] = None) -> int:
     reports: Dict[Tuple[str, str], RepositoryReport] = {}
 
     from ..common.concurrency import resolve_worker_count
+    from ..common.interrupts import iter_completed
     worker_count = resolve_worker_count(cfg.max_workers, len(targets), max_cap=32) if targets else 1
     pool = ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="activity-worker")
     try:
@@ -245,7 +246,7 @@ def run_activity_cli(argv: Optional[List[str]] = None) -> int:
             ): (org, repo)
             for org, repo in targets
         }
-        for done_idx, fut in enumerate(as_completed(futures), start=1):
+        for done_idx, fut in enumerate(iter_completed(futures), start=1):
             org, repo = futures[fut]
             try:
                 col = fut.result()

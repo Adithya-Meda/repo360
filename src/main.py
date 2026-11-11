@@ -32,6 +32,12 @@ from .checks import (
 from .collector.client import Repo360Client
 from .collector.repo_inspector import RepoInspector
 from .common.concurrency import map_concurrent, resolve_worker_count
+from .common.interrupts import (
+    finalize_interrupt_exit,
+    install_signal_handlers,
+    is_shutting_down,
+    iter_completed,
+)
 from .reporters.excel_reporter import ExcelReporter
 from .validator import ConfigValidator, RepoTarget
 
@@ -458,8 +464,8 @@ def run_audit(
                     executor.submit(_audit_single_target, idx, target): idx
                     for idx, target in enumerate(targets, start=1)
                 }
-                for future in concurrent.futures.as_completed(future_to_idx):
-                    if stop_event.is_set():
+                for future in iter_completed(future_to_idx):
+                    if stop_event.is_set() or is_shutting_down():
                         break
                     target_idx = future_to_idx[future]
                     try:
@@ -501,10 +507,12 @@ def run_audit(
                         X,
                     )
                     start_wait = time.time()
-                    while not stop_event.is_set() and any(not f.done() for f in pending):
+                    while not stop_event.is_set() and not is_shutting_down() and any(not f.done() for f in pending):
                         concurrent.futures.wait(pending, timeout=0.2)
                         if time.time() - start_wait > 60.0:
                             break
+                    if is_shutting_down():
+                        raise KeyboardInterrupt
         finally:
             ai_executor.shutdown(wait=False, cancel_futures=True)
 
@@ -544,27 +552,28 @@ Run 'repo360 <command> --help' for details on a specific command (e.g. 'repo360 
     return 0
 
 
+def _run_interruptible_command(
+    fn,
+    cancel_message: str = "\nExecution cancelled by user (Ctrl+C). Exiting...",
+    on_cancel=None,
+) -> int:
+    """Install fast signal/watchdog handlers, run ``fn()``, and finalize Ctrl+C exit cleanly."""
+    install_signal_handlers()
+    try:
+        return fn()
+    except KeyboardInterrupt:
+        logger.warning(cancel_message)
+        if on_cancel is not None:
+            on_cancel()
+        return finalize_interrupt_exit(130)
+
+
 def main() -> int:
     """CLI entrypoint with strict subcommand routing.
 
     Running bare 'repo360' prints available commands and does NOT invoke any operation.
     """
-    import signal
-    import sys
-
-    def _graceful_exit(signum, frame):
-        sig_name = "SIGTERM" if signum == getattr(signal, "SIGTERM", None) else "SIGINT (Ctrl+C)"
-        logger.warning("\n[TERMINATION] Received %s. Exiting immediately...", sig_name)
-        try:
-            sys.stdout.flush()
-            sys.stderr.flush()
-        except Exception:
-            pass
-        os._exit(128 + signum)
-
-    signal.signal(signal.SIGINT, _graceful_exit)
-    if hasattr(signal, "SIGTERM"):
-        signal.signal(signal.SIGTERM, _graceful_exit)
+    install_signal_handlers()
 
     # 1. Bare invocation: 'repo360' with no arguments displays help
     if len(sys.argv) <= 1:
@@ -580,89 +589,55 @@ def main() -> int:
     if subcmd in ("version", "--version", "-v"):
         sys.argv.pop(1)
         from .upgrade import run_version_cli
-        try:
-            return run_version_cli()
-        except KeyboardInterrupt:
-            logger.warning("\nVersion check cancelled by user (Ctrl+C). Exiting...")
-            return 130
+        return _run_interruptible_command(run_version_cli, "\nVersion check cancelled by user (Ctrl+C). Exiting...")
 
-    # 3. Route recognized subcommands
+    # 4. Route recognized subcommands
     if subcmd == "audit":
         sys.argv.pop(1)
-        try:
-            return _run_cli()
-        except KeyboardInterrupt:
-            logger.warning("\nExecution cancelled by user (Ctrl+C). Exiting...")
-            _print_failure_banner("Audit cancelled by user (Ctrl+C). No final reports generated.")
-            return 130
+        return _run_interruptible_command(
+            _run_cli,
+            on_cancel=lambda: _print_failure_banner("Audit cancelled by user (Ctrl+C). No final reports generated."),
+        )
 
     if subcmd in ("setup", "install-app"):
         sys.argv.pop(1)
         from .setup_app import main as setup_main
-        return setup_main()
+        return _run_interruptible_command(setup_main, "\nSetup cancelled by user (Ctrl+C). Exiting...")
 
     if subcmd in ("activity", "users", "user-activity"):
         sys.argv.pop(1)
         from .activity.cli import run_activity_cli
-        try:
-            return run_activity_cli()
-        except KeyboardInterrupt:
-            logger.warning("\nExecution cancelled by user (Ctrl+C). Exiting...")
-            return 130
+        return _run_interruptible_command(run_activity_cli)
 
     if subcmd in ("runners", "metrics", "runner-metrics"):
         sys.argv.pop(1)
         from .runners.cli import run_runners_cli
-        try:
-            return run_runners_cli()
-        except KeyboardInterrupt:
-            logger.warning("\nExecution cancelled by user (Ctrl+C). Exiting...")
-            return 130
+        return _run_interruptible_command(run_runners_cli)
 
     if subcmd in ("finops", "storage", "artifacts"):
         sys.argv.pop(1)
         from .finops.cli import run_finops_cli
-        try:
-            return run_finops_cli()
-        except KeyboardInterrupt:
-            logger.warning("\nExecution cancelled by user (Ctrl+C). Exiting...")
-            return 130
+        return _run_interruptible_command(run_finops_cli)
 
     if subcmd in ("dora", "flow", "dora-metrics"):
         sys.argv.pop(1)
         from .dora.cli import run_dora_cli
-        try:
-            return run_dora_cli()
-        except KeyboardInterrupt:
-            logger.warning("\nExecution cancelled by user (Ctrl+C). Exiting...")
-            return 130
+        return _run_interruptible_command(run_dora_cli)
 
     if subcmd in ("bypass", "bypasses", "push-protection"):
         sys.argv.pop(1)
         from .bypass.cli import run_bypass_cli
-        try:
-            return run_bypass_cli()
-        except KeyboardInterrupt:
-            logger.warning("\nExecution cancelled by user (Ctrl+C). Exiting...")
-            return 130
+        return _run_interruptible_command(run_bypass_cli)
 
     if subcmd in ("upgrade", "update"):
         sys.argv.pop(1)
         from .upgrade import run_upgrade_cli
-        try:
-            return run_upgrade_cli()
-        except KeyboardInterrupt:
-            logger.warning("\nUpgrade cancelled by user (Ctrl+C). Exiting...")
-            return 130
+        return _run_interruptible_command(run_upgrade_cli, "\nUpgrade cancelled by user (Ctrl+C). Exiting...")
 
     if subcmd in ("uninstall", "remove"):
         sys.argv.pop(1)
         from .uninstall import run_uninstall_cli
-        try:
-            return run_uninstall_cli()
-        except KeyboardInterrupt:
-            logger.warning("\nUninstall cancelled by user (Ctrl+C). Exiting...")
-            return 130
+        return _run_interruptible_command(run_uninstall_cli, "\nUninstall cancelled by user (Ctrl+C). Exiting...")
 
     if subcmd in ("health", "healthcheck", "status"):
         sys.argv.pop(1)
@@ -713,72 +688,46 @@ def main() -> int:
 
 def run_audit_cli() -> int:
     """Dedicated entrypoint for repo360-audit standalone shortcut."""
-    try:
-        return _run_cli()
-    except KeyboardInterrupt:
-        logger.warning("\nExecution cancelled by user (Ctrl+C). Exiting...")
-        _print_failure_banner("Audit cancelled by user (Ctrl+C). No final reports generated.")
-        return 130
+    return _run_interruptible_command(
+        _run_cli,
+        on_cancel=lambda: _print_failure_banner("Audit cancelled by user (Ctrl+C). No final reports generated."),
+    )
 
 
 def run_activity_cli() -> int:
     """Dedicated entrypoint for repo360 activity standalone execution."""
     from .activity.cli import run_activity_cli as _run_act
-    try:
-        return _run_act()
-    except KeyboardInterrupt:
-        logger.warning("\nExecution cancelled by user (Ctrl+C). Exiting...")
-        return 130
+    return _run_interruptible_command(_run_act)
 
 
 def run_runners_cli() -> int:
     """Dedicated entrypoint for repo360 runners standalone execution."""
     from .runners.cli import run_runners_cli as _run_run
-    try:
-        return _run_run()
-    except KeyboardInterrupt:
-        logger.warning("\nExecution cancelled by user (Ctrl+C). Exiting...")
-        return 130
+    return _run_interruptible_command(_run_run)
 
 
 def run_finops_cli() -> int:
     """Dedicated entrypoint for repo360 finops standalone execution."""
     from .finops.cli import run_finops_cli as _run_fin
-    try:
-        return _run_fin()
-    except KeyboardInterrupt:
-        logger.warning("\nExecution cancelled by user (Ctrl+C). Exiting...")
-        return 130
+    return _run_interruptible_command(_run_fin)
 
 
 def run_dora_cli() -> int:
     """Dedicated entrypoint for repo360 dora standalone execution."""
     from .dora.cli import run_dora_cli as _run_dor
-    try:
-        return _run_dor()
-    except KeyboardInterrupt:
-        logger.warning("\nExecution cancelled by user (Ctrl+C). Exiting...")
-        return 130
+    return _run_interruptible_command(_run_dor)
 
 
 def run_bypass_cli() -> int:
     """Dedicated entrypoint for repo360 bypass standalone execution."""
     from .bypass.cli import run_bypass_cli as _run_byp
-    try:
-        return _run_byp()
-    except KeyboardInterrupt:
-        logger.warning("\nExecution cancelled by user (Ctrl+C). Exiting...")
-        return 130
+    return _run_interruptible_command(_run_byp)
 
 
 def run_upgrade_cli() -> int:
     """Dedicated entrypoint for repo360 upgrade standalone execution."""
     from .upgrade import run_upgrade_cli as _run_up
-    try:
-        return _run_up()
-    except KeyboardInterrupt:
-        logger.warning("\nExecution cancelled by user (Ctrl+C). Exiting...")
-        return 130
+    return _run_interruptible_command(_run_up)
 
 
 def _run_cli() -> int:

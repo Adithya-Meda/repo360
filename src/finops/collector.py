@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -164,12 +164,13 @@ def collect_org_packages(
         return []
 
     # Execute GraphQL enrichment and all REST package-type queries concurrently
+    from ..common.interrupts import wait_future
     pool = ThreadPoolExecutor(max_workers=len(PACKAGE_TYPES) + 1, thread_name_prefix="finops-pkgs")
     try:
         gql_future = pool.submit(_fetch_gql_info)
         type_futures = [(pkg_type, pool.submit(_fetch_rest_pkg_type, pkg_type)) for pkg_type in PACKAGE_TYPES]
-        gql_info = gql_future.result()
-        raw_by_type = [(pkg_type, fut.result()) for pkg_type, fut in type_futures]
+        gql_info = wait_future(gql_future)
+        raw_by_type = [(pkg_type, wait_future(fut)) for pkg_type, fut in type_futures]
     except (KeyboardInterrupt, SystemExit):
         pool.shutdown(wait=False, cancel_futures=True)
         raise
@@ -286,7 +287,8 @@ def collect_finops_data(
                 fut = executor.submit(profile_single_repo, client, org, repo, meta)
                 future_to_target[fut] = (org, repo)
 
-            for fut in as_completed(future_to_target):
+            from ..common.interrupts import iter_completed
+            for fut in iter_completed(future_to_target):
                 org, repo = future_to_target[fut]
                 try:
                     profile = fut.result()

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections import Counter, defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -220,7 +220,8 @@ def collect_bypass_data(
                 )
                 future_to_target[fut] = (org, repo)
 
-            for fut in as_completed(future_to_target):
+            from ..common.interrupts import iter_completed
+            for fut in iter_completed(future_to_target):
                 org, repo = future_to_target[fut]
                 try:
                     p = fut.result()

@@ -15,6 +15,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from ..auth.github_app_auth import GitHubAppAuth
+from .interrupts import interruptible_sleep, is_shutting_down, register_closable
 
 logger = logging.getLogger("repo360.client")
 EMPTY_RESOURCE_STATUSES = frozenset({409, 410})  # Empty repository or disabled feature
@@ -72,6 +73,7 @@ class ResilientGitHubClient:
                 "X-GitHub-Api-Version": "2022-11-28",
                 "User-Agent": "Repo360-Platform/1.0",
             })
+            register_closable(session)
             self._local.session = session
         return session
 
@@ -81,6 +83,8 @@ class ResilientGitHubClient:
         pacing_wait = 0.0
 
         while True:
+            if is_shutting_down():
+                raise KeyboardInterrupt
             with self._rate_limit_lock:
                 now = time.time()
                 pause_wait = 0.0
@@ -149,10 +153,10 @@ class ResilientGitHubClient:
                         pacing_wait = 0.0
                     break
 
-            time.sleep(min(pause_wait, 5.0))
+            interruptible_sleep(min(pause_wait, 5.0), sleep_fn=time.sleep)
 
         if pacing_wait > 0.0:
-            time.sleep(pacing_wait)
+            interruptible_sleep(pacing_wait, sleep_fn=time.sleep)
 
     def _next_url(self, resp: requests.Response) -> Optional[str]:
         """Extract next pagination URL, rejecting foreign host redirections."""
@@ -179,6 +183,8 @@ class ResilientGitHubClient:
         org_key = org.lower() if org else None
 
         for attempt in range(self.max_retries + 1):
+            if is_shutting_down():
+                raise KeyboardInterrupt
             self._coordinate_rate_limit(org)
 
             headers = self.auth.get_auth_headers(org=org)
@@ -238,7 +244,7 @@ class ResilientGitHubClient:
                         org, resp.status_code, actual_wait, attempt + 1, self.max_retries
                     )
 
-            time.sleep(actual_wait)
+            interruptible_sleep(actual_wait, sleep_fn=time.sleep)
 
         resp.raise_for_status()
         return resp

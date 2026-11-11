@@ -17,6 +17,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from .common.interrupts import run_interruptible_subprocess
 from .credentials import resolve_user_config_dir
 from .upgrade import find_pipx_executable, get_installation_details
 
@@ -447,7 +448,7 @@ def execute_uninstall(plan: Dict[str, Any], dry_run: bool = False, keep_config: 
             print(f"\033[91m[FAIL]\033[0m Could not schedule Windows package removal: {info}")
             exit_code = 1
     else:
-        res = subprocess.run(
+        res = run_interruptible_subprocess(
             plan["package_cmd"],
             capture_output=True,
             text=True,

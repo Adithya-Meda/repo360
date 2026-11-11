@@ -16,6 +16,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import jwt
 import requests
 
+from ..common.interrupts import interruptible_sleep, is_shutting_down
+
 logger = logging.getLogger(__name__)
 
 
@@ -29,6 +31,8 @@ def _request_with_retry(
     """Execute an HTTP request with automatic retries on transient network/connection drops."""
     last_err: Optional[Exception] = None
     for attempt in range(1, max_retries + 1):
+        if is_shutting_down():
+            raise KeyboardInterrupt
         try:
             if method.lower() == "get":
                 return requests.get(url, **kwargs)
@@ -50,7 +54,7 @@ def _request_with_retry(
                     err,
                     backoff_factor * attempt,
                 )
-                time.sleep(backoff_factor * attempt)
+                interruptible_sleep(backoff_factor * attempt, sleep_fn=time.sleep)
             else:
                 break
     if last_err is not None:
