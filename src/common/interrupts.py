@@ -175,31 +175,79 @@ def run_interruptible_subprocess(
     text: bool = True,
     check: bool = False,
     poll_interval: float = 0.2,
+    env: Optional[dict[str, str]] = None,
+    cwd: Optional[str] = None,
 ) -> subprocess.CompletedProcess[Any]:
-    """Execute a subprocess cleanly while aborting promptly on Ctrl+C."""
+    """Execute a subprocess cleanly while draining pipes and aborting promptly on Ctrl+C."""
     if SHUTDOWN_EVENT.is_set():
         raise KeyboardInterrupt
 
     # Preserve full unit-test compatibility when tests monkeypatch subprocess.run
     if subprocess.run is not _ORIG_SUBPROCESS_RUN:
-        return subprocess.run(
-            cmd,
-            capture_output=capture_output,
-            text=text,
-            check=check,
-            timeout=timeout,
-        )
+        kwargs: dict[str, Any] = {
+            "capture_output": capture_output,
+            "text": text,
+            "check": check,
+            "timeout": timeout,
+        }
+        if env is not None:
+            kwargs["env"] = env
+        if cwd is not None:
+            kwargs["cwd"] = cwd
+        return subprocess.run(cmd, **kwargs)
 
     stdout_dest = subprocess.PIPE if capture_output else None
     stderr_dest = subprocess.PIPE if capture_output else None
-    proc = subprocess.Popen(
-        cmd,
-        stdout=stdout_dest,
-        stderr=stderr_dest,
-        text=text,
-    )
+    popen_kwargs: dict[str, Any] = {
+        "stdout": stdout_dest,
+        "stderr": stderr_dest,
+        "text": text,
+    }
+    if text:
+        # Force UTF-8 replacement decoding on Windows so UTF-8 tool output never raises UnicodeDecodeError
+        popen_kwargs["encoding"] = "utf-8"
+        popen_kwargs["errors"] = "replace"
+    if env is not None:
+        popen_kwargs["env"] = env
+    if cwd is not None:
+        popen_kwargs["cwd"] = cwd
+
+    proc = subprocess.Popen(cmd, **popen_kwargs)
     register_active_process(proc)
     deadline = (time.monotonic() + timeout) if timeout is not None else None
+
+    out_chunks: List[Any] = []
+    err_chunks: List[Any] = []
+    empty_sentinel: Any = "" if text else b""
+
+    def _drain_stream(stream: Any, sink: List[Any]) -> None:
+        if stream is None:
+            return
+        try:
+            for chunk in iter(lambda: stream.read(8192), empty_sentinel):
+                sink.append(chunk)
+        except Exception:
+            pass
+
+    out_reader: Optional[threading.Thread] = None
+    err_reader: Optional[threading.Thread] = None
+    if capture_output:
+        if proc.stdout is not None:
+            out_reader = threading.Thread(target=_drain_stream, args=(proc.stdout, out_chunks), daemon=True)
+            out_reader.start()
+        if proc.stderr is not None:
+            err_reader = threading.Thread(target=_drain_stream, args=(proc.stderr, err_chunks), daemon=True)
+            err_reader.start()
+
+    def _collect_captured() -> Tuple[Optional[Any], Optional[Any]]:
+        if not capture_output:
+            return None, None
+        for reader in (out_reader, err_reader):
+            if reader is not None:
+                reader.join(timeout=1.5)
+        joined_out = empty_sentinel.join(out_chunks)
+        joined_err = empty_sentinel.join(err_chunks)
+        return joined_out, joined_err
 
     try:
         while proc.poll() is None:
@@ -210,6 +258,12 @@ def run_interruptible_subprocess(
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     proc.wait(timeout=0.5)
+                for stream in (proc.stdout, proc.stderr):
+                    if stream is not None:
+                        try:
+                            stream.close()
+                        except Exception:
+                            pass
                 raise KeyboardInterrupt
 
             wait_slice = poll_interval
@@ -217,7 +271,14 @@ def run_interruptible_subprocess(
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     proc.kill()
-                    stdout_val, stderr_val = proc.communicate()
+                    proc.wait(timeout=1.0)
+                    for stream in (proc.stdout, proc.stderr):
+                        if stream is not None:
+                            try:
+                                stream.close()
+                            except Exception:
+                                pass
+                    stdout_val, stderr_val = _collect_captured()
                     raise subprocess.TimeoutExpired(cmd, timeout or 0, output=stdout_val, stderr=stderr_val)
                 wait_slice = min(poll_interval, remaining)
 
@@ -226,7 +287,7 @@ def run_interruptible_subprocess(
             except subprocess.TimeoutExpired:
                 continue
 
-        stdout_val, stderr_val = proc.communicate()
+        stdout_val, stderr_val = _collect_captured()
         if check and proc.returncode != 0:
             raise subprocess.CalledProcessError(
                 proc.returncode, cmd, output=stdout_val, stderr=stderr_val

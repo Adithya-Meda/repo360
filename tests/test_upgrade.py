@@ -1,17 +1,26 @@
 """Unit tests for Repo360 upgrade module."""
 
+import json
+from pathlib import Path
 import sys
 from unittest.mock import MagicMock, patch
 import pytest
 
 from src.upgrade import (
     UpgradeResult,
+    _build_target_spec,
+    _detect_pipx_backend,
+    _detect_pipx_venv_name,
+    _prepare_windows_binaries,
+    _restore_windows_binaries,
     build_upgrade_command,
     check_remote_status,
     detect_installer,
     execute_upgrade,
+    find_uv_executable,
     get_local_version_info,
     get_remote_commit_sha,
+    get_upgrade_commands,
     is_output_already_up_to_date,
     run_upgrade_cli,
     verify_local_state,
@@ -411,3 +420,207 @@ def test_run_upgrade_cli_forces_reinstall_when_stale_or_outdated() -> None:
         assert rc == 0
         mock_cmds.assert_called_once()
         assert mock_cmds.call_args.kwargs.get("force") is True
+        assert mock_cmds.call_args.kwargs.get("target_ref") == "79098e85"
+
+
+def test_build_target_spec_pins_commit_and_preserves_existing_refs() -> None:
+    assert (
+        _build_target_spec("https://github.com/Adithya-Meda/repo360.git", "abc12345")
+        == "git+https://github.com/Adithya-Meda/repo360.git@abc12345"
+    )
+    assert (
+        _build_target_spec("git+https://github.com/Adithya-Meda/repo360.git", "abc12345")
+        == "git+https://github.com/Adithya-Meda/repo360.git@abc12345"
+    )
+    assert (
+        _build_target_spec("https://github.com/Adithya-Meda/repo360.git@v1.2.3", "abc12345")
+        == "git+https://github.com/Adithya-Meda/repo360.git@v1.2.3"
+    )
+    assert _build_target_spec("file:///C:/repo/repo360", "abc12345") == "file:///C:/repo/repo360"
+    assert (
+        _build_target_spec("https://github.com/Adithya-Meda/repo360.git", None)
+        == "git+https://github.com/Adithya-Meda/repo360.git"
+    )
+
+
+def test_pipx_metadata_backend_and_venv_name_detection(tmp_path: Path) -> None:
+    venv_dir = tmp_path / "pipx" / "venvs" / "repo360-dev"
+    venv_dir.mkdir(parents=True)
+    (venv_dir / "pipx_metadata.json").write_text(json.dumps({"backend": "uv"}), encoding="utf-8")
+
+    with patch.object(sys, "prefix", str(venv_dir)):
+        assert _detect_pipx_venv_name() == "repo360-dev"
+        # Even if INSTALLER metadata says pip or is missing, pipx_metadata.json backend wins.
+        with patch("src.upgrade.get_installation_details", return_value=("pip", "1.0.0", "git://...", "1234")):
+            assert _detect_pipx_backend() == "uv"
+
+    with patch.object(sys, "prefix", "C:\\Python312"):
+        assert _detect_pipx_venv_name() == "repo360"
+
+
+def test_find_uv_executable_discovers_bundled_uv(tmp_path: Path) -> None:
+    bundled_uv = tmp_path / ("uv.exe" if sys.platform == "win32" else "uv")
+    bundled_uv.write_text("stub", encoding="utf-8")
+    fake_uv_module = MagicMock()
+    fake_uv_module.find_uv_bin.return_value = str(bundled_uv)
+    with patch("src.upgrade.shutil.which", return_value=None), \
+         patch.dict(sys.modules, {"uv": fake_uv_module}):
+        assert find_uv_executable() == str(bundled_uv)
+
+
+def test_get_upgrade_commands_strategies_for_pipx_uv_and_uv_tool() -> None:
+    with patch("src.upgrade._is_uv_tool_install", return_value=True), \
+         patch.object(sys, "prefix", "C:\\uv\\tools\\repo360"), \
+         patch("src.upgrade.find_uv_executable", return_value="C:\\bin\\uv.exe"), \
+         patch("src.upgrade.find_pipx_executable", return_value=None):
+        cmds = get_upgrade_commands(
+            repo_url="https://github.com/Adithya-Meda/repo360.git",
+            force=True,
+            target_ref="deadbeef",
+        )
+        labels = [label for label, _ in cmds]
+        assert "uv-tool" in labels
+        uv_tool_cmd = dict(cmds)["uv-tool"]
+        assert "tool" in uv_tool_cmd
+        assert any("deadbeef" in arg for arg in uv_tool_cmd)
+
+    with patch("src.upgrade._is_uv_tool_install", return_value=False), \
+         patch.object(sys, "prefix", "C:\\Users\\test\\pipx\\venvs\\repo360-alt"), \
+         patch("src.upgrade.find_pipx_executable", return_value="C:\\bin\\pipx.exe"), \
+         patch("src.upgrade._detect_pipx_venv_name", return_value="repo360-alt"), \
+         patch("src.upgrade._detect_pipx_backend", return_value="uv"), \
+         patch("src.upgrade._pip_available_for_python", return_value=False), \
+         patch("src.upgrade.find_uv_executable", return_value="C:\\bin\\uv.exe"):
+        cmds = get_upgrade_commands(
+            repo_url="https://github.com/Adithya-Meda/repo360.git",
+            force=True,
+            target_ref="cafebabe",
+        )
+        labels = [label for label, _ in cmds]
+        assert "pipx" in labels
+        assert "uv" in labels
+        assert "pip" not in labels
+        pipx_cmd = dict(cmds)["pipx"]
+        assert "repo360-alt" in pipx_cmd
+        assert "--reinstall-package=repo360" in pipx_cmd or any(
+            "--reinstall-package" in arg for arg in pipx_cmd
+        )
+        assert "--refresh-package=repo360" in pipx_cmd or any(
+            "--refresh-package" in arg for arg in pipx_cmd
+        )
+        assert any("cafebabe" in arg for arg in pipx_cmd)
+
+    with patch("src.upgrade._is_uv_tool_install", return_value=False), \
+         patch.object(sys, "prefix", "C:\\Users\\test\\pipx\\venvs\\repo360"), \
+         patch("src.upgrade.find_pipx_executable", return_value="C:\\bin\\pipx.exe"), \
+         patch("src.upgrade._detect_pipx_venv_name", return_value="repo360"), \
+         patch("src.upgrade._detect_pipx_backend", return_value="pip"), \
+         patch("src.upgrade._pip_available_for_python", return_value=True), \
+         patch("src.upgrade.find_uv_executable", return_value=None):
+        cmds = get_upgrade_commands(
+            repo_url="https://github.com/Adithya-Meda/repo360.git",
+            force=True,
+            target_ref="cafebabe",
+        )
+        labels = [label for label, _ in cmds]
+        assert "pipx" in labels
+        assert "pipx-isolated" in labels
+        assert "--no-deps" in dict(cmds)["pipx-isolated"]
+
+
+def test_get_upgrade_commands_pip_includes_isolated_fallback() -> None:
+    with patch("src.upgrade._is_uv_tool_install", return_value=False), \
+         patch.object(sys, "prefix", "C:\\Python312"), \
+         patch("src.upgrade._pip_available_for_python", return_value=True), \
+         patch("src.upgrade.find_uv_executable", return_value=None):
+        cmds = get_upgrade_commands(
+            repo_url="https://github.com/Adithya-Meda/repo360.git",
+            force=True,
+            target_ref="11223344",
+        )
+        labels = [label for label, _ in cmds]
+        assert "pip" in labels
+        assert "pip-isolated" in labels
+        pip_cmd = dict(cmds)["pip"]
+        pip_iso_cmd = dict(cmds)["pip-isolated"]
+        assert "--no-cache-dir" in pip_cmd
+        assert "--no-deps" in pip_iso_cmd
+        assert "--no-cache-dir" in pip_iso_cmd
+
+
+def test_windows_binaries_staging_restores_missing_exe_even_on_noop_success(tmp_path: Path) -> None:
+    exe = tmp_path / "repo360.exe"
+    other = tmp_path / "other.exe"
+    exe.write_bytes(b"original-binary")
+    other.write_bytes(b"leave-alone")
+
+    renamed = _prepare_windows_binaries(tmp_path)
+    assert len(renamed) == 1
+    orig_path, staged_path = renamed[0]
+    assert orig_path == exe
+    assert not exe.exists()
+    assert staged_path.exists()
+    assert other.exists()
+
+    # Simulate no-op upgrade where installer wrote no replacement repo360.exe.
+    _restore_windows_binaries(renamed, success=True)
+    assert exe.exists()
+    assert exe.read_bytes() == b"original-binary"
+    assert not staged_path.exists()
+
+
+def test_windows_binaries_restore_cleans_backup_when_new_exe_exists(tmp_path: Path) -> None:
+    exe = tmp_path / "repo360.exe"
+    exe.write_bytes(b"old-binary")
+    renamed = _prepare_windows_binaries([tmp_path])
+    staged_path = renamed[0][1]
+
+    # Simulate installer writing a fresh repo360.exe.
+    exe.write_bytes(b"new-binary")
+    _restore_windows_binaries(renamed, success=True)
+    assert exe.read_bytes() == b"new-binary"
+    assert not staged_path.exists()
+
+
+def test_is_output_already_up_to_date_avoids_checked_false_positive() -> None:
+    assert is_output_already_up_to_date("Checked 1 package in 12ms", "") is False
+    assert is_output_already_up_to_date("Requirement already satisfied: repo360", "") is True
+    assert is_output_already_up_to_date("", "Audited 1 package in 8ms") is True
+
+
+def test_execute_upgrade_preserves_primary_error_and_invalidates_caches(capsys) -> None:
+    primary_fail = MagicMock(returncode=1, stdout="", stderr="Git clone failed: connection refused")
+    secondary_no_pip = MagicMock(returncode=1, stdout="", stderr="No module named pip")
+
+    with patch("src.upgrade.get_local_version_info", return_value=("v1.0.0", "11223344")), \
+         patch("src.upgrade.run_interruptible_subprocess", side_effect=[primary_fail, secondary_no_pip]), \
+         patch("src.upgrade._prepare_windows_binaries", return_value=[]), \
+         patch("src.upgrade._restore_windows_binaries"):
+        res = execute_upgrade([("pipx", ["pipx", "runpip", "..."]), ("pip", ["python", "-m", "pip", "..."])])
+        assert int(res) != 0
+        out = capsys.readouterr().out
+        assert "Git clone failed: connection refused" in out
+        assert "No module named pip" not in out
+
+    uv_ok = MagicMock(returncode=0, stdout="Audited 1 package in 5ms", stderr=" + repo360==1.0.0")
+    with patch("src.upgrade.get_local_version_info", return_value=("v1.0.0", "abcd1234")), \
+         patch("src.upgrade.run_interruptible_subprocess", return_value=uv_ok), \
+         patch("src.upgrade._prepare_windows_binaries", return_value=[]), \
+         patch("src.upgrade._restore_windows_binaries"), \
+         patch("src.upgrade.importlib.invalidate_caches") as mock_invalidate:
+        res = execute_upgrade([("pipx", ["pipx", "runpip", "..."])])
+        assert int(res) == 0
+        mock_invalidate.assert_called()
+
+
+def test_run_upgrade_cli_forces_when_remote_sha_unavailable() -> None:
+    fresh_result = UpgradeResult(0, already_up_to_date=False, version="v1.0.0", commit="99887766")
+    with patch("src.upgrade.get_local_version_info", return_value=("v1.0.0", "11223344")), \
+         patch("src.upgrade.get_remote_commit_sha", return_value=None), \
+         patch("src.upgrade.get_upgrade_commands", return_value=[("pip", ["pip", "install"])]) as mock_cmds, \
+         patch("src.upgrade.execute_upgrade", return_value=fresh_result):
+        rc = run_upgrade_cli([])
+        assert rc == 0
+        assert mock_cmds.call_args.kwargs.get("force") is True
+        assert mock_cmds.call_args.kwargs.get("target_ref") is None
+

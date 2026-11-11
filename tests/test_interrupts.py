@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import os
 import sys
 import threading
 import time
@@ -146,3 +147,31 @@ def test_handle_python_signal_consumes_expected_os_interrupt() -> None:
         assert exit_calls == [130]
     finally:
         ctrl.reset()
+
+
+def test_run_interruptible_subprocess_drains_large_utf8_output_without_deadlock() -> None:
+    """Concurrent pipe draining handles >64KB UTF-8 stdout/stderr without deadlock or cp1252 failure."""
+    script = (
+        "import os, sys\n"
+        "chunk = ('\\u2714 \\U0001f680 ' + 'x' * 70 + '\\n').encode('utf-8')\n"
+        "for _ in range(1500):\n"
+        "    sys.stdout.buffer.write(chunk)\n"
+        "    sys.stderr.buffer.write(chunk)\n"
+        "sys.stdout.buffer.write((os.environ.get('REPO360_TEST_MARKER', '') + '\\n').encode('utf-8'))\n"
+        "sys.stdout.buffer.flush()\n"
+        "sys.stderr.buffer.flush()\n"
+    )
+    env = dict(os.environ)
+    env["REPO360_TEST_MARKER"] = "env-propagated-ok"
+    proc = run_interruptible_subprocess(
+        [sys.executable, "-c", script],
+        timeout=15.0,
+        env=env,
+    )
+    assert proc.returncode == 0
+    assert "\u2714 \U0001f680" in proc.stdout
+    assert "\u2714 \U0001f680" in proc.stderr
+    assert "env-propagated-ok" in proc.stdout
+    assert proc.stdout.count("\u2714") == 1500
+    assert proc.stderr.count("\u2714") == 1500
+
