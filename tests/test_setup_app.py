@@ -19,10 +19,15 @@ def test_resolve_api_base_url_domains() -> None:
 
 
 def test_get_manifest_payload() -> None:
-    """Verify GitHub App manifest contains required enterprise read permissions."""
-    manifest = get_manifest("https://github.com")
+    """Verify GitHub App manifest contains clean URLs and required enterprise read permissions."""
+    manifest = get_manifest("mycorp.ghe.com/", state_nonce="ignored-nonce")
     assert manifest["name"] == "Repo360"
+    assert manifest["url"] == "https://mycorp.ghe.com"
+    assert manifest["hook_attributes"]["url"] == "https://mycorp.ghe.com"
     assert manifest["hook_attributes"]["active"] is False
+    # redirect_url must stay clean without embedded ?state=... query parameters
+    assert manifest["redirect_url"] == "http://localhost:8989/callback"
+    assert "?" not in manifest["redirect_url"]
     assert manifest["default_permissions"]["organization_administration"] == "read"
     assert manifest["default_permissions"]["administration"] == "read"
     assert manifest["default_permissions"]["actions"] == "read"
@@ -34,7 +39,11 @@ def test_get_manifest_payload() -> None:
 
 
 def test_manifest_callback_handler_redirect_form() -> None:
-    """Test callback handler GET / generates proper HTML redirect."""
+    """Test callback handler GET / sends CSRF state on form action and keeps redirect_url clean."""
+    import html
+    import json
+    import re
+
     handler = ManifestCallbackHandler.__new__(ManifestCallbackHandler)
     handler.path = "/"
     handler.target_org = "test-org"
@@ -44,6 +53,7 @@ def test_manifest_callback_handler_redirect_form() -> None:
     handler.send_header = MagicMock()
     handler.end_headers = MagicMock()
     handler.wfile = MagicMock()
+    ManifestCallbackHandler.session_nonce = "nonce_test_value"
 
     handler.do_GET()
 
@@ -51,7 +61,42 @@ def test_manifest_callback_handler_redirect_form() -> None:
     handler.send_header.assert_called_with("Content-Type", "text/html; charset=utf-8")
     assert handler.wfile.write.called
     written_html = handler.wfile.write.call_args[0][0].decode("utf-8")
-    assert "https://github.com/organizations/test-org/settings/apps/new" in written_html
+    assert 'action="https://github.com/organizations/test-org/settings/apps/new?state=nonce_test_value"' in written_html
+
+    match = re.search(r"name=\"manifest\"\s+value='([^']+)'", written_html)
+    assert match is not None
+    payload = json.loads(html.unescape(match.group(1)))
+    assert payload["redirect_url"] == "http://localhost:8989/callback"
+
+
+def test_manifest_callback_handler_validates_state_and_exchanges_code() -> None:
+    """Verify /callback rejects mismatched state and exchanges valid code+state via GitHub API."""
+    handler = ManifestCallbackHandler.__new__(ManifestCallbackHandler)
+    handler.target_org = "test-org"
+    handler.github_domain = "https://github.com"
+    handler.api_domain = "https://api.github.com"
+    handler.send_response = MagicMock()
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock()
+    handler.wfile = MagicMock()
+    ManifestCallbackHandler.session_nonce = "expected_nonce"
+    ManifestCallbackHandler.conversion_result = None
+
+    # Mismatched state must return 403
+    handler.path = "/callback?code=temp_code&state=wrong_nonce"
+    handler.do_GET()
+    handler.send_response.assert_called_with(403)
+
+    # Matching state exchanges code via POST /app-manifests/{code}/conversions
+    handler.path = "/callback?code=temp_code&state=expected_nonce"
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {"id": 12345, "slug": "repo360-test-org", "pem": "PEM"}
+    with patch("src.setup_app.requests.post", return_value=mock_resp) as mock_post:
+        handler.do_GET()
+        mock_post.assert_called_once()
+        assert mock_post.call_args[0][0] == "https://api.github.com/app-manifests/temp_code/conversions"
+    handler.send_response.assert_called_with(200)
+    assert ManifestCallbackHandler.conversion_result == {"id": 12345, "slug": "repo360-test-org", "pem": "PEM"}
 
 
 def test_setup_app_main_keyboard_interrupt() -> None:

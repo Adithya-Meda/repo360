@@ -40,18 +40,32 @@ PORT = 8989
 CALLBACK_URL = f"http://localhost:{PORT}/callback"
 
 
+def _normalize_github_domain(domain: str) -> str:
+    """Normalize a GitHub base URL to scheme + host without trailing slashes."""
+    cleaned = (domain or "https://github.com").strip().rstrip("/")
+    if not cleaned.startswith(("http://", "https://")):
+        cleaned = f"https://{cleaned}"
+    parsed = urllib.parse.urlparse(cleaned)
+    return f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else cleaned
+
+
 def get_manifest(github_domain: str, app_name: str = "Repo360", state_nonce: str = "") -> dict:
-    """Generate the GitHub App manifest payload."""
-    redirect_target = f"{CALLBACK_URL}?state={state_nonce}" if state_nonce else CALLBACK_URL
+    """Generate the GitHub App manifest payload.
+
+    GitHub's manifest validator requires `redirect_url` to be a clean callback URL
+    without query parameters; CSRF `state` must be passed via the form action query string.
+    """
+    _ = state_nonce  # Retained for backwards compatibility with callers; state is sent on form action.
+    clean_domain = _normalize_github_domain(github_domain)
     return {
         "name": app_name or "Repo360",
-        "url": github_domain,
+        "url": clean_domain,
         "description": "360-Degree Platform Governance, Compliance & Engineering Intelligence for GitHub",
         "hook_attributes": {
-            "url": github_domain,
+            "url": clean_domain,
             "active": False,
         },
-        "redirect_url": redirect_target,
+        "redirect_url": CALLBACK_URL,
         "default_permissions": {
             "actions": "read",
             "administration": "read",
@@ -88,20 +102,24 @@ class ManifestCallbackHandler(http.server.BaseHTTPRequestHandler):
         parsed_url = urllib.parse.urlparse(self.path)
 
         if parsed_url.path == "/":
+            clean_domain = _normalize_github_domain(self.github_domain)
             # Auto-assign unique name using target_org to avoid global GitHub App name collisions
-            default_name = f"Repo360-{self.target_org}" if self.target_org else "Repo360"
+            clean_org = self.target_org.strip() if self.target_org else ""
+            default_name = f"Repo360-{clean_org}" if clean_org else "Repo360"
             active_name = self.app_name or default_name
-            manifest_json = json.dumps(
-                get_manifest(
-                    self.github_domain,
-                    app_name=active_name,
-                    state_nonce=ManifestCallbackHandler.session_nonce,
-                )
+            manifest_json = json.dumps(get_manifest(clean_domain, app_name=active_name))
+
+            encoded_org = urllib.parse.quote(clean_org, safe="") if clean_org else ""
+            base_action = (
+                f"{clean_domain}/organizations/{encoded_org}/settings/apps/new"
+                if encoded_org
+                else f"{clean_domain}/settings/apps/new"
             )
+            active_nonce = ManifestCallbackHandler.session_nonce
             form_action = (
-                f"{self.github_domain}/organizations/{self.target_org}/settings/apps/new"
-                if self.target_org
-                else f"{self.github_domain}/settings/apps/new"
+                f"{base_action}?{urllib.parse.urlencode({'state': active_nonce})}"
+                if active_nonce
+                else base_action
             )
 
             html_page = f"""<!DOCTYPE html>
@@ -393,9 +411,7 @@ def run_wizard(
     open_browser: bool = True,
 ) -> None:
     """Run the interactive setup wizard."""
-    github_domain = github_domain.strip().rstrip("/")
-    if not github_domain.startswith("http://") and not github_domain.startswith("https://"):
-        github_domain = f"https://{github_domain}"
+    github_domain = _normalize_github_domain(github_domain)
     api_domain = resolve_api_base_url(github_domain)
 
     default_name = f"Repo360-{org_name}" if org_name else "Repo360"
@@ -406,6 +422,7 @@ def run_wizard(
     ManifestCallbackHandler.github_domain = github_domain
     ManifestCallbackHandler.api_domain = api_domain
     ManifestCallbackHandler.conversion_result = None
+    ManifestCallbackHandler.session_nonce = secrets.token_urlsafe(32)
 
     print("\n" + "=" * 65)
     print("  REPO360 - 1-CLICK GITHUB APP SETUP")
