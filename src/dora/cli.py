@@ -9,8 +9,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from ..ai import add_ai_cli_arguments
 from ..auth.github_app_auth import GitHubAppAuth
+from ..common.cli import add_common_scan_arguments
 from ..common.client import ResilientGitHubClient
 from ..common.inventory import (
     discover_app_organizations,
@@ -149,34 +149,12 @@ def run_dora_cli(argv: Optional[List[str]] = None) -> int:
     """Entry point for 'repo360 dora' subcommand."""
     parser = argparse.ArgumentParser(
         prog="repo360 dora",
-        description="Cross-Organization DORA & Flow Metrics (Deployment Frequency, Lead Time, CFR, MTTR).",
+        description="Analyze cross-organization DORA delivery metrics (Deployment Frequency, Lead Time, CFR, MTTR).",
     )
-    parser.add_argument(
-        "--org",
-        default="",
-        help="Optional comma-separated list of organizations to analyze. If omitted, all installed organizations are analyzed.",
-    )
-    parser.add_argument(
-        "--output-dir",
-        default="./repo360-output",
-        help="Target directory for generated Excel workbooks (default: ./repo360-output).",
-    )
-    parser.add_argument(
-        "--lookback-days",
-        type=int,
-        default=90,
-        help="Lookback analysis window in days (default: 90).",
-    )
-    parser.add_argument(
-        "--include-archived",
-        action="store_true",
-        help="Include archived repositories in the analysis.",
-    )
-    parser.add_argument(
-        "--max-workers",
-        type=int,
-        default=0,
-        help="Concurrent repository worker threads (default: 0 = auto-tune up to 32).",
+    add_common_scan_arguments(
+        parser,
+        ai_subject="flow diagnostics",
+        include_lookback=True,
     )
     parser.add_argument(
         "--prod-envs",
@@ -197,13 +175,6 @@ def run_dora_cli(argv: Optional[List[str]] = None) -> int:
         help=(
             "Comma-separated GitHub Issue labels treated as production incidents "
             "(default: incident,production-incident,sev1,sev2,p0,p1,outage,hotfix,rollback)."
-        ),
-    )
-    add_ai_cli_arguments(
-        parser,
-        help_text=(
-            "Enable AI flow diagnostics ('yes' or 'no', default: 'no'). "
-            "Falls back to deterministic policy rules if AI is offline or unconfigured."
         ),
     )
 
@@ -236,7 +207,7 @@ def run_dora_cli(argv: Optional[List[str]] = None) -> int:
 
     cfg = DORAConfig(
         lookback_days=args.lookback_days,
-        max_workers=args.max_workers,
+        max_workers=args.workers,
         include_archived=args.include_archived,
         output_dir=args.output_dir,
         prod_environments=prod_envs,

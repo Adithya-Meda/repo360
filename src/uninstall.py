@@ -525,7 +525,7 @@ def run_uninstall_cli(argv: Optional[List[str]] = None) -> int:
     """CLI handler for 'repo360 uninstall' subcommand."""
     parser = argparse.ArgumentParser(
         prog="repo360 uninstall",
-        description="Completely uninstall Repo360, its virtual environment, and config directories while keeping reports.",
+        description="Remove Repo360, its virtual environment, and configuration while keeping reports.",
     )
     parser.add_argument(
         "-y",

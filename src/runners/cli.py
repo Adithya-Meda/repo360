@@ -11,8 +11,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from ..ai import add_ai_cli_arguments
 from ..auth.github_app_auth import GitHubAppAuth
+from ..common.cli import add_common_scan_arguments, parse_positive_int
 from ..common.client import ResilientGitHubClient
 from ..common.inventory import (
     discover_app_organizations,
@@ -120,45 +120,16 @@ def run_runners_cli(argv: Optional[List[str]] = None) -> int:
         prog="repo360 runners",
         description="Inspect Actions self-hosted runner fleet usage, compute hours, and queue wait times.",
     )
-    parser.add_argument(
-        "--org",
-        default="",
-        help="Optional comma-separated list of organizations to analyze. If omitted, all installed organizations are analyzed.",
-    )
-    parser.add_argument(
-        "--output-dir",
-        default="./repo360-output",
-        help="Target directory for generated Excel workbooks (default: ./repo360-output).",
-    )
-    parser.add_argument(
-        "--lookback-days",
-        type=int,
-        default=90,
-        help="Lookback analysis window in days (default: 90).",
-    )
-    parser.add_argument(
-        "--include-archived",
-        action="store_true",
-        help="Include archived repositories in the analysis.",
+    add_common_scan_arguments(
+        parser,
+        ai_subject="fleet advisory",
+        include_lookback=True,
     )
     parser.add_argument(
         "--max-runs",
-        type=int,
+        type=parse_positive_int,
         default=50,
         help="Maximum completed workflow runs to inspect per repository (default: 50).",
-    )
-    parser.add_argument(
-        "--max-workers",
-        type=int,
-        default=0,
-        help="Concurrent repository worker threads (default: 0 = auto-tune up to 32).",
-    )
-    add_ai_cli_arguments(
-        parser,
-        help_text=(
-            "Enable AI fleet advisory ('yes' or 'no', default: 'no'). "
-            "Falls back to deterministic policy rules if AI is offline or unconfigured."
-        ),
     )
 
     args = parser.parse_args(argv)
@@ -183,7 +154,7 @@ def run_runners_cli(argv: Optional[List[str]] = None) -> int:
     cfg = RunnersConfig(
         lookback_days=args.lookback_days,
         max_runner_runs_per_repo=args.max_runs,
-        max_workers=args.max_workers,
+        max_workers=args.workers,
         output_dir=args.output_dir,
     )
 

@@ -11,8 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from ..ai import add_ai_cli_arguments
 from ..auth.github_app_auth import GitHubAppAuth
+from ..common.cli import add_common_scan_arguments
 from ..common.client import ResilientGitHubClient
 from ..common.inventory import (
     discover_app_organizations,
@@ -95,35 +95,12 @@ def run_finops_cli(argv: Optional[List[str]] = None) -> int:
     """Entry point for 'repo360 finops' subcommand."""
     parser = argparse.ArgumentParser(
         prog="repo360 finops",
-        description="Per-Repository Storage Quota & Artifact Profiler (identify cost drivers & storage waste).",
+        description="Profile repository storage quotas, Actions artifacts, caches, and package registries.",
     )
-    parser.add_argument(
-        "--org",
-        default="",
-        help="Optional comma-separated list of organizations to analyze. If omitted, all installed organizations are analyzed.",
-    )
-    parser.add_argument(
-        "--output-dir",
-        default="./repo360-output",
-        help="Target directory for generated Excel workbooks (default: ./repo360-output).",
-    )
-    parser.add_argument(
-        "--include-archived",
-        action="store_true",
-        help="Include archived repositories in the analysis.",
-    )
-    parser.add_argument(
-        "--max-workers",
-        type=int,
-        default=0,
-        help="Concurrent repository worker threads (default: 0 = auto-tune up to 32).",
-    )
-    add_ai_cli_arguments(
+    add_common_scan_arguments(
         parser,
-        help_text=(
-            "Enable AI storage advisory ('yes' or 'no', default: 'no'). "
-            "Falls back to deterministic policy rules if AI is offline or unconfigured."
-        ),
+        ai_subject="storage advisory",
+        include_lookback=False,
     )
 
     args = parser.parse_args(argv)
@@ -146,7 +123,7 @@ def run_finops_cli(argv: Optional[List[str]] = None) -> int:
     ai_engine = init_ai_engine(enable_ai=ai_enabled, creds=creds, log=logger)
 
     cfg = FinOpsConfig(
-        max_workers=args.max_workers,
+        max_workers=args.workers,
         include_archived=args.include_archived,
         output_dir=args.output_dir,
     )

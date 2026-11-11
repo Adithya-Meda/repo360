@@ -495,3 +495,83 @@ def test_action_yml_defines_require_ai_input_default_no() -> None:
     assert "--require-ai" in action_text
     for subcmd in ("audit", "activity", "runners", "finops", "dora", "bypass"):
         assert f"repo360 {subcmd}" in action_text
+
+
+@pytest.mark.parametrize(
+    "subcmd,has_lookback",
+    [
+        ("audit", False),
+        ("activity", True),
+        ("runners", True),
+        ("finops", False),
+        ("dora", True),
+        ("bypass", True),
+    ],
+)
+def test_all_scan_commands_share_consistent_flags_and_reject_max_workers(
+    monkeypatch, capsys, subcmd: str, has_lookback: bool
+) -> None:
+    """Verify all scan commands expose unified --workers wording and reject legacy --max-workers."""
+    from src import main as main_mod
+
+    monkeypatch.setattr(sys, "argv", ["repo360", subcmd, "--help"])
+    with pytest.raises(SystemExit) as exc_help:
+        main_mod.main()
+    assert exc_help.value.code == 0
+    help_text = capsys.readouterr().out
+    for shared_flag in ("--org", "--output-dir", "--include-archived", "--workers", "--require-ai"):
+        assert shared_flag in help_text
+    assert "--max-workers" not in help_text
+    if has_lookback:
+        assert "--lookback-days" in help_text
+
+    monkeypatch.setattr(sys, "argv", ["repo360", subcmd, "--max-workers", "4"])
+    with pytest.raises(SystemExit) as exc_old:
+        main_mod.main()
+    assert exc_old.value.code == 2
+
+    monkeypatch.setattr(sys, "argv", ["repo360", subcmd, "--workers", "-1"])
+    with pytest.raises(SystemExit) as exc_neg:
+        main_mod.main()
+    assert exc_neg.value.code == 2
+
+
+def test_subcommand_clis_pass_workers_flag_to_config(monkeypatch, tmp_path) -> None:
+    """Verify '--workers 4' cleanly populates worker configuration across scan CLIs."""
+    import importlib
+
+    cases = [
+        ("src.activity.cli", "run_activity_cli", []),
+        ("src.runners.cli", "run_runners_cli", []),
+        ("src.finops.cli", "run_finops_cli", []),
+        ("src.dora.cli", "run_dora_cli", []),
+        ("src.bypass.cli", "run_bypass_cli", []),
+    ]
+    for module_path, fn_name, extra in cases:
+        cli_mod = importlib.import_module(module_path)
+        runner = getattr(cli_mod, fn_name)
+        monkeypatch.setattr(
+            cli_mod,
+            "resolve_runtime_credentials",
+            lambda: {"app_id": "123", "private_key": "pem"},
+        )
+        monkeypatch.setattr(
+            cli_mod,
+            "GitHubAppAuth",
+            lambda **kw: MagicMock(api_base_url="https://api.github.com"),
+        )
+        monkeypatch.setattr(cli_mod, "ResilientGitHubClient", lambda **kw: MagicMock())
+        monkeypatch.setattr(cli_mod, "discover_app_organizations", lambda **kw: [])
+        monkeypatch.setattr("src.ai.init_ai_engine", lambda **kw: MagicMock(enabled=False, is_available=lambda: False))
+        # Ensure '--workers 4' parses cleanly and proceeds into org discovery (exit 1 when 0 orgs).
+        rc = runner([*extra, "--workers", "4", "--output-dir", str(tmp_path)])
+        assert rc == 1
+
+    # Confirm negative/zero lookback-days validation on lookback-enabled commands
+    for module_path, fn_name, _ in cases:
+        if "finops" in module_path:
+            continue
+        cli_mod = importlib.import_module(module_path)
+        with pytest.raises(SystemExit) as exc_lb:
+            getattr(cli_mod, fn_name)(["--lookback-days", "0"])
+        assert exc_lb.value.code == 2

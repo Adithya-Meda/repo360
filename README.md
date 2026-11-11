@@ -91,30 +91,23 @@ Registers the read-only GitHub App with all required permissions, downloads the 
 Repositories are automatically discovered directly from GitHub App installations across your organizations:
 
 ```bash
-# Governance Audit (Executive Excel workbook; AI disabled by default via --require-ai no)
+# Governance Audit
 repo360 audit
-repo360 audit --org <your-org>
-repo360 audit --require-ai yes # Enable AI-tailored remediations (falls back deterministically if offline)
 
-# User Activity & Contributor Metrics (Executive Excel workbook)
+# User Activity & Contributor Metrics
 repo360 activity
-repo360 activity --org <your-org>
 
-# Actions Self-Hosted Runners Analytics (Executive Excel workbook)
+# Actions Self-Hosted Runners Analytics
 repo360 runners
-repo360 runners --org <your-org>
 
-# Per-Repository Storage Quota & Artifact Profiler (Executive Excel workbook)
+# Per-Repository Storage Quota & Artifact Profiler
 repo360 finops
-repo360 finops --org <your-org>
 
-# Cross-Organization DORA & Delivery Flow Metrics (Executive Excel workbook)
+# Cross-Organization DORA & Delivery Flow Metrics
 repo360 dora
-repo360 dora --org <your-org>
 
-# Consolidated Push Protection & Ruleset Bypass Ledger (Executive Excel workbook)
+# Consolidated Push Protection & Ruleset Bypass Ledger
 repo360 bypass
-repo360 bypass --org <your-org>
 
 # Verify Installed Version
 repo360 version

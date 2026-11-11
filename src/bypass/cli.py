@@ -11,8 +11,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from ..ai import add_ai_cli_arguments
 from ..auth.github_app_auth import GitHubAppAuth
+from ..common.cli import add_common_scan_arguments
 from ..common.client import ResilientGitHubClient
 from ..common.inventory import (
     discover_app_organizations,
@@ -80,41 +80,12 @@ def run_bypass_cli(argv: Optional[List[str]] = None) -> int:
     """Entry point for 'repo360 bypass' subcommand."""
     parser = argparse.ArgumentParser(
         prog="repo360 bypass",
-        description="Consolidated Secret Push Protection & Branch Ruleset Bypass Ledger.",
+        description="Audit secret push-protection overrides and branch ruleset bypass records.",
     )
-    parser.add_argument(
-        "--org",
-        default="",
-        help="Optional comma-separated list of organizations to analyze. If omitted, all installed organizations are analyzed.",
-    )
-    parser.add_argument(
-        "--output-dir",
-        default="./repo360-output",
-        help="Target directory for generated Excel workbooks (default: ./repo360-output).",
-    )
-    parser.add_argument(
-        "--lookback-days",
-        type=int,
-        default=90,
-        help="Lookback analysis window in days (default: 90).",
-    )
-    parser.add_argument(
-        "--include-archived",
-        action="store_true",
-        help="Include archived repositories in the analysis.",
-    )
-    parser.add_argument(
-        "--max-workers",
-        type=int,
-        default=0,
-        help="Concurrent repository worker threads (default: 0 = auto-tune up to 32).",
-    )
-    add_ai_cli_arguments(
+    add_common_scan_arguments(
         parser,
-        help_text=(
-            "Enable AI risk assessment ('yes' or 'no', default: 'no'). "
-            "Falls back to deterministic policy rules if AI is offline or unconfigured."
-        ),
+        ai_subject="risk assessment",
+        include_lookback=True,
     )
 
     args = parser.parse_args(argv)
@@ -138,7 +109,7 @@ def run_bypass_cli(argv: Optional[List[str]] = None) -> int:
 
     cfg = BypassConfig(
         lookback_days=args.lookback_days,
-        max_workers=args.max_workers,
+        max_workers=args.workers,
         include_archived=args.include_archived,
         output_dir=args.output_dir,
     )

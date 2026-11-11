@@ -13,8 +13,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from ..ai import add_ai_cli_arguments
 from ..auth.github_app_auth import GitHubAppAuth
+from ..common.cli import add_common_scan_arguments, parse_positive_int
 from ..common.client import ResilientGitHubClient
 from ..common.inventory import (
     discover_app_organizations,
@@ -88,56 +88,27 @@ def run_activity_cli(argv: Optional[List[str]] = None) -> int:
         prog="repo360 activity",
         description="Analyze contributor cadence, active days, seat allocation, and commit/PR metrics.",
     )
-    parser.add_argument(
-        "--org",
-        default="",
-        help="Optional comma-separated list of organizations to analyze. If omitted, all installed organizations are analyzed.",
-    )
-    parser.add_argument(
-        "--output-dir",
-        default="./repo360-output",
-        help="Target directory for generated Excel workbooks (default: ./repo360-output).",
-    )
-    parser.add_argument(
-        "--lookback-days",
-        type=int,
-        default=90,
-        help="Lookback analysis window in days (default: 90).",
+    add_common_scan_arguments(
+        parser,
+        ai_subject="contributor insights",
+        include_lookback=True,
     )
     parser.add_argument(
         "--active-min-days",
-        type=int,
+        type=parse_positive_int,
         default=8,
         help="Minimum active days for 'Active' status (default: 8).",
     )
     parser.add_argument(
         "--moderate-min-days",
-        type=int,
+        type=parse_positive_int,
         default=3,
         help="Minimum active days for 'Moderate' status (default: 3).",
     )
     parser.add_argument(
-        "--include-archived",
-        action="store_true",
-        help="Include archived repositories in the analysis.",
-    )
-    parser.add_argument(
         "--include-bots",
         action="store_true",
-        help="Include automated bot accounts in activity metrics.",
-    )
-    parser.add_argument(
-        "--max-workers",
-        type=int,
-        default=0,
-        help="Concurrent repository worker threads (default: 0 = auto-tune up to 32).",
-    )
-    add_ai_cli_arguments(
-        parser,
-        help_text=(
-            "Enable AI contributor insights ('yes' or 'no', default: 'no'). "
-            "Falls back to deterministic policy rules if AI is offline or unconfigured."
-        ),
+        help="Include automated bot accounts in contributor metrics.",
     )
 
     args = parser.parse_args(argv)
@@ -165,7 +136,7 @@ def run_activity_cli(argv: Optional[List[str]] = None) -> int:
         moderate_min_days=args.moderate_min_days,
         include_archived=args.include_archived,
         exclude_bots=not args.include_bots,
-        max_workers=args.max_workers,
+        max_workers=args.workers,
         output_dir=args.output_dir,
     )
 

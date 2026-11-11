@@ -766,25 +766,25 @@ def run_wizard(
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="repo360 setup",
-        description="1-Click GitHub App Setup Wizard for Repo360"
+        description="Register the GitHub App and configure local credentials.",
     )
     parser.add_argument(
         "--org",
         required=False,
         default="",
-        help="Target GitHub organization name (e.g. fintech-core).",
+        help="Target GitHub organization name (e.g. 'org1').",
     )
     parser.add_argument(
         "--app-name",
         required=False,
         default="",
-        help="Custom GitHub App name (defaults to Repo360-<org>).",
+        help="Custom GitHub App name (default: Repo360-<org>).",
     )
     parser.add_argument(
         "--domain",
         required=False,
         default="https://github.com",
-        help="GitHub domain (default: https://github.com).",
+        help="GitHub host URL (default: https://github.com).",
     )
     args = parser.parse_args()
 

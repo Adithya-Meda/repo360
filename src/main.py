@@ -20,7 +20,7 @@ import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from .ai import AIEngine, add_ai_cli_arguments, resolve_ai_cli_flag
+from .ai import AIEngine, resolve_ai_cli_flag
 from .auth.github_app_auth import GitHubAppAuth
 from .checks import (
     ALL_CONTRIBUTOR_CHECKS,
@@ -31,6 +31,7 @@ from .checks import (
 )
 from .collector.client import Repo360Client
 from .collector.repo_inspector import RepoInspector
+from .common.cli import add_common_scan_arguments
 from .common.concurrency import is_ai_live, map_concurrent, resolve_worker_count
 from .common.interrupts import (
     finalize_interrupt_exit,
@@ -764,40 +765,18 @@ def _run_cli() -> int:
 
     parser = argparse.ArgumentParser(
         prog="repo360 audit",
-        description="Repo360 - 360-Degree Platform Governance, Compliance & Engineering Intelligence",
+        description="Audit security, governance, and CI/CD compliance across GitHub organizations and repositories.",
     )
-    parser.add_argument(
-        "--org",
-        default="",
-        help="Optional comma-separated list of organizations to audit (e.g. 'org1,org2'). If omitted, all organizations with GitHub App installed are audited.",
-    )
-    parser.add_argument(
-        "--output-dir",
-        default="",
-        help="Directory where output Excel reports will be saved (defaults to ./repo360-output).",
+    add_common_scan_arguments(
+        parser,
+        ai_subject="remediation and executive briefing",
+        include_lookback=False,
+        output_dir_default="",
     )
     parser.add_argument(
         "--mock-mode",
         action="store_true",
-        help="Run in offline mock mode using simulated data for verification.",
-    )
-    add_ai_cli_arguments(
-        parser,
-        help_text=(
-            "Enable AI-powered remediation and executive briefing ('yes' or 'no', default: 'no'). "
-            "Falls back to deterministic policy rules if AI is offline or unconfigured."
-        ),
-    )
-    parser.add_argument(
-        "--workers",
-        type=int,
-        default=0,
-        help="Optional concurrency worker thread count (defaults to auto-tuning up to 32 for large inventories).",
-    )
-    parser.add_argument(
-        "--include-archived",
-        action="store_true",
-        help="Include archived repositories in governance checks (skipped by default).",
+        help="Run offline using simulated repository data for verification.",
     )
 
     args = parser.parse_args()
