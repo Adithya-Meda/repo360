@@ -524,20 +524,22 @@ def run_audit(
 
 
 def _print_root_help() -> int:
-    """Print the top-level Repo360 CLI commands and overview."""
+    """Print the top-level Repo360 CLI commands, grouped by category."""
     print("""Repo360 - 360-Degree Platform Governance, Compliance & Engineering Intelligence
 
 Usage:
   repo360 <command> [options]
 
-Commands:
+Analytics & Intelligence Commands:
   audit       Run security, platform governance, and CI/CD audit across repositories
-  setup       Launch 1-click GitHub App setup wizard & credential configuration
   activity    Analyze contributor cadence, active days, seat allocation, and commit/PR metrics
   runners     Inspect Actions self-hosted runner fleet usage, compute hours, and queue wait times
   finops      Profile per-repository storage quotas, Actions artifacts, and 90-day retention waste
   dora        Calculate cross-organization DORA & delivery flow metrics (DF, Lead Time, CFR, MTTR)
   bypass      Audit secret scanning push-protection overrides and branch ruleset bypass events
+
+Configuration & Lifecycle Commands:
+  setup       Launch 1-click GitHub App setup wizard & credential configuration
   upgrade     Upgrade Repo360 CLI to the latest version directly from GitHub
   health      Verify GitHub App authentication, organization access, and AI engine status
   version     Display installed Repo360 version, commit SHA, and check for updates
@@ -547,7 +549,7 @@ Options:
   -h, --help     Show this help message or help for a specific command
   -V, --version  Show installed Repo360 version and commit SHA
 
-Run 'repo360 <command> --help' for details on a specific command (e.g. 'repo360 activity -h').
+Run 'repo360 <command> --help' for details on a specific command (e.g. 'repo360 audit -h').
 """)
     return 0
 

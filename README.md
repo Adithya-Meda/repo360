@@ -27,7 +27,9 @@ Platform governance, compliance, engineering intelligence, and infrastructure me
 
 ## Tool Features
 
-| Feature | Description |
+### Analytics & Intelligence Commands
+
+| Command | Description |
 | :--- | :--- |
 | `audit` | Evaluates repositories and organizations against security, governance, and CI/CD baselines, generating AI-tailored remediation guidance in an executive Excel workbook. |
 | `activity` | Profiles contributor cadence, commit and pull request volume, code review participation, issue engagement, active days, and GitHub Copilot seat allocation per developer. |
@@ -35,6 +37,11 @@ Platform governance, compliance, engineering intelligence, and infrastructure me
 | `finops` | Profiles per-repository Git LFS storage quotas, workflow artifact retention waste, stale Actions caches (>30d), and container or package registry consumption. |
 | `dora` | Calculates cross-organization DORA delivery metrics — Deployment Frequency, Lead Time for Changes, Change Failure Rate, and Mean Time to Recovery — with Google DORA tier classification. |
 | `bypass` | Consolidates secret scanning push-protection bypass records and branch ruleset override audit history, including actor, timestamp, secret type, and justification reason. |
+
+### Configuration & Lifecycle Commands
+
+| Command | Description |
+| :--- | :--- |
 | `setup` | Launches the one-click GitHub App registration wizard, downloads the RSA private key, and persists local configuration under `~/.repo360/`. |
 | `upgrade` | Upgrades the installed Repo360 package directly from GitHub and verifies that the locally running commit matches the latest remote main HEAD. |
 | `health` | Validates GitHub App authentication, enumerates organization installations, and reports AI engine availability in a structured JSON payload. |
