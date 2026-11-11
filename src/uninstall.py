@@ -531,17 +531,17 @@ def run_uninstall_cli(argv: Optional[List[str]] = None) -> int:
         "-y",
         "--yes",
         action="store_true",
-        help="Skip interactive confirmation prompt.",
+        help="Skip confirmation prompt.",
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Preview directories and commands that would be removed without making changes.",
+        help="Preview removal plan without deleting files.",
     )
     parser.add_argument(
         "--keep-config",
         action="store_true",
-        help="Uninstall the CLI package/venv only while preserving ~/.repo360 configuration and keys.",
+        help="Preserve ~/.repo360 config and keys.",
     )
     args = parser.parse_args(argv)
 

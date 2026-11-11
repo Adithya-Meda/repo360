@@ -524,6 +524,7 @@ def test_all_scan_commands_share_consistent_flags_and_reject_max_workers(
     assert "--max-workers" not in help_text
     if has_lookback:
         assert "--lookback-days" in help_text
+    assert "(0=auto, 1-32" in help_text
 
     monkeypatch.setattr(sys, "argv", ["repo360", subcmd, "--max-workers", "4"])
     with pytest.raises(SystemExit) as exc_old:
@@ -534,6 +535,11 @@ def test_all_scan_commands_share_consistent_flags_and_reject_max_workers(
     with pytest.raises(SystemExit) as exc_neg:
         main_mod.main()
     assert exc_neg.value.code == 2
+
+    monkeypatch.setattr(sys, "argv", ["repo360", subcmd, "--workers", "33"])
+    with pytest.raises(SystemExit) as exc_over:
+        main_mod.main()
+    assert exc_over.value.code == 2
 
 
 def test_subcommand_clis_pass_workers_flag_to_config(monkeypatch, tmp_path) -> None:
@@ -567,11 +573,35 @@ def test_subcommand_clis_pass_workers_flag_to_config(monkeypatch, tmp_path) -> N
         rc = runner([*extra, "--workers", "4", "--output-dir", str(tmp_path)])
         assert rc == 1
 
-    # Confirm negative/zero lookback-days validation on lookback-enabled commands
+    # Confirm negative/zero and upper-bound lookback-days validation on lookback-enabled commands
     for module_path, fn_name, _ in cases:
         if "finops" in module_path:
             continue
         cli_mod = importlib.import_module(module_path)
-        with pytest.raises(SystemExit) as exc_lb:
-            getattr(cli_mod, fn_name)(["--lookback-days", "0"])
-        assert exc_lb.value.code == 2
+        for bad_days in ("0", "366"):
+            with pytest.raises(SystemExit) as exc_lb:
+                getattr(cli_mod, fn_name)(["--lookback-days", bad_days])
+            assert exc_lb.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["runners", "--max-runs", "0"],
+        ["runners", "--max-runs", "1001"],
+        ["activity", "--active-min-days", "366"],
+        ["activity", "--moderate-min-days", "0"],
+        ["activity", "--active-min-days", "5", "--moderate-min-days", "10"],
+        ["setup", "--app-name", "a" * 35],
+    ],
+)
+def test_bounded_cli_flag_limits_and_cross_field_validation(
+    monkeypatch, argv: list[str]
+) -> None:
+    """Verify out-of-range flag values and inconsistent thresholds exit cleanly with code 2."""
+    from src import main as main_mod
+
+    monkeypatch.setattr(sys, "argv", ["repo360", *argv])
+    with pytest.raises(SystemExit) as exc:
+        main_mod.main()
+    assert exc.value.code == 2

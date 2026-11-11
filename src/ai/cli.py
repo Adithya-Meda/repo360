@@ -30,11 +30,7 @@ def add_ai_cli_arguments(
         default=False,
         type=parse_yes_no,
         metavar="{yes,no}",
-        help=help_text
-        or (
-            "Enable AI-powered remediation and insights ('yes' or 'no', default: 'no'). "
-            "Falls back to deterministic policy rules if AI is offline or unconfigured."
-        ),
+        help=help_text or "AI insights: yes or no (default: no; offline fallback).",
     )
 
 

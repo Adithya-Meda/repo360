@@ -763,6 +763,14 @@ def run_wizard(
     print("=" * 65 + "\n")
 
 
+def _parse_app_name(value: str) -> str:
+    """Validate optional custom GitHub App name against GitHub's 1-34 char manifest limit."""
+    cleaned = value.strip()
+    if cleaned and len(cleaned) > 34:
+        raise argparse.ArgumentTypeError("must be 1-34 characters")
+    return cleaned
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="repo360 setup",
@@ -772,18 +780,22 @@ def main() -> None:
         "--org",
         required=False,
         default="",
-        help="Target GitHub organization name (e.g. 'org1').",
+        metavar="ORG",
+        help="GitHub org name (e.g. 'org1'; prompted if omitted).",
     )
     parser.add_argument(
         "--app-name",
         required=False,
         default="",
-        help="Custom GitHub App name (default: Repo360-<org>).",
+        type=_parse_app_name,
+        metavar="NAME",
+        help="Custom GitHub App name (1-34 chars; default: Repo360-<org>).",
     )
     parser.add_argument(
         "--domain",
         required=False,
         default="https://github.com",
+        metavar="URL",
         help="GitHub host URL (default: https://github.com).",
     )
     args = parser.parse_args()

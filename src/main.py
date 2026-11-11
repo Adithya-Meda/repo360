@@ -776,7 +776,7 @@ def _run_cli() -> int:
     parser.add_argument(
         "--mock-mode",
         action="store_true",
-        help="Run offline using simulated repository data for verification.",
+        help="Run offline with simulated data (no API calls).",
     )
 
     args = parser.parse_args()

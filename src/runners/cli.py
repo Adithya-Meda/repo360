@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from ..auth.github_app_auth import GitHubAppAuth
-from ..common.cli import add_common_scan_arguments, parse_positive_int
+from ..common.cli import add_common_scan_arguments, parse_max_runs_arg
 from ..common.client import ResilientGitHubClient
 from ..common.inventory import (
     discover_app_organizations,
@@ -127,9 +127,10 @@ def run_runners_cli(argv: Optional[List[str]] = None) -> int:
     )
     parser.add_argument(
         "--max-runs",
-        type=parse_positive_int,
+        type=parse_max_runs_arg,
         default=50,
-        help="Maximum completed workflow runs to inspect per repository (default: 50).",
+        metavar="N",
+        help="Max workflow runs per repo (1-1000; default: 50).",
     )
 
     args = parser.parse_args(argv)

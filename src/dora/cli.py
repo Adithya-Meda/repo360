@@ -159,23 +159,19 @@ def run_dora_cli(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--prod-envs",
         default="",
-        help=(
-            "Comma-separated production environment names/tokens "
-            "(default: prod,production,prd,live,release)."
-        ),
+        metavar="LIST",
+        help="Prod env names, comma-separated (default: prod,production,prd,live,release).",
     )
     parser.add_argument(
         "--include-non-prod",
         action="store_true",
-        help="Include non-production environments (e.g. dev/staging) and non-default branches.",
+        help="Include non-prod envs and branches (default: prod only).",
     )
     parser.add_argument(
         "--incident-labels",
         default="",
-        help=(
-            "Comma-separated GitHub Issue labels treated as production incidents "
-            "(default: incident,production-incident,sev1,sev2,p0,p1,outage,hotfix,rollback)."
-        ),
+        metavar="LIST",
+        help="Incident issue labels, comma-separated (default: built-in incident labels).",
     )
 
     args = parser.parse_args(argv)

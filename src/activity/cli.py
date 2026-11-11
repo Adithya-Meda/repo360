@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from ..auth.github_app_auth import GitHubAppAuth
-from ..common.cli import add_common_scan_arguments, parse_positive_int
+from ..common.cli import add_common_scan_arguments, parse_lookback_arg
 from ..common.client import ResilientGitHubClient
 from ..common.inventory import (
     discover_app_organizations,
@@ -95,23 +95,27 @@ def run_activity_cli(argv: Optional[List[str]] = None) -> int:
     )
     parser.add_argument(
         "--active-min-days",
-        type=parse_positive_int,
+        type=parse_lookback_arg,
         default=8,
-        help="Minimum active days for 'Active' status (default: 8).",
+        metavar="DAYS",
+        help="Min active days for 'Active' tier (1-365; default: 8).",
     )
     parser.add_argument(
         "--moderate-min-days",
-        type=parse_positive_int,
+        type=parse_lookback_arg,
         default=3,
-        help="Minimum active days for 'Moderate' status (default: 3).",
+        metavar="DAYS",
+        help="Min active days for 'Moderate' tier (1-365; default: 3).",
     )
     parser.add_argument(
         "--include-bots",
         action="store_true",
-        help="Include automated bot accounts in contributor metrics.",
+        help="Include bot accounts (default: excluded).",
     )
 
     args = parser.parse_args(argv)
+    if args.moderate_min_days > args.active_min_days:
+        parser.error("--moderate-min-days must be <= --active-min-days")
     from ..ai import init_ai_engine, resolve_ai_cli_flag
     ai_enabled = resolve_ai_cli_flag(args, parser)
     start_time = time.time()
