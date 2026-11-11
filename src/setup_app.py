@@ -125,6 +125,7 @@ def get_manifest(
             "actions": "read",
             "administration": "read",
             "contents": "read",
+            "deployments": "read",
             "issues": "read",
             "members": "read",
             "metadata": "read",

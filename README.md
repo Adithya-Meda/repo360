@@ -59,10 +59,11 @@ All permissions are read-only:
 | `actions: read` | Repository | `audit`, `runners`, `finops`, `dora` |
 | `administration: read` | Repository | `audit`, `runners`, `bypass` |
 | `contents: read` | Repository | `audit`, `activity`, `dora` |
-| `issues: read` | Repository | `activity` |
+| `deployments: read` | Repository | `dora` |
+| `issues: read` | Repository | `activity`, `dora` |
 | `metadata: read` | Repository | `audit`, `activity`, `runners`, `finops`, `dora`, `bypass` |
 | `packages: read` | Repository | `finops` |
-| `pull_requests: read` | Repository | `activity` |
+| `pull_requests: read` | Repository | `activity`, `dora` |
 | `secret_scanning_alerts: read` | Repository | `bypass` |
 | `administration: read` | Organization | `audit` |
 | `members: read` | Organization | `audit`, `activity` |

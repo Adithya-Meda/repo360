@@ -2,21 +2,18 @@
 
 from __future__ import annotations
 
-from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-from openpyxl.utils import get_column_letter
+from openpyxl.styles import Font, PatternFill
 
 from ..activity.models import DATE_FMT, IST
 from ..activity.reporter import (
     NAVY,
     autofit,
     finalize_sheet,
-    safe_cell,
     section_title,
     write_empty_table,
     write_table,
@@ -27,7 +24,7 @@ from .models import (
     DORA_RECOVERY_HEADERS,
     DORA_REPO_HEADERS,
     DORAConfig,
-    compute_composite_tier,
+    compute_fleet_dora_summary,
 )
 
 DORA_TIER_STYLES = {
@@ -35,6 +32,7 @@ DORA_TIER_STYLES = {
     "High": ("E2EFDA", "375623"),
     "Medium": ("FFF2CC", "833C0C"),
     "Low": ("FFC7CE", "9C0006"),
+    "N/A": ("F2F2F2", "595959"),
 }
 
 STATUS_STYLES = {
@@ -42,7 +40,25 @@ STATUS_STYLES = {
     "FAILURE": ("FFC7CE", "9C0006"),
     "IN_PROGRESS": ("FFF2CC", "833C0C"),
     "Resolved": ("C6EFCE", "006100"),
+    "Open": ("FFC7CE", "9C0006"),
 }
+
+
+def _apply_cell_badge(
+    ws,
+    start_row: int,
+    last_row: int,
+    col_idx: int,
+    styles: Dict[str, Tuple[str, str]],
+) -> None:
+    """Apply semantic fill and bold font styling to cells matching badge keys."""
+    for r_idx in range(start_row, last_row + 1):
+        cell = ws.cell(r_idx, col_idx)
+        val = str(cell.value).strip()
+        if val in styles:
+            fill, font_col = styles[val]
+            cell.fill = PatternFill("solid", fgColor=fill)
+            cell.font = Font(bold=True, color=font_col)
 
 
 def write_dora_workbook(
@@ -76,36 +92,103 @@ def write_dora_workbook(
     )
     summary["A2"].font = Font(italic=True, color="595959")
 
-    total_deploys = sum(r[3] for r in repo_rows if len(r) > 3 and isinstance(r[3], int))
-    total_successful = sum(r[4] for r in repo_rows if len(r) > 4 and isinstance(r[4], int))
-    total_failed = sum(r[5] for r in repo_rows if len(r) > 5 and isinstance(r[5], int))
-    cfr_overall = round(total_failed / total_deploys * 100, 2) if total_deploys else 0.0
-
-    weeks = max(1.0, cfg.lookback_days / 7.0)
-    weekly_frequency = round(total_deploys / weeks, 2)
-
-    tier_counts = Counter(r[2] for r in repo_rows if len(r) > 2)
-    fleet_tier = compute_composite_tier([r[2] for r in repo_rows if len(r) > 2])
+    summary_data = compute_fleet_dora_summary(repo_rows, cfg.lookback_days)
+    tier_counts = summary_data["tier_counts"]
+    cfr_str = f"{summary_data['cfr_overall']}%" if summary_data["cfr_overall"] is not None else "N/A"
+    rework_str = (
+        f"{summary_data['rework_overall']}%" if summary_data["rework_overall"] is not None else "N/A"
+    )
+    df_median_val = (
+        summary_data["median_df_weekly"] if summary_data["median_df_weekly"] is not None else "N/A"
+    )
+    lttc_median_val = (
+        summary_data["median_lttc_hours"] if summary_data["median_lttc_hours"] is not None else "N/A"
+    )
+    mttr_median_val = (
+        summary_data["median_mttr_hours"] if summary_data["median_mttr_hours"] is not None else "N/A"
+    )
 
     kpis = [
         ["Total Duration", duration_str],
         ["Organizations Monitored", len(org_rows)],
-        ["Repositories Assessed", len(repo_rows)],
-        ["Fleet Overall DORA Performance Tier", fleet_tier],
-        ["Total Production Deployments & Releases", total_deploys],
-        ["Successful Deployments", total_successful],
-        ["Failed Deployments / Incidents", total_failed],
-        ["Fleet Deployment Frequency (/week)", weekly_frequency],
-        ["Fleet Change Failure Rate (%)", f"{cfr_overall}%"],
+        ["Repositories Scanned", summary_data["total_repos"]],
+        ["Active Deploying Repositories", summary_data["active_repos"]],
+        ["Inactive Repositories (N/A)", summary_data["inactive_repos"]],
+        ["Fleet Overall DORA Performance Tier", summary_data["fleet_tier"]],
+        ["Total Production Deployments & Releases", summary_data["total_deploys"]],
+        ["Successful Deployments", summary_data["total_successful"]],
+        ["Failed Deployments (Direct)", summary_data["total_failed_deploys"]],
+        ["Effective Failed Changes (Inc. Incidents/Hotfixes)", summary_data["effective_failed"]],
+        ["Open Unresolved Incidents", summary_data["open_incidents"]],
+        ["Fleet Median Deployment Frequency (/week)", df_median_val],
+        ["Fleet Total Deployment Throughput (/week)", summary_data["total_df_weekly"]],
+        ["Fleet Median Lead Time for Changes (Hours)", lttc_median_val],
+        ["Fleet Change Failure Rate (%)", cfr_str],
+        ["Fleet Median Failed Deployment Recovery Time (Hours)", mttr_median_val],
+        ["Fleet Deployment Rework Rate (%)", rework_str],
         ["Elite Tier Repositories", tier_counts.get("Elite", 0)],
         ["High Tier Repositories", tier_counts.get("High", 0)],
         ["Medium Tier Repositories", tier_counts.get("Medium", 0)],
         ["Low Tier Repositories", tier_counts.get("Low", 0)],
+        ["Inactive / N/A Repositories", tier_counts.get("N/A", 0)],
     ]
+    if summary_data["permission_gap_repos"] > 0:
+        kpis.append(["Deployments API Permission Gap Repos", summary_data["permission_gap_repos"]])
+
     curr_row = write_table(summary, 4, ("Metric", "Fleet Aggregate"), kpis) + 2
 
     curr_row = section_title(summary, curr_row, "Organization DORA Performance Overview")
-    curr_row = write_table(summary, curr_row, DORA_ORG_HEADERS, org_rows, bar_col=4) + 2
+    org_last_row = write_table(summary, curr_row, DORA_ORG_HEADERS, org_rows, bar_col=4)
+    curr_row = org_last_row + 2
+
+    env_scope = (
+        "All environments & branches (--include-non-prod)"
+        if cfg.include_non_prod
+        else f"Production environments ({', '.join(cfg.prod_environments)}) & default/release branches"
+    )
+    methodology_rows = [
+        ["Production Scope", env_scope],
+        [
+            "Deployment Frequency",
+            "Organization and fleet DF use median weekly deploys per active repo; zero-deploy repos are marked N/A.",
+        ],
+        [
+            "Lead Time for Changes",
+            "Hours from commit authored/pushed or associated PR creation to deployment completion (<24h Elite).",
+        ],
+        [
+            "Change Failure Rate",
+            "Unique failed production changes across failed deploys, post-deploy incident issues, and revert/hotfix PRs.",
+        ],
+        [
+            "Recovery Time (MTTR)",
+            "Stream-scoped failure-to-next-success recovery plus resolved incident issues; unresolved incidents stay Open.",
+        ],
+        [
+            "Deployment Rework Rate",
+            "Percentage of deployments matched to revert, rollback, hotfix, or emergency remediation work.",
+        ],
+    ]
+    if summary_data["permission_gap_repos"] > 0:
+        methodology_rows.append(
+            [
+                "Permission Gap Notice",
+                (
+                    f"{summary_data['permission_gap_repos']} repository(ies) returned 403 on /deployments; "
+                    "grant GitHub App 'deployments: read' permission via 'repo360 setup' for full deployment signals."
+                ),
+            ]
+        )
+    else:
+        methodology_rows.append(
+            [
+                "Native GitHub Signals",
+                "Uses GitHub Deployments, Releases, Production Workflow Runs, Pull Requests, and Incident Issues only.",
+            ]
+        )
+
+    curr_row = section_title(summary, curr_row, "Native GitHub Signal Methodology & Scope")
+    curr_row = write_table(summary, curr_row, ("Metric", "Methodology & Compliance Scope"), methodology_rows) + 2
 
     autofit(summary, skip_rows=2)
     summary.sheet_view.showGridLines = False
@@ -116,15 +199,9 @@ def write_dora_workbook(
         last_repo = write_table(repo_ws, 1, DORA_REPO_HEADERS, repo_rows)
         finalize_sheet(repo_ws, 1, last_repo, len(DORA_REPO_HEADERS), "C2")
 
-        # Colorize Tier Columns
-        tier_col_idx = DORA_REPO_HEADERS.index("DORA Tier") + 1
-        for r_idx in range(2, last_repo + 1):
-            cell = repo_ws.cell(r_idx, tier_col_idx)
-            val = str(cell.value).strip()
-            if val in DORA_TIER_STYLES:
-                fill, font_col = DORA_TIER_STYLES[val]
-                cell.fill = PatternFill("solid", fgColor=fill)
-                cell.font = Font(bold=True, color=font_col)
+        for header_name in ("DORA Tier", "CFR Tier", "Rework Tier"):
+            col_idx = DORA_REPO_HEADERS.index(header_name) + 1
+            _apply_cell_badge(repo_ws, 2, last_repo, col_idx, DORA_TIER_STYLES)
     else:
         write_empty_table(repo_ws, 1, DORA_REPO_HEADERS, "No repositories found on target organizations.")
 
@@ -135,13 +212,7 @@ def write_dora_workbook(
         finalize_sheet(dep_ws, 1, last_dep, len(DORA_DEPLOYMENT_HEADERS), "D2")
 
         status_col_idx = DORA_DEPLOYMENT_HEADERS.index("Status") + 1
-        for r_idx in range(2, last_dep + 1):
-            cell = dep_ws.cell(r_idx, status_col_idx)
-            val = str(cell.value).strip()
-            if val in STATUS_STYLES:
-                fill, font_col = STATUS_STYLES[val]
-                cell.fill = PatternFill("solid", fgColor=fill)
-                cell.font = Font(bold=True, color=font_col)
+        _apply_cell_badge(dep_ws, 2, last_dep, status_col_idx, STATUS_STYLES)
     else:
         write_empty_table(
             dep_ws,
@@ -155,6 +226,9 @@ def write_dora_workbook(
     if recovery_rows:
         last_rec = write_table(rec_ws, 1, DORA_RECOVERY_HEADERS, recovery_rows)
         finalize_sheet(rec_ws, 1, last_rec, len(DORA_RECOVERY_HEADERS), "C2")
+
+        rec_status_col_idx = DORA_RECOVERY_HEADERS.index("Status") + 1
+        _apply_cell_badge(rec_ws, 2, last_rec, rec_status_col_idx, STATUS_STYLES)
     else:
         write_empty_table(
             rec_ws,

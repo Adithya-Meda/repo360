@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
-import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional
 
 from ..auth.github_app_auth import GitHubAppAuth
 from ..common.client import ResilientGitHubClient
@@ -19,7 +17,7 @@ from ..common.inventory import (
 )
 from ..credentials import resolve_runtime_credentials
 from .collector import build_dora_rows, collect_dora_data
-from .models import DORAConfig, compute_composite_tier
+from .models import DORAConfig, compute_fleet_dora_summary
 from .reporter import write_dora_workbook
 
 logger = logging.getLogger("repo360.dora")
@@ -42,18 +40,42 @@ def print_dora_scorecard(
     B = "\033[1m"
     X = "\033[0m"
 
-    total_repos = len(repo_rows)
-    total_deploys = sum(r[3] for r in repo_rows if len(r) > 3 and isinstance(r[3], int))
-    total_successful = sum(r[4] for r in repo_rows if len(r) > 4 and isinstance(r[4], int))
-    total_failed = sum(r[5] for r in repo_rows if len(r) > 5 and isinstance(r[5], int))
-    cfr_overall = round(total_failed / total_deploys * 100, 2) if total_deploys else 0.0
+    summary_data = compute_fleet_dora_summary(repo_rows, lookback_days)
+    total_repos = summary_data["total_repos"]
+    active_repos = summary_data["active_repos"]
+    inactive_repos = summary_data["inactive_repos"]
+    total_deploys = summary_data["total_deploys"]
+    total_successful = summary_data["total_successful"]
+    effective_failed = summary_data["effective_failed"]
+    median_df_weekly = summary_data["median_df_weekly"]
+    total_df_weekly = summary_data["total_df_weekly"]
+    median_lttc = summary_data["median_lttc_hours"]
+    cfr_overall = summary_data["cfr_overall"]
+    median_mttr = summary_data["median_mttr_hours"]
+    rework_overall = summary_data["rework_overall"]
+    fleet_tier = summary_data["fleet_tier"]
+    open_incidents = summary_data["open_incidents"]
+    permission_gap_repos = summary_data["permission_gap_repos"]
+    resolved_count = sum(1 for r in recovery_rows if len(r) > 7 and r[7] == "Resolved")
 
-    weeks = max(1.0, lookback_days / 7.0)
-    weekly_frequency = round(total_deploys / weeks, 2)
-
-    fleet_tier = compute_composite_tier([r[2] for r in repo_rows if len(r) > 2])
-    tier_colors = {"Elite": G, "High": G, "Medium": Y, "Low": R}
+    tier_colors = {"Elite": G, "High": G, "Medium": Y, "Low": R, "N/A": X}
     t_color = tier_colors.get(fleet_tier, X)
+
+    df_str = (
+        f"{median_df_weekly:.2f} / week per active repo (fleet total {total_df_weekly:.2f}/wk)"
+        if median_df_weekly is not None
+        else "N/A (no production deployments)"
+    )
+    lttc_str = f"{median_lttc:.1f} hrs" if median_lttc is not None else "N/A"
+    cfr_color = R if (cfr_overall is not None and cfr_overall > 15.0) else G
+    cfr_str = (
+        f"{cfr_color}{cfr_overall:.1f}%{X} ({effective_failed} failed changes)"
+        if cfr_overall is not None
+        else "N/A"
+    )
+    mttr_str = f"{median_mttr:.1f} hrs" if median_mttr is not None else "N/A"
+    rework_color = R if (rework_overall is not None and rework_overall > 15.0) else G
+    rework_str = f"{rework_color}{rework_overall:.1f}%{X}" if rework_overall is not None else "N/A"
 
     elapsed_str = (
         f"{int(elapsed_seconds // 60)}m {int(elapsed_seconds % 60)}s"
@@ -65,14 +87,25 @@ def print_dora_scorecard(
     print(f"{B}{C}   REPO360 DORA & ENGINEERING DELIVERY FLOW METRICS SCORECARD{X}")
     print(f"{C}{'=' * 76}{X}")
     print(f"   {B}Organizations Monitored        :{X} {len(org_rows)}")
-    print(f"   {B}Repositories Assessed          :{X} {total_repos}")
+    print(
+        f"   {B}Repositories Assessed          :{X} {total_repos} "
+        f"({active_repos} active, {inactive_repos} inactive/N/A)"
+    )
     print(f"   {B}Analysis Lookback Window       :{X} {lookback_days} Days")
     print(f"   {B}Fleet Overall DORA Tier        :{X} {t_color}{B}{fleet_tier}{X}")
     print(f"   {B}Total Deployments & Releases   :{X} {B}{total_deploys:,}{X} ({total_successful:,} successful)")
-    print(f"   {B}Deployment Frequency           :{X} {weekly_frequency:.2f} deploys / week")
-    print(f"   {B}Change Failure Rate (CFR)      :{X} {R if cfr_overall > 15 else G}{cfr_overall:.1f}%{X} ({total_failed} incidents)")
-    print(f"   {B}Recovery Incidents Tracked     :{X} {len(recovery_rows)} restored")
+    print(f"   {B}Deployment Frequency (Median)  :{X} {df_str}")
+    print(f"   {B}Median Lead Time (LTTC)        :{X} {lttc_str}")
+    print(f"   {B}Change Failure Rate (CFR)      :{X} {cfr_str}")
+    print(f"   {B}Median Recovery Time (MTTR)    :{X} {mttr_str}")
+    print(f"   {B}Deployment Rework Rate         :{X} {rework_str}")
+    print(f"   {B}Recovery Incidents Tracked     :{X} {resolved_count} resolved, {open_incidents} open")
     print(f"   {B}Duration                       :{X} {elapsed_str}")
+    if permission_gap_repos > 0:
+        print(
+            f"   {Y}{B}[WARN]{X} {permission_gap_repos} repo(s) lacked GitHub App "
+            "'deployments: read' permission (403); run 'repo360 setup' to update manifest."
+        )
     print(f"{C}{'-' * 76}{X}")
     print(f"   {B}Executive DORA Workbook (XLSX) :{X} {xlsx_path}")
     print(f"{C}{'=' * 76}{X}")
@@ -113,6 +146,27 @@ def run_dora_cli(argv: Optional[List[str]] = None) -> int:
         help="Concurrent repository worker threads (default: 0 = auto-tune up to 32).",
     )
     parser.add_argument(
+        "--prod-envs",
+        default="",
+        help=(
+            "Comma-separated production environment names/tokens "
+            "(default: prod,production,prd,live,release)."
+        ),
+    )
+    parser.add_argument(
+        "--include-non-prod",
+        action="store_true",
+        help="Include non-production environments (e.g. dev/staging) and non-default branches.",
+    )
+    parser.add_argument(
+        "--incident-labels",
+        default="",
+        help=(
+            "Comma-separated GitHub Issue labels treated as production incidents "
+            "(default: incident,production-incident,sev1,sev2,p0,p1,outage,hotfix,rollback)."
+        ),
+    )
+    parser.add_argument(
         "--no-ai",
         action="store_true",
         help="Disable AI flow diagnostics and use deterministic policy rules only.",
@@ -145,11 +199,22 @@ def run_dora_cli(argv: Optional[List[str]] = None) -> int:
         print("Run 'repo360 setup' or configure REPO360_APP_ID and REPO360_APP_PRIVATE_KEY.\n")
         return 1
 
+    default_cfg = DORAConfig()
+    prod_envs = tuple(
+        token.strip().lower() for token in args.prod_envs.split(",") if token.strip()
+    ) or default_cfg.prod_environments
+    incident_labels = tuple(
+        token.strip().lower() for token in args.incident_labels.split(",") if token.strip()
+    ) or default_cfg.incident_labels
+
     cfg = DORAConfig(
         lookback_days=args.lookback_days,
         max_workers=args.max_workers,
         include_archived=args.include_archived,
         output_dir=args.output_dir,
+        prod_environments=prod_envs,
+        incident_labels=incident_labels,
+        include_non_prod=args.include_non_prod,
     )
 
     auth = GitHubAppAuth(

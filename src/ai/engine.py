@@ -726,14 +726,22 @@ ADVISORY: <1 concise sentence specifying verification action for SecOps>"""
         mttr_hours: Optional[float] = None,
         mttr_tier: str = "Low",
         composite_tier: str = "Low",
+        rework_pct: Optional[float] = None,
+        rework_tier: str = "N/A",
+        open_incidents: int = 0,
     ) -> str:
         """Diagnose delivery flow bottlenecks and prescribe actionable engineering improvements."""
         lt_str = f"{lead_time_hours:.1f}h" if lead_time_hours is not None else "N/A"
         mttr_str = f"{mttr_hours:.1f}h" if mttr_hours is not None else "N/A"
+        rework_str = f"{rework_pct:.1f}%" if rework_pct is not None else "N/A"
 
         if cfr_pct > 15.0 or cfr_tier in ("Low", "Medium"):
             default_rec = f"Elevated change failure rate ({cfr_pct:.1f}%). Strengthen automated regression testing, integration gates, and canary deployment stages."
-        elif (lead_time_hours is not None and lead_time_hours > 48.0) or lttc_tier in ("Low", "Medium"):
+        elif (rework_pct is not None and rework_pct > 8.0) or rework_tier in ("Low", "Medium"):
+            default_rec = f"High deployment rework rate ({rework_str}). Enforce pre-merge integration verification and staged rollouts to curb hotfixes and reverts."
+        elif open_incidents > 0:
+            default_rec = f"{open_incidents} open recovery incident(s) pending resolution. Prioritize automated rollback verification and incident triage."
+        elif (lead_time_hours is not None and lead_time_hours > 168.0) or lttc_tier in ("Low", "Medium"):
             default_rec = f"Lead time bottleneck ({lt_str}). Reduce PR batch size, enforce single-piece flow, and parallelize CI build/test steps."
         elif df_weekly < 1.0 or df_tier in ("Low", "Medium"):
             default_rec = f"Deployment cadence is low ({df_weekly:.1f}/week). Decouple release branches and transition to trunk-based continuous delivery."
@@ -750,7 +758,9 @@ ADVISORY: <1 concise sentence specifying verification action for SecOps>"""
 - Deployment Frequency: {df_weekly:.1f} per week ({df_tier})
 - Lead Time for Changes: {lt_str} ({lttc_tier})
 - Change Failure Rate: {cfr_pct:.1f}% ({cfr_tier})
-- Mean Time to Recovery (MTTR): {mttr_str} ({mttr_tier})
+- Failed Deployment Recovery Time (MTTR): {mttr_str} ({mttr_tier})
+- Deployment Rework Rate: {rework_str} ({rework_tier})
+- Open Incidents: {open_incidents}
 
 Provide ONLY 1-2 concise, highly actionable sentences identifying the primary delivery constraint and prescribing concrete platform engineering changes to reach Elite tier. No chat or filler."""
 
