@@ -531,19 +531,19 @@ Usage:
   repo360 <command> [options]
 
 Analytics & Intelligence Commands:
-  audit       Run security, platform governance, and CI/CD audit across repositories
-  activity    Analyze contributor cadence, active days, seat allocation, and commit/PR metrics
-  runners     Inspect Actions self-hosted runner fleet usage, compute hours, and queue wait times
-  finops      Profile per-repository storage quotas, Actions artifacts, and 90-day retention waste
-  dora        Calculate cross-organization DORA & delivery flow metrics (DF, Lead Time, CFR, MTTR)
-  bypass      Audit secret scanning push-protection overrides and branch ruleset bypass events
+  audit       Security, governance, and CI/CD compliance audit across repositories
+  activity    Contributor activity metrics — commits, pull requests, reviews, and issues
+  runners     Self-hosted runner fleet analytics — availability, compute hours, and queue latency
+  finops      Storage and cost profiling — quotas, artifact retention, and package registries
+  dora        DORA delivery metrics — Deployment Frequency, Lead Time, Change Failure Rate, MTTR
+  bypass      Push-protection and ruleset bypass audit ledger — actor, type, and timestamp records
 
 Configuration & Lifecycle Commands:
-  setup       Launch 1-click GitHub App setup wizard & credential configuration
-  upgrade     Upgrade Repo360 CLI to the latest version directly from GitHub
-  health      Verify GitHub App authentication, organization access, and AI engine status
-  version     Display installed Repo360 version, commit SHA, and check for updates
-  uninstall   Uninstall Repo360 CLI and config directories while keeping repo360-output reports
+  setup       Register the GitHub App and configure credentials
+  upgrade     Upgrade to the latest version and verify the installed commit matches remote HEAD
+  health      Check GitHub App authentication, organization installations, and AI engine status
+  version     Show installed version and commit SHA, with optional remote sync check
+  uninstall   Remove the package, virtual environment, and config while preserving reports
 
 Options:
   -h, --help     Show this help message or help for a specific command

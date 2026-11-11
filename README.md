@@ -31,22 +31,22 @@ Platform governance, compliance, engineering intelligence, and infrastructure me
 
 | Command | Description |
 | :--- | :--- |
-| `audit` | Evaluates repositories and organizations against security, governance, and CI/CD baselines, generating AI-tailored remediation guidance in an executive Excel workbook. |
-| `activity` | Profiles contributor cadence, commit and pull request volume, code review participation, issue engagement, active days, and GitHub Copilot seat allocation per developer. |
-| `runners` | Audits Actions self-hosted runner fleet health, ephemeral provisioning, execution compute hours, job queue latency, and SLA breach tracking (>60s). |
-| `finops` | Profiles per-repository Git LFS storage quotas, workflow artifact retention waste, stale Actions caches (>30d), and container or package registry consumption. |
-| `dora` | Calculates cross-organization DORA delivery metrics — Deployment Frequency, Lead Time for Changes, Change Failure Rate, and Mean Time to Recovery — with Google DORA tier classification. |
-| `bypass` | Consolidates secret scanning push-protection bypass records and branch ruleset override audit history, including actor, timestamp, secret type, and justification reason. |
+| `audit` | Security, governance, and CI/CD compliance audit across repositories and organizations. |
+| `activity` | Contributor activity metrics — commits, pull requests, code reviews, and issue engagement. |
+| `runners` | Self-hosted Actions runner fleet analytics — availability, compute hours, and queue latency. |
+| `finops` | Storage and cost profiling — repository quotas, artifact retention, and package registries. |
+| `dora` | DORA delivery metrics — Deployment Frequency, Lead Time, Change Failure Rate, and MTTR. |
+| `bypass` | Push-protection and ruleset bypass audit ledger — actor, secret type, and timestamp records. |
 
 ### Configuration & Lifecycle Commands
 
 | Command | Description |
 | :--- | :--- |
-| `setup` | Launches the one-click GitHub App registration wizard, downloads the RSA private key, and persists local configuration under `~/.repo360/`. |
-| `upgrade` | Upgrades the installed Repo360 package directly from GitHub and verifies that the locally running commit matches the latest remote main HEAD. |
-| `health` | Validates GitHub App authentication, enumerates organization installations, and reports AI engine availability in a structured JSON payload. |
-| `version` | Displays the installed package version, resolved commit SHA with branch and dirty-state flags, and optionally compares against remote main HEAD. |
-| `uninstall` | Removes the Repo360 package, isolated pipx virtual environment, and `~/.repo360/` configuration while strictly preserving all generated reports in `./repo360-output/`. |
+| `setup` | Register the GitHub App, configure credentials, and store keys under `~/.repo360/`. |
+| `upgrade` | Upgrade to the latest version and verify the installed commit matches remote HEAD. |
+| `health` | Check GitHub App authentication, organization installations, and AI engine status. |
+| `version` | Show the installed version and commit SHA, with optional remote sync check. |
+| `uninstall` | Remove the package, virtual environment, and config while preserving generated reports. |
 
 ---
 
