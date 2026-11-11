@@ -144,7 +144,7 @@ class RunnersConfig:
 
     lookback_days: int = 90
     max_runner_runs_per_repo: int = 50
-    max_workers: int = 6
+    max_workers: int = 0
     timeout_seconds: int = 30
     max_retries: int = 5
     output_dir: str = "./repo360-output"

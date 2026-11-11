@@ -119,7 +119,7 @@ class BypassConfig:
     """Runtime configuration for push protection and ruleset bypass ledger."""
 
     lookback_days: int = 90
-    max_workers: int = 6
+    max_workers: int = 0
     timeout_seconds: int = 30
     max_retries: int = 5
     include_archived: bool = False

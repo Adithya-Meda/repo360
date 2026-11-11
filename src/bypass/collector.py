@@ -12,6 +12,7 @@ import requests
 
 from ..activity.models import IST, fmt_timestamp, parse_ts
 from ..common.client import ResilientGitHubClient
+from ..common.concurrency import is_dormant_repo, is_empty_repo, resolve_worker_count, run_concurrent_ai
 from .models import (
     BypassConfig,
     PushProtectionBypassRecord,
@@ -153,11 +154,25 @@ def profile_repo_bypasses(
     since: datetime,
     meta: Dict[str, Any],
     ai_engine: Optional[Any] = None,
+    check_push: bool = True,
 ) -> RepoBypassProfile:
     """Collect push protection overrides and ruleset bypasses for a repository."""
     profile = RepoBypassProfile(org=org, repo=repo)
-    profile.push_bypasses = collect_repo_push_bypasses(client, org, repo, since, ai_engine=ai_engine)
-    profile.ruleset_bypasses = collect_repo_ruleset_bypasses(client, org, repo, since)
+    if is_empty_repo(meta):
+        return profile
+
+    push_disabled_in_meta = False
+    sec_cfg = meta.get("security_and_analysis") if isinstance(meta, dict) else None
+    if isinstance(sec_cfg, dict):
+        ss_status = (sec_cfg.get("secret_scanning") or {}).get("status")
+        pp_status = (sec_cfg.get("secret_scanning_push_protection") or {}).get("status")
+        if ss_status == "disabled" and pp_status == "disabled":
+            push_disabled_in_meta = True
+
+    if check_push and not push_disabled_in_meta:
+        profile.push_bypasses = collect_repo_push_bypasses(client, org, repo, since, ai_engine=ai_engine)
+    if not is_dormant_repo(meta, since, parse_ts):
+        profile.ruleset_bypasses = collect_repo_ruleset_bypasses(client, org, repo, since)
     return profile
 
 
@@ -170,17 +185,39 @@ def collect_bypass_data(
     metadata_cache: Dict[Tuple[str, str], Dict[str, Any]],
     ai_engine: Optional[Any] = None,
 ) -> List[RepoBypassProfile]:
-    """Collect bypass records across all targets using thread pooling."""
+    """Collect bypass records across all targets using thread pooling and concurrent AI risk synthesis."""
     profiles: List[RepoBypassProfile] = []
 
+    push_allowed_by_org: Dict[str, bool] = {}
+    auth = getattr(client, "auth", None)
+    get_perms = getattr(auth, "get_installation_permissions", None)
+    if callable(get_perms):
+        for org_name in orgs:
+            try:
+                perms = get_perms(org_name)
+                if isinstance(perms, dict) and perms:
+                    push_allowed_by_org[org_name.lower()] = perms.get("secret_scanning_alerts") in ("read", "write")
+            except Exception:
+                pass
+
     if targets:
-        workers = min(cfg.max_workers, len(targets))
+        workers = resolve_worker_count(cfg.max_workers, len(targets), max_cap=32)
         executor = ThreadPoolExecutor(max_workers=workers)
         try:
             future_to_target = {}
             for org, repo in targets:
                 meta = metadata_cache.get((org.casefold(), repo.casefold()), {})
-                fut = executor.submit(profile_repo_bypasses, client, org, repo, since, meta, ai_engine)
+                can_check_push = push_allowed_by_org.get(org.lower(), True)
+                fut = executor.submit(
+                    profile_repo_bypasses,
+                    client,
+                    org,
+                    repo,
+                    since,
+                    meta,
+                    None,
+                    check_push=can_check_push,
+                )
                 future_to_target[fut] = (org, repo)
 
             for fut in as_completed(future_to_target):
@@ -196,6 +233,22 @@ def collect_bypass_data(
             raise
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
+
+    # Batch AI risk analysis concurrently after HTTP scraping completes
+    if ai_engine is not None:
+        all_push_records = [rec for p in profiles for rec in p.push_bypasses]
+
+        def _enrich_push(rec: PushProtectionBypassRecord) -> None:
+            risk, advisory = ai_engine.analyze_push_protection_bypass(
+                secret_type=rec.secret_type,
+                comment=rec.resolution_comment,
+                actor=rec.actor,
+                repo=rec.repo,
+            )
+            rec.ai_risk_assessment = risk
+            rec.ai_security_advisory = advisory
+
+        run_concurrent_ai(all_push_records, _enrich_push, ai_engine=ai_engine, max_workers=8)
 
     profiles.sort(key=lambda p: (p.org.lower(), p.repo.lower()))
     return profiles

@@ -54,6 +54,7 @@ class Repo360Client:
         self.rate_limit_remaining: Optional[int] = None
         self.rate_limit_reset: Optional[int] = None
         self.rate_limit_limit: Optional[int] = None
+        self._org_rate_limit: Dict[str, int] = {}
         self._lock = threading.Lock()
 
         # Configure session with standard retry strategy for transient connection resets
@@ -88,17 +89,22 @@ class Repo360Client:
                 logger.info("Rate limit cooldown in progress: %d seconds remaining...", int(remaining))
                 last_heartbeat = time.time()
 
-    def _handle_rate_limit(self, response: requests.Response) -> None:
-        """Inspect and log rate limit headers with active pacing for 1000+ repos."""
+    def _handle_rate_limit(self, response: requests.Response, org: Optional[str] = None) -> None:
+        """Inspect and log rate limit headers with per-org active pacing for 1000+ repos."""
+        org_key = org.strip().lower() if isinstance(org, str) and org.strip() else None
         with self._lock:
             self.total_api_calls += 1
             remaining_str = response.headers.get("x-ratelimit-remaining")
             reset_str = response.headers.get("x-ratelimit-reset")
             limit_str = response.headers.get("x-ratelimit-limit")
 
+            parsed_rem: Optional[int] = None
             if remaining_str is not None:
                 try:
-                    self.rate_limit_remaining = int(remaining_str)
+                    parsed_rem = int(remaining_str)
+                    self.rate_limit_remaining = parsed_rem
+                    if org_key:
+                        self._org_rate_limit[org_key] = parsed_rem
                 except ValueError:
                     pass
             if reset_str is not None:
@@ -112,7 +118,7 @@ class Repo360Client:
                 except ValueError:
                     pass
 
-            rem = self.rate_limit_remaining
+            rem = self._org_rate_limit.get(org_key, self.rate_limit_remaining) if org_key else self.rate_limit_remaining
             res = self.rate_limit_reset
             lim = self.rate_limit_limit
 
@@ -203,7 +209,7 @@ class Repo360Client:
                     params=params,
                     timeout=self.timeout_seconds,
                 )
-                self._handle_rate_limit(response)
+                self._handle_rate_limit(response, org=target_org)
 
                 # 404 / 409 (Empty repo) / 410 handling
                 if response.status_code in (404, 409, 410):

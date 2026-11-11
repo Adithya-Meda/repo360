@@ -109,8 +109,8 @@ def run_dora_cli(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--max-workers",
         type=int,
-        default=6,
-        help="Concurrent repository worker threads (default: 6).",
+        default=0,
+        help="Concurrent repository worker threads (default: 0 = auto-tune up to 32).",
     )
     parser.add_argument(
         "--no-ai",

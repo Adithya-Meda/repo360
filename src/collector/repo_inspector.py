@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import base64
 import logging
-from typing import Any, Dict, List, Optional, Set, Tuple
+import math
+import threading
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 import requests
 
+from ..common.concurrency import is_empty_repo, map_concurrent
 from .client import Repo360Client
 
 logger = logging.getLogger(__name__)
@@ -22,6 +25,7 @@ class RepoInspector:
             client: Authenticated Repo360Client instance.
         """
         self.client = client
+        self._cache_lock = threading.RLock()
         self._repo_tree_cache: Dict[Tuple[str, str, str], Optional[Set[str]]] = {}
         self._file_content_cache: Dict[Tuple[str, str, str, str], Optional[str]] = {}
         self._repo_workflows_cache: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
@@ -33,7 +37,8 @@ class RepoInspector:
     def seed_repo_metadata(self, org: str, repo: str, metadata: Dict[str, Any]) -> None:
         """Pre-populate repository metadata cache from bulk discovery data to eliminate redundant API calls."""
         if org and repo and metadata and isinstance(metadata, dict):
-            self._repo_metadata_cache[(org, repo)] = metadata
+            with self._cache_lock:
+                self._repo_metadata_cache[(org, repo)] = metadata
 
     def prefetch_repo_tree(
         self, org: str, repo: str, ref: str = "main"
@@ -44,8 +49,14 @@ class RepoInspector:
         file existence and workflow discovery to be evaluated in-memory.
         """
         key = (org, repo, ref)
-        if key in self._repo_tree_cache:
-            return self._repo_tree_cache[key]
+        with self._cache_lock:
+            if key in self._repo_tree_cache:
+                return self._repo_tree_cache[key]
+            cached_meta = self._repo_metadata_cache.get((org, repo))
+            if is_empty_repo(cached_meta):
+                empty_set: Set[str] = set()
+                self._repo_tree_cache[key] = empty_set
+                return empty_set
 
         data = self.client.get(
             f"/repos/{org}/{repo}/git/trees/{ref}",
@@ -54,8 +65,9 @@ class RepoInspector:
         )
         if not data or not isinstance(data, dict):
             # Repository is empty or default branch ref doesn't exist
-            empty_set: Set[str] = set()
-            self._repo_tree_cache[key] = empty_set
+            empty_set = set()
+            with self._cache_lock:
+                self._repo_tree_cache[key] = empty_set
             return empty_set
 
         tree_items = data.get("tree", [])
@@ -63,7 +75,8 @@ class RepoInspector:
             item["path"] for item in tree_items
             if isinstance(item, dict) and "path" in item
         }
-        self._repo_tree_cache[key] = tree_set
+        with self._cache_lock:
+            self._repo_tree_cache[key] = tree_set
         return tree_set
 
     # --- Organization-Level Collectors ---
@@ -96,17 +109,57 @@ class RepoInspector:
     ) -> List[Dict[str, Any]]:
         """List all repositories accessible to a specific or current GitHub App installation.
 
-        Args:
-            installation_id: Optional installation ID. If omitted, uses active default.
-            per_page: Repositories per page (max 100).
-            max_pages: Maximum pages to retrieve.
-
-        Returns:
-            List of repository metadata objects.
+        Fetches remaining pages concurrently when page 1 reveals ``total_count > per_page``.
         """
-        all_repos: List[Dict[str, Any]] = []
-        page = 1
+        first_data = self.client.get(
+            "/installation/repositories",
+            params={"per_page": per_page, "page": 1},
+            allow_404=True,
+            installation_id=installation_id,
+        )
+        if not first_data or not isinstance(first_data, dict):
+            return []
 
+        first_repos = first_data.get("repositories", [])
+        if not first_repos:
+            return []
+
+        all_repos: List[Dict[str, Any]] = list(first_repos)
+        total_count = first_data.get("total_count", 0)
+        if len(first_repos) < per_page or max_pages <= 1:
+            return all_repos
+        if total_count and len(all_repos) >= total_count:
+            return all_repos
+
+        # Parallelize pages 2..last_page when total_count is known
+        if total_count and total_count > len(all_repos):
+            last_page = min(max_pages, math.ceil(total_count / per_page))
+            remaining_pages = list(range(2, last_page + 1))
+
+            def _fetch_page(p: int) -> List[Dict[str, Any]]:
+                data = self.client.get(
+                    "/installation/repositories",
+                    params={"per_page": per_page, "page": p},
+                    allow_404=True,
+                    installation_id=installation_id,
+                )
+                if data and isinstance(data, dict):
+                    return data.get("repositories", []) or []
+                return []
+
+            page_batches = map_concurrent(
+                remaining_pages,
+                _fetch_page,
+                max_workers=min(8, len(remaining_pages)),
+                max_cap=8,
+                thread_name_prefix="inst-pages",
+            )
+            for batch in page_batches:
+                all_repos.extend(batch)
+            return all_repos
+
+        # Sequential fallback if total_count was omitted cleanly
+        page = 2
         while page <= max_pages:
             data = self.client.get(
                 "/installation/repositories",
@@ -116,14 +169,11 @@ class RepoInspector:
             )
             if not data or not isinstance(data, dict):
                 break
-
             repos = data.get("repositories", [])
             if not repos:
                 break
-
             all_repos.extend(repos)
-            total_count = data.get("total_count", 0)
-            if len(all_repos) >= total_count or len(repos) < per_page:
+            if len(repos) < per_page:
                 break
             page += 1
 
@@ -132,28 +182,33 @@ class RepoInspector:
     # --- Repository-Level Collectors ---
 
     def get_repo_metadata(self, org: str, repo: str) -> Optional[Dict[str, Any]]:
-        """Fetch repository details with caching."""
+        """Fetch repository details with thread-safe caching."""
         cache_key = (org, repo)
-        if cache_key in self._repo_metadata_cache:
-            return self._repo_metadata_cache[cache_key]
+        with self._cache_lock:
+            if cache_key in self._repo_metadata_cache:
+                return self._repo_metadata_cache[cache_key]
         meta = self.client.get(f"/repos/{org}/{repo}", allow_404=True)
-        self._repo_metadata_cache[cache_key] = meta
+        with self._cache_lock:
+            self._repo_metadata_cache[cache_key] = meta
         return meta
 
     def get_repo_rulesets(self, org: str, repo: str) -> List[Dict[str, Any]]:
         """Fetch repository-level rulesets (falls back gracefully if 403 forbidden or unconfigured)."""
         cache_key = (org, repo)
-        if cache_key in self._repo_rulesets_cache:
-            return self._repo_rulesets_cache[cache_key]
+        with self._cache_lock:
+            if cache_key in self._repo_rulesets_cache:
+                return self._repo_rulesets_cache[cache_key]
         try:
             data = self.client.get(f"/repos/{org}/{repo}/rulesets", allow_404=True)
             res = data if isinstance(data, list) else []
-            self._repo_rulesets_cache[cache_key] = res
+            with self._cache_lock:
+                self._repo_rulesets_cache[cache_key] = res
             return res
         except requests.exceptions.HTTPError as err:
             if getattr(err, "response", None) is not None and err.response.status_code == 403:
                 logger.debug("Rulesets API returned 403 on %s/%s (falling back to classic protection).", org, repo)
-                self._repo_rulesets_cache[cache_key] = []
+                with self._cache_lock:
+                    self._repo_rulesets_cache[cache_key] = []
                 return []
             raise
 
@@ -162,18 +217,25 @@ class RepoInspector:
     ) -> Optional[Dict[str, Any]]:
         """Fetch branch protection rules for a specific branch (falls back gracefully if 403/404)."""
         cache_key = (org, repo, branch)
-        if cache_key in self._repo_protection_cache:
-            return self._repo_protection_cache[cache_key]
+        with self._cache_lock:
+            if cache_key in self._repo_protection_cache:
+                return self._repo_protection_cache[cache_key]
+            cached_meta = self._repo_metadata_cache.get((org, repo))
+            if is_empty_repo(cached_meta):
+                self._repo_protection_cache[cache_key] = None
+                return None
         try:
             res = self.client.get(
                 f"/repos/{org}/{repo}/branches/{branch}/protection", allow_404=True
             )
-            self._repo_protection_cache[cache_key] = res
+            with self._cache_lock:
+                self._repo_protection_cache[cache_key] = res
             return res
         except requests.exceptions.HTTPError as err:
             if getattr(err, "response", None) is not None and err.response.status_code == 403:
                 logger.debug("Branch protection API returned 403 on %s/%s:%s.", org, repo, branch)
-                self._repo_protection_cache[cache_key] = None
+                with self._cache_lock:
+                    self._repo_protection_cache[cache_key] = None
                 return None
             raise
 
@@ -183,27 +245,18 @@ class RepoInspector:
         """Fetch and decode utf-8 text file content from repository.
 
         Leverages the repository tree cache to avoid 404 HTTP round-trips for missing files.
-
-        Args:
-            org: Organization name.
-            repo: Repository name.
-            path: Relative path to file (e.g., 'CODEOWNERS' or '.github/copilot-instructions.md').
-            ref: Branch or commit ref.
-
-        Returns:
-            Decoded file text content, or None if file does not exist.
         """
         path_clean = path.lstrip("/")
         content_key = (org, repo, path_clean, ref)
-        if content_key in self._file_content_cache:
-            return self._file_content_cache[content_key]
-
         tree_key = (org, repo, ref)
-        if tree_key in self._repo_tree_cache:
-            tree_set = self._repo_tree_cache[tree_key]
-            if tree_set is not None and path_clean not in tree_set:
-                self._file_content_cache[content_key] = None
-                return None
+        with self._cache_lock:
+            if content_key in self._file_content_cache:
+                return self._file_content_cache[content_key]
+            if tree_key in self._repo_tree_cache:
+                tree_set = self._repo_tree_cache[tree_key]
+                if tree_set is not None and path_clean not in tree_set:
+                    self._file_content_cache[content_key] = None
+                    return None
 
         data = self.client.get(
             f"/repos/{org}/{repo}/contents/{path_clean}",
@@ -211,7 +264,8 @@ class RepoInspector:
             allow_404=True,
         )
         if not data or not isinstance(data, dict):
-            self._file_content_cache[content_key] = None
+            with self._cache_lock:
+                self._file_content_cache[content_key] = None
             return None
 
         content = data.get("content")
@@ -225,7 +279,8 @@ class RepoInspector:
                 logger.warning("Failed to decode %s in %s/%s: %s", path, org, repo, err)
                 decoded_str = None
 
-        self._file_content_cache[content_key] = decoded_str
+        with self._cache_lock:
+            self._file_content_cache[content_key] = decoded_str
         return decoded_str
 
     def list_workflows(self, org: str, repo: str, ref: str = "main") -> List[Dict[str, Any]]:
@@ -234,37 +289,40 @@ class RepoInspector:
         Discovers workflows directly from tree cache if present to eliminate redundant API calls.
         """
         cache_key = (org, repo)
-        if cache_key in self._repo_workflows_cache:
-            return self._repo_workflows_cache[cache_key]
-
         tree_key = (org, repo, ref)
-        if tree_key in self._repo_tree_cache:
-            tree_set = self._repo_tree_cache[tree_key]
-            if tree_set is not None:
-                wf_paths = [
-                    p for p in tree_set
-                    if p.startswith(".github/workflows/") and (p.endswith(".yml") or p.endswith(".yaml"))
-                ]
-                workflows = [
-                    {"name": p.split("/")[-1], "path": p, "state": "active"}
-                    for p in sorted(wf_paths)
-                ]
-                self._repo_workflows_cache[cache_key] = workflows
-                return workflows
+        with self._cache_lock:
+            if cache_key in self._repo_workflows_cache:
+                return self._repo_workflows_cache[cache_key]
+            if tree_key in self._repo_tree_cache:
+                tree_set = self._repo_tree_cache[tree_key]
+                if tree_set is not None:
+                    wf_paths = [
+                        p for p in tree_set
+                        if p.startswith(".github/workflows/") and (p.endswith(".yml") or p.endswith(".yaml"))
+                    ]
+                    workflows = [
+                        {"name": p.split("/")[-1], "path": p, "state": "active"}
+                        for p in sorted(wf_paths)
+                    ]
+                    self._repo_workflows_cache[cache_key] = workflows
+                    return workflows
 
         data = self.client.get(f"/repos/{org}/{repo}/actions/workflows", allow_404=True)
         workflows = data.get("workflows", []) if isinstance(data, dict) and "workflows" in data else []
-        self._repo_workflows_cache[cache_key] = workflows
+        with self._cache_lock:
+            self._repo_workflows_cache[cache_key] = workflows
         return workflows
 
     def get_environments(self, org: str, repo: str) -> List[Dict[str, Any]]:
         """Fetch deployment environments configured for the repository with caching."""
         cache_key = (org, repo)
-        if cache_key in self._repo_environments_cache:
-            return self._repo_environments_cache[cache_key]
+        with self._cache_lock:
+            if cache_key in self._repo_environments_cache:
+                return self._repo_environments_cache[cache_key]
         data = self.client.get(f"/repos/{org}/{repo}/environments", allow_404=True)
         res = data.get("environments", []) if isinstance(data, dict) and "environments" in data else []
-        self._repo_environments_cache[cache_key] = res
+        with self._cache_lock:
+            self._repo_environments_cache[cache_key] = res
         return res
 
     def check_file_exists(
@@ -276,13 +334,14 @@ class RepoInspector:
         """
         path_clean = path.lstrip("/")
         tree_key = (org, repo, ref)
-        if tree_key in self._repo_tree_cache:
-            tree_set = self._repo_tree_cache[tree_key]
-            if tree_set is not None:
-                if path_clean in tree_set:
-                    return True
-                prefix = path_clean + "/"
-                return any(p.startswith(prefix) for p in tree_set)
+        with self._cache_lock:
+            if tree_key in self._repo_tree_cache:
+                tree_set = self._repo_tree_cache[tree_key]
+                if tree_set is not None:
+                    if path_clean in tree_set:
+                        return True
+                    prefix = path_clean + "/"
+                    return any(p.startswith(prefix) for p in tree_set)
 
         data = self.client.get(
             f"/repos/{org}/{repo}/contents/{path_clean}",
@@ -290,6 +349,79 @@ class RepoInspector:
             allow_404=True,
         )
         return data is not None
+
+    def prefetch_repo_audit_context(
+        self,
+        org: str,
+        repo: str,
+        ref: str = "main",
+        enabled_checks: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Concurrently pre-warm rulesets, protection, CODEOWNERS, manifests, and workflow files."""
+        with self._cache_lock:
+            tree_set = self._repo_tree_cache.get((org, repo, ref))
+        if tree_set is None:
+            tree_set = self.prefetch_repo_tree(org, repo, ref)
+        if not tree_set:
+            tree_set = set()
+
+        def _is_enabled(check_key: str) -> bool:
+            if not enabled_checks:
+                return True
+            val = enabled_checks.get(check_key)
+            if isinstance(val, dict):
+                return bool(val.get("enabled", True))
+            return True if val is None else bool(val)
+
+        tasks: List[Callable[[], Any]] = []
+
+        if tree_set:
+            if _is_enabled("codeowners_validation"):
+                for co_path in (".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"):
+                    if co_path in tree_set:
+                        tasks.append(lambda p=co_path: self.get_file_content(org, repo, p, ref))
+                        break
+
+            if "package.json" in tree_set:
+                tasks.append(lambda: self.get_file_content(org, repo, "package.json", ref))
+            if "requirements.txt" in tree_set:
+                tasks.append(lambda: self.get_file_content(org, repo, "requirements.txt", ref))
+            elif "pyproject.toml" in tree_set:
+                tasks.append(lambda: self.get_file_content(org, repo, "pyproject.toml", ref))
+
+            if _is_enabled("workflow_sha_pinning") or _is_enabled("workflow_concurrency_groups"):
+                wf_paths = sorted(
+                    p for p in tree_set
+                    if p.startswith(".github/workflows/") and (p.endswith(".yml") or p.endswith(".yaml"))
+                )
+                for wf_path in wf_paths:
+                    tasks.append(lambda p=wf_path: self.get_file_content(org, repo, p, ref))
+
+        if _is_enabled("branch_rulesets"):
+            tasks.append(lambda: self.get_repo_rulesets(org, repo))
+            tasks.append(lambda: self.get_branch_protection(org, repo, ref))
+
+        if len(tasks) <= 1:
+            for fn in tasks:
+                try:
+                    fn()
+                except Exception:
+                    pass
+            return
+
+        def _safe_run(fn: Callable[[], Any]) -> None:
+            try:
+                fn()
+            except Exception:
+                pass
+
+        map_concurrent(
+            tasks,
+            _safe_run,
+            max_workers=min(6, len(tasks)),
+            max_cap=6,
+            thread_name_prefix="repo-prefetch",
+        )
 
     def detect_tech_stack(
         self, org: str, repo: str, ref: str = "main"
@@ -324,8 +456,11 @@ class RepoInspector:
         # Single API call or tree cache to list root directory contents
         tree_key = (org, repo, ref)
         root_files: Set[str] = set()
-        if tree_key in self._repo_tree_cache and self._repo_tree_cache[tree_key] is not None:
-            tree_set = self._repo_tree_cache[tree_key]
+        has_tree_cache = False
+        with self._cache_lock:
+            tree_set = self._repo_tree_cache.get(tree_key)
+        if tree_set is not None:
+            has_tree_cache = True
             root_files = {p for p in tree_set if "/" not in p}
         else:
             contents = self.client.get(
@@ -339,7 +474,7 @@ class RepoInspector:
                         root_files.add(item["name"])
 
         for filename, lang in manifest_checks:
-            exists = (filename in root_files) if root_files else self.check_file_exists(org, repo, filename, ref=ref)
+            exists = (filename in root_files) if (root_files or has_tree_cache) else self.check_file_exists(org, repo, filename, ref=ref)
             if exists:
                 manifests.append(filename)
                 if lang not in languages:

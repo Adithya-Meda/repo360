@@ -29,7 +29,7 @@ class ResilientGitHubClient:
         timeout_seconds: int = 30,
         max_retries: int = 5,
         rate_limit_buffer: int = 25,
-        inter_request_delay_seconds: float = 0.05,
+        inter_request_delay_seconds: float = 0.0,
         max_rate_limit_wait_seconds: int = 3600,
     ) -> None:
         self.auth = auth
@@ -49,6 +49,7 @@ class ResilientGitHubClient:
         self._org_pause_until: Dict[str, float] = {}
         self._org_remaining: Dict[str, int] = {}
         self._org_reset: Dict[str, float] = {}
+        self._org_last_request_time: Dict[str, float] = {}
         self._last_request_time: float = 0.0
 
     def _http(self) -> requests.Session:
@@ -63,8 +64,9 @@ class ResilientGitHubClient:
                 raise_on_status=False,
             )
             session = requests.Session()
-            session.mount("https://", HTTPAdapter(max_retries=retry))
-            session.mount("http://", HTTPAdapter(max_retries=retry))
+            adapter = HTTPAdapter(max_retries=retry, pool_connections=50, pool_maxsize=50)
+            session.mount("https://", adapter)
+            session.mount("http://", adapter)
             session.headers.update({
                 "Accept": "application/vnd.github+json",
                 "X-GitHub-Api-Version": "2022-11-28",
@@ -122,9 +124,25 @@ class ResilientGitHubClient:
                 if pause_wait > 0.0:
                     pass
                 else:
-                    # 3. Inter-request micro-pacing
+                    # 3. Per-organization adaptive pacing (full speed when quota is healthy >= 1000)
+                    scope_key = org_key or "__global__"
                     if self.inter_request_delay_seconds > 0.0:
-                        target = max(now, self._last_request_time + self.inter_request_delay_seconds)
+                        delay = self.inter_request_delay_seconds
+                    elif org_key and org_key in self._org_remaining:
+                        rem_quota = self._org_remaining[org_key]
+                        if rem_quota < 500:
+                            delay = 0.04
+                        elif rem_quota < 1000:
+                            delay = 0.01
+                        else:
+                            delay = 0.0
+                    else:
+                        delay = 0.0
+
+                    if delay > 0.0:
+                        last_ts = self._org_last_request_time.get(scope_key, 0.0)
+                        target = max(now, last_ts + delay)
+                        self._org_last_request_time[scope_key] = target
                         self._last_request_time = target
                         pacing_wait = target - now
                     else:

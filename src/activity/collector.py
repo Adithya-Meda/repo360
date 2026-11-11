@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import requests
 
 from ..common.client import ResilientGitHubClient
+from ..common.concurrency import map_concurrent, resolve_worker_count
 from ..common.inventory import RepoEntry
 from .models import (
     DATE_FMT,
@@ -55,8 +56,10 @@ def resolve_activity_targets(
     failures: List[Tuple[str, str]] = []
     metadata_cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
-    # Expand wildcards
-    for org_lower, original_org in org_wildcards.items():
+    # Expand wildcards concurrently across organizations
+    def _expand_org(original_org: str) -> Tuple[List[Tuple[str, str]], Dict[Tuple[str, str], Dict[str, Any]], Optional[Tuple[str, str]]]:
+        org_targets: List[Tuple[str, str]] = []
+        org_meta: Dict[Tuple[str, str], Dict[str, Any]] = {}
         try:
             for repo_data in client.paginate(original_org, f"/orgs/{original_org}/repos", {"type": "all"}):
                 repo_name = repo_data.get("name")
@@ -66,25 +69,54 @@ def resolve_activity_targets(
                     continue
                 if repo_data.get("fork") and not cfg.include_forks:
                     continue
-                targets.append((original_org, repo_name))
-                metadata_cache[(original_org.casefold(), repo_name.casefold())] = repo_data
+                org_targets.append((original_org, repo_name))
+                org_meta[(original_org.casefold(), repo_name.casefold())] = repo_data
+            return org_targets, org_meta, None
         except Exception as exc:
-            failures.append((f"{original_org}/*", str(exc)))
             logger.error("Failed expanding wildcard for org %s: %s", original_org, exc)
+            return org_targets, org_meta, (f"{original_org}/*", str(exc))
 
-    # Fetch specific repos
-    for org, repo in specific_repos:
+    wildcard_batches = map_concurrent(
+        list(org_wildcards.values()),
+        _expand_org,
+        max_workers=min(8, len(org_wildcards)) if org_wildcards else 1,
+        max_cap=8,
+        thread_name_prefix="act-wildcards",
+    )
+    for org_targets, org_meta, fail_item in wildcard_batches:
+        targets.extend(org_targets)
+        metadata_cache.update(org_meta)
+        if fail_item:
+            failures.append(fail_item)
+
+    # Fetch specific repos concurrently
+    def _fetch_specific(pair: Tuple[str, str]) -> Tuple[Optional[Tuple[str, str]], Optional[Dict[str, Any]], Optional[Tuple[str, str]]]:
+        org, repo = pair
         try:
             repo_data = client.get(org, f"/repos/{org}/{repo}")
             if repo_data.get("archived") and not cfg.include_archived:
-                continue
+                return None, None, None
             if repo_data.get("fork") and not cfg.include_forks:
-                continue
+                return None, None, None
+            return (org, repo), repo_data, None
+        except Exception as exc:
+            logger.warning("Repository %s/%s inaccessible: %s", org, repo, exc)
+            return None, None, (f"{org}/{repo}", str(exc))
+
+    specific_results = map_concurrent(
+        specific_repos,
+        _fetch_specific,
+        max_workers=resolve_worker_count(cfg.max_workers, len(specific_repos), max_cap=24) if specific_repos else 1,
+        max_cap=24,
+        thread_name_prefix="act-specific",
+    )
+    for target_pair, repo_data, fail_item in specific_results:
+        if target_pair and repo_data is not None:
+            org, repo = target_pair
             targets.append((org, repo))
             metadata_cache[(org.casefold(), repo.casefold())] = repo_data
-        except Exception as exc:
-            failures.append((f"{org}/{repo}", str(exc)))
-            logger.warning("Repository %s/%s inaccessible: %s", org, repo, exc)
+        if fail_item:
+            failures.append(fail_item)
 
     targets.sort(key=lambda t: (t[0].lower(), t[1].lower()))
     return targets, failures, metadata_cache
@@ -411,18 +443,32 @@ def collect_repository(
 def fetch_members(
     client: ResilientGitHubClient, orgs: List[str], exclude_bots: bool, failures: List[Tuple[str, str]]
 ) -> Dict[str, Set[str]]:
-    """Fetch current organization members."""
+    """Fetch current organization members concurrently across organizations."""
     members: Dict[str, Set[str]] = {}
-    for org in orgs:
+
+    def _fetch_org_members(org: str) -> Tuple[str, Optional[Set[str]], Optional[Tuple[str, str]]]:
         try:
             org_members = {
                 m["login"] for m in client.paginate(org, f"/orgs/{org}/members")
                 if isinstance(m, dict) and "login" in m and not (exclude_bots and is_bot(m))
             }
-            members[org] = org_members
+            return org, org_members, None
         except Exception as exc:
             logger.warning("Failed retrieving members for %s: %s", org, exc)
-            failures.append((f"{org} (members)", str(exc)))
+            return org, None, (f"{org} (members)", str(exc))
+
+    results = map_concurrent(
+        orgs,
+        _fetch_org_members,
+        max_workers=min(8, len(orgs)) if orgs else 1,
+        max_cap=8,
+        thread_name_prefix="act-members",
+    )
+    for org, org_members, fail_item in results:
+        if org_members is not None:
+            members[org] = org_members
+        if fail_item:
+            failures.append(fail_item)
     return members
 
 
@@ -431,30 +477,59 @@ def fetch_team_access(
     orgs: List[str],
     exclude_bots: bool,
 ) -> Tuple[Dict[Tuple[str, str], Set[str]], Dict[str, bool]]:
-    """Map user team memberships across target organizations."""
+    """Map user team memberships across target organizations concurrently."""
     teams_by_user: Dict[Tuple[str, str], Set[str]] = defaultdict(set)
     org_team_complete: Dict[str, bool] = {}
 
-    for org in orgs:
+    def _fetch_org_team_slugs(org: str) -> Tuple[str, List[str], bool]:
         try:
-            teams = list(client.paginate(org, f"/orgs/{org}/teams"))
-            for team in teams:
-                slug = team.get("slug")
-                if not slug:
-                    continue
-                try:
-                    t_members = {
-                        m["login"] for m in client.paginate(org, f"/orgs/{org}/teams/{slug}/members")
-                        if isinstance(m, dict) and "login" in m and not (exclude_bots and is_bot(m))
-                    }
-                    for login in t_members:
-                        teams_by_user[(org, login)].add(slug)
-                except Exception as exc:
-                    logger.debug("Team %s/%s member lookup failed: %s", org, slug, exc)
-            org_team_complete[org] = True
+            slugs = [
+                str(team["slug"])
+                for team in client.paginate(org, f"/orgs/{org}/teams")
+                if isinstance(team, dict) and team.get("slug")
+            ]
+            return org, slugs, True
         except Exception as exc:
             logger.debug("Teams lookup unavailable for %s: %s", org, exc)
-            org_team_complete[org] = False
+            return org, [], False
+
+    org_team_batches = map_concurrent(
+        orgs,
+        _fetch_org_team_slugs,
+        max_workers=min(8, len(orgs)) if orgs else 1,
+        max_cap=8,
+        thread_name_prefix="act-teams",
+    )
+
+    team_tasks: List[Tuple[str, str]] = []
+    for org, slugs, ok in org_team_batches:
+        org_team_complete[org] = ok
+        for slug in slugs:
+            team_tasks.append((org, slug))
+
+    def _fetch_single_team_members(pair: Tuple[str, str]) -> Tuple[str, str, Set[str]]:
+        org, slug = pair
+        try:
+            t_members = {
+                m["login"] for m in client.paginate(org, f"/orgs/{org}/teams/{slug}/members")
+                if isinstance(m, dict) and "login" in m and not (exclude_bots and is_bot(m))
+            }
+            return org, slug, t_members
+        except Exception as exc:
+            logger.debug("Team %s/%s member lookup failed: %s", org, slug, exc)
+            return org, slug, set()
+
+    if team_tasks:
+        member_results = map_concurrent(
+            team_tasks,
+            _fetch_single_team_members,
+            max_workers=0,
+            max_cap=24,
+            thread_name_prefix="act-team-members",
+        )
+        for org, slug, t_members in member_results:
+            for login in t_members:
+                teams_by_user[(org, login)].add(slug)
 
     return teams_by_user, org_team_complete
 

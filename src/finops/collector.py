@@ -11,6 +11,7 @@ import requests
 
 from ..activity.models import IST, fmt_timestamp, parse_ts
 from ..common.client import ResilientGitHubClient
+from ..common.concurrency import is_empty_repo, map_concurrent, resolve_worker_count, run_concurrent_ai
 from .models import (
     ArtifactRecord,
     CacheRecord,
@@ -136,69 +137,85 @@ def collect_org_packages(
       }
     }
     """
-    gql_info: Dict[str, Tuple[int, Optional[str]]] = {}
-    try:
-        data = client.graphql(org, gql_query, {"org": org})
-        nodes = (data.get("data") or {}).get("organization", {}).get("packages", {}).get("nodes") or []
-        for n in nodes:
-            pkg_name = n.get("name", "")
-            files = (n.get("latestVersion") or {}).get("files", {}).get("nodes") or []
-            total_bytes = sum(f.get("size", 0) for f in files if isinstance(f, dict))
-            repo = (n.get("repository") or {}).get("name")
-            if pkg_name:
-                gql_info[pkg_name.lower()] = (total_bytes, repo)
-    except Exception as err:
-        logger.debug("GraphQL package query failed for %s: %s", org, err)
-
-    # 2. Query REST packages across package types
-    for pkg_type in PACKAGE_TYPES:
+    def _fetch_gql_info() -> Dict[str, Tuple[int, Optional[str]]]:
+        info: Dict[str, Tuple[int, Optional[str]]] = {}
         try:
-            endpoint = f"/orgs/{org}/packages"
-            for item in client.paginate(org, endpoint, {"package_type": pkg_type}):
-                pkg_id = item.get("id")
-                name = item.get("name", "unnamed-package")
-                type_name = item.get("package_type", pkg_type)
-                version_count = item.get("version_count", 1)
-                created_str = item.get("created_at")
-                created_at = parse_ts(created_str) if created_str else None
-                updated_str = item.get("updated_at")
-                updated_at = parse_ts(updated_str) if updated_str else None
-                repo_dict = item.get("repository") or {}
-                repo_name = repo_dict.get("name") if isinstance(repo_dict, dict) else None
+            data = client.graphql(org, gql_query, {"org": org})
+            nodes = (data.get("data") or {}).get("organization", {}).get("packages", {}).get("nodes") or []
+            for n in nodes:
+                pkg_name = n.get("name", "")
+                files = (n.get("latestVersion") or {}).get("files", {}).get("nodes") or []
+                total_bytes = sum(f.get("size", 0) for f in files if isinstance(f, dict))
+                repo = (n.get("repository") or {}).get("name")
+                if pkg_name:
+                    info[pkg_name.lower()] = (total_bytes, repo)
+        except Exception as err:
+            logger.debug("GraphQL package query failed for %s: %s", org, err)
+        return info
 
-                # Enrich size and repository from GraphQL
-                size_bytes = 0
-                if name.lower() in gql_info:
-                    gql_bytes, gql_repo = gql_info[name.lower()]
-                    size_bytes = gql_bytes
-                    if not repo_name and gql_repo:
-                        repo_name = gql_repo
-
-                # Fallback repository parsing from html_url
-                if not repo_name and item.get("html_url"):
-                    parts = item["html_url"].split("/")
-                    if len(parts) >= 6 and parts[5] == "packages":
-                        repo_name = parts[4]
-
-                if pkg_id is not None:
-                    seen_names.add(name.lower())
-                    packages.append(
-                        PackageRecord(
-                            id=pkg_id,
-                            name=name,
-                            package_type=type_name,
-                            version_count=version_count,
-                            size_in_bytes=size_bytes,
-                            created_at=created_at,
-                            updated_at=updated_at,
-                            repo_name=repo_name,
-                        )
-                    )
+    def _fetch_rest_pkg_type(pkg_type: str) -> List[Dict[str, Any]]:
+        try:
+            return list(client.paginate(org, f"/orgs/{org}/packages", {"package_type": pkg_type}))
         except requests.HTTPError as err:
             if err.response.status_code not in (404, 403, 400):
                 logger.debug("Package query failed for %s (type %s): %s", org, pkg_type, err)
         except Exception:
             pass
+        return []
+
+    # Execute GraphQL enrichment and all REST package-type queries concurrently
+    pool = ThreadPoolExecutor(max_workers=len(PACKAGE_TYPES) + 1, thread_name_prefix="finops-pkgs")
+    try:
+        gql_future = pool.submit(_fetch_gql_info)
+        type_futures = [(pkg_type, pool.submit(_fetch_rest_pkg_type, pkg_type)) for pkg_type in PACKAGE_TYPES]
+        gql_info = gql_future.result()
+        raw_by_type = [(pkg_type, fut.result()) for pkg_type, fut in type_futures]
+    except (KeyboardInterrupt, SystemExit):
+        pool.shutdown(wait=False, cancel_futures=True)
+        raise
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+    # Assemble package records deterministically
+    for pkg_type, items in raw_by_type:
+        for item in items:
+            pkg_id = item.get("id")
+            name = item.get("name", "unnamed-package")
+            type_name = item.get("package_type", pkg_type)
+            version_count = item.get("version_count", 1)
+            created_str = item.get("created_at")
+            created_at = parse_ts(created_str) if created_str else None
+            updated_str = item.get("updated_at")
+            updated_at = parse_ts(updated_str) if updated_str else None
+            repo_dict = item.get("repository") or {}
+            repo_name = repo_dict.get("name") if isinstance(repo_dict, dict) else None
+
+            size_bytes = 0
+            if name.lower() in gql_info:
+                gql_bytes, gql_repo = gql_info[name.lower()]
+                size_bytes = gql_bytes
+                if not repo_name and gql_repo:
+                    repo_name = gql_repo
+
+            if not repo_name and item.get("html_url"):
+                parts = item["html_url"].split("/")
+                if len(parts) >= 6 and parts[5] == "packages":
+                    repo_name = parts[4]
+
+            if pkg_id is not None:
+                seen_names.add(name.lower())
+                packages.append(
+                    PackageRecord(
+                        id=pkg_id,
+                        name=name,
+                        package_type=type_name,
+                        version_count=version_count,
+                        size_in_bytes=size_bytes,
+                        created_at=created_at,
+                        updated_at=updated_at,
+                        repo_name=repo_name,
+                    )
+                )
     return packages
 
 
@@ -219,6 +236,9 @@ def profile_single_repo(
         disk_size_kb=disk_size_kb,
     )
 
+    if is_empty_repo(repo_meta):
+        return profile
+
     profile.artifacts = collect_repo_artifacts(client, org, repo)
     profile.caches = collect_repo_caches(client, org, repo)
     return profile
@@ -235,13 +255,29 @@ def collect_finops_data(
     profiles: List[RepoStorageProfile] = []
     org_packages: Dict[str, List[PackageRecord]] = {}
 
-    # 1. Collect organization-level packages
-    for org in orgs:
-        org_packages[org] = collect_org_packages(client, org)
+    # 1. Collect organization-level packages concurrently across organizations
+    if orgs:
+        org_pkg_batches = map_concurrent(
+            orgs,
+            lambda o: (o, collect_org_packages(client, o)),
+            max_workers=min(8, len(orgs)),
+            max_cap=8,
+            thread_name_prefix="finops-org-pkgs",
+        )
+        for o, pkgs in org_pkg_batches:
+            org_packages[o] = pkgs
+
+    # Index packages by (org.lower(), repo.lower()) for O(1) lookup per repo
+    pkg_index: Dict[Tuple[str, str], List[PackageRecord]] = {}
+    for o, pkgs in org_packages.items():
+        o_key = o.lower()
+        for pkg in pkgs:
+            if pkg.repo_name:
+                pkg_index.setdefault((o_key, pkg.repo_name.lower()), []).append(pkg)
 
     # 2. Collect repository storage and artifact profiles in parallel
     if targets:
-        workers = min(cfg.max_workers, len(targets))
+        workers = resolve_worker_count(cfg.max_workers, len(targets), max_cap=32)
         executor = ThreadPoolExecutor(max_workers=workers)
         try:
             future_to_target = {}
@@ -254,9 +290,7 @@ def collect_finops_data(
                 org, repo = future_to_target[fut]
                 try:
                     profile = fut.result()
-                    # Associate repo packages if matched
-                    matching_pkgs = [p for p in org_packages.get(org, []) if p.repo_name and p.repo_name.lower() == repo.lower()]
-                    profile.packages.extend(matching_pkgs)
+                    profile.packages.extend(pkg_index.get((org.lower(), repo.lower()), ()))
                     profiles.append(profile)
                 except Exception as err:
                     logger.warning("Error profiling repository %s/%s: %s", org, repo, err)
@@ -284,11 +318,10 @@ def build_finops_rows(
     cache_package_rows: List[list] = []
     org_rows: List[list] = []
 
-    # Map orgs to profiles
-    org_profiles: Dict[str, List[RepoStorageProfile]] = {org: [] for org in orgs}
-    for p in profiles:
-        org_profiles.setdefault(p.org, []).append(p)
+    ai_items: List[Tuple[int, RepoStorageProfile, int]] = []
+    rec_by_idx: Dict[int, str] = {}
 
+    for idx, p in enumerate(profiles):
         stale_cache_count = sum(1 for c in p.caches if c.is_stale)
         is_baseline_optimized = (
             p.optimization_status == "Optimized"
@@ -297,18 +330,34 @@ def build_finops_rows(
             and p.total_storage_mb <= 2000
         )
         if is_baseline_optimized:
-            rec = "-"
+            rec_by_idx[idx] = "-"
+        elif ai_engine is not None:
+            ai_items.append((idx, p, stale_cache_count))
         else:
-            rec = p.recommendation
-            if ai_engine is not None:
-                rec = ai_engine.generate_finops_advisory(
-                    repo=f"{p.org}/{p.repo}",
-                    disk_size_mb=p.disk_size_mb,
-                    artifact_mb=p.active_artifact_mb,
-                    default_90d_count=p.default_90_day_count,
-                    stale_cache_count=stale_cache_count,
-                    optimization_status=p.optimization_status,
-                )
+            rec_by_idx[idx] = p.recommendation
+
+    if ai_items and ai_engine is not None:
+        ai_recs = run_concurrent_ai(
+            ai_items,
+            lambda item: ai_engine.generate_finops_advisory(
+                repo=f"{item[1].org}/{item[1].repo}",
+                disk_size_mb=item[1].disk_size_mb,
+                artifact_mb=item[1].active_artifact_mb,
+                default_90d_count=item[1].default_90_day_count,
+                stale_cache_count=item[2],
+                optimization_status=item[1].optimization_status,
+            ),
+            ai_engine=ai_engine,
+            max_workers=8,
+        )
+        for (idx, _, _), rec_val in zip(ai_items, ai_recs):
+            rec_by_idx[idx] = rec_val
+
+    # Map orgs to profiles
+    org_profiles: Dict[str, List[RepoStorageProfile]] = {org: [] for org in orgs}
+    for idx, p in enumerate(profiles):
+        org_profiles.setdefault(p.org, []).append(p)
+        rec = rec_by_idx.get(idx, p.recommendation)
 
         # Repo row
         repo_rows.append([

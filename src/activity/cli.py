@@ -125,8 +125,8 @@ def run_activity_cli(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--max-workers",
         type=int,
-        default=6,
-        help="Concurrent repository worker threads (default: 6).",
+        default=0,
+        help="Concurrent repository worker threads (default: 0 = auto-tune up to 32).",
     )
     parser.add_argument(
         "--no-ai",
@@ -228,7 +228,9 @@ def run_activity_cli(argv: Optional[List[str]] = None) -> int:
 
     reports: Dict[Tuple[str, str], RepositoryReport] = {}
 
-    pool = ThreadPoolExecutor(max_workers=cfg.max_workers, thread_name_prefix="activity-worker")
+    from ..common.concurrency import resolve_worker_count
+    worker_count = resolve_worker_count(cfg.max_workers, len(targets), max_cap=32) if targets else 1
+    pool = ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="activity-worker")
     try:
         futures = {
             pool.submit(

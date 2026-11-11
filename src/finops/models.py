@@ -228,7 +228,7 @@ class RepoStorageProfile:
 class FinOpsConfig:
     """Runtime configuration for FinOps storage and artifact profiler."""
 
-    max_workers: int = 6
+    max_workers: int = 0
     timeout_seconds: int = 30
     max_retries: int = 5
     include_archived: bool = False

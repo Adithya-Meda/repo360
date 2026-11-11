@@ -18,7 +18,7 @@ import os
 import sys
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .ai import AIEngine
 from .auth.github_app_auth import GitHubAppAuth
@@ -31,6 +31,7 @@ from .checks import (
 )
 from .collector.client import Repo360Client
 from .collector.repo_inspector import RepoInspector
+from .common.concurrency import map_concurrent, resolve_worker_count
 from .reporters.excel_reporter import ExcelReporter
 from .validator import ConfigValidator, RepoTarget
 
@@ -277,41 +278,44 @@ def run_audit(
     enabled_checks = advisory_config.get("enabled_checks", {})
     thresholds = advisory_config.get("policy_thresholds", {})
 
-    # 1. Evaluate Organization-Level Checks (once per unique org)
+    # 1. Evaluate Organization-Level Checks (concurrently across orgs when > 1)
     unique_orgs = sorted(set(orgs or []) | {target.org_name for target in targets})
-    for org in unique_orgs:
-        D = "\033[2m"
-        X = "\033[0m"
-        logger.info(f"{D}{'-' * 74}{X}")
-        logger.info("\033[1;96mAuditing Organization:\033[0m \033[1;97m%s\033[0m (Organization-Wide Governance)", org)
-        logger.info(f"{D}{'-' * 74}{X}")
+
+    def _audit_single_org(org: str) -> Tuple[str, List[CheckResult]]:
+        org_res: List[CheckResult] = []
         for check_cls in ALL_ORG_CHECKS:
             check_instance = check_cls()
             if check_instance.is_enabled(enabled_checks):
                 try:
                     res = check_instance.evaluate(inspector, org, thresholds)
-                    results.append(res)
-                    _log_finding(res)
+                    org_res.append(res)
                 except Exception as err:
                     logger.warning("Check %s failed on org %s: %s", check_instance.check_id, org, err)
+        return org, org_res
+
+    org_outcomes = map_concurrent(
+        unique_orgs,
+        _audit_single_org,
+        max_workers=min(8, len(unique_orgs)) if unique_orgs else 1,
+        max_cap=8,
+        thread_name_prefix="audit-org",
+    )
+    D = "\033[2m"
+    X = "\033[0m"
+    for org, org_res in org_outcomes:
+        logger.info(f"{D}{'-' * 74}{X}")
+        logger.info("\033[1;96mAuditing Organization:\033[0m \033[1;97m%s\033[0m (Organization-Wide Governance)", org)
+        logger.info(f"{D}{'-' * 74}{X}")
+        for res in org_res:
+            results.append(res)
+            _log_finding(res)
 
     if not targets:
         return results
 
     # 2. Evaluate Repository & Contributor Checks concurrently
     total_repos = len(targets)
-    if max_workers and max_workers > 0:
-        pool_workers = min(max_workers, total_repos)
-    else:
-        # Scale concurrency based on repository volume for I/O-bound HTTP workload
-        cpu_mult = (os.cpu_count() or 4) * 4
-        if total_repos >= 500:
-            default_limit = 32
-        elif total_repos >= 100:
-            default_limit = 24
-        else:
-            default_limit = 16
-        pool_workers = min(default_limit, max(4, cpu_mult), total_repos)
+    pool_workers = resolve_worker_count(max_workers, total_repos, max_cap=32)
 
     repo_results_by_idx: Dict[int, List[CheckResult]] = {}
     completed_lock = threading.Lock()
@@ -322,7 +326,7 @@ def run_audit(
     ai_futures: List[concurrent.futures.Future] = []
     ai_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
     if ai_engine and ai_engine.is_available() and not ai_engine.is_circuit_active():
-        ai_pool_size = min(8, max(2, (os.cpu_count() or 4)))
+        ai_pool_size = min(10, max(4, (os.cpu_count() or 4)))
         ai_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=ai_pool_size, thread_name_prefix="ai-enricher"
         )
@@ -338,6 +342,13 @@ def run_audit(
         try:
             # Prefetch entire repository file tree in 1 API call to eliminate N+1 file existence checks
             inspector.prefetch_repo_tree(target.org_name, target.repo_name, target.default_branch)
+            if isinstance(inspector, RepoInspector) and not stop_event.is_set():
+                inspector.prefetch_repo_audit_context(
+                    target.org_name,
+                    target.repo_name,
+                    target.default_branch,
+                    enabled_checks=enabled_checks,
+                )
         except Exception as err:
             logger.debug("Tree prefetch skipped on %s/%s: %s", target.org_name, target.repo_name, err)
 
@@ -974,21 +985,29 @@ def _run_cli() -> int:
                     "Discovering accessible repositories across %d GitHub organization(s)...",
                     len(active_installations),
                 )
-                for inst in active_installations:
+                valid_installs = [inst for inst in active_installations if inst.get("id")]
+
+                def _discover_single_install(inst: Dict[str, Any]) -> Tuple[str, str, List[Dict[str, Any]]]:
                     org_login = inst.get("account", {}).get("login", "")
                     inst_id = inst.get("id")
-                    if not inst_id:
-                        continue
-
                     repo_sel = inst.get("repository_selection", "all")
+                    discovered = inspector.list_installation_repositories(installation_id=inst_id)
+                    return org_login, repo_sel, discovered
+
+                install_batches = map_concurrent(
+                    valid_installs,
+                    _discover_single_install,
+                    max_workers=min(8, len(valid_installs)) if valid_installs else 1,
+                    max_cap=8,
+                    thread_name_prefix="audit-discovery",
+                )
+                for org_login, repo_sel, discovered in install_batches:
                     if repo_sel != "all":
                         logger.warning(
                             "GitHub App access on '%s' is set to 'selected' repositories. "
                             "To automatically cover all current and future repositories, change to 'All repositories' in Org Settings.",
                             org_login,
                         )
-
-                    discovered = inspector.list_installation_repositories(installation_id=inst_id)
                     for r in discovered:
                         owner = r.get("owner", {}).get("login", "") or org_login
                         name = r.get("name", "")

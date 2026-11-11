@@ -12,6 +12,7 @@ import requests
 
 from ..activity.models import IST, fmt_timestamp, parse_ts
 from ..common.client import ResilientGitHubClient
+from ..common.concurrency import is_dormant_repo, map_concurrent, resolve_worker_count, run_concurrent_ai
 from .models import (
     DORAConfig,
     DeploymentRecord,
@@ -28,6 +29,96 @@ logger = logging.getLogger("repo360.dora")
 DEPLOY_KEYWORDS = ("deploy", "release", "prod", "publish", "cd", "delivery")
 
 
+def _map_deployment_state(raw_state: Optional[str]) -> str:
+    state = (raw_state or "").lower()
+    if state in ("failure", "error"):
+        return "FAILURE"
+    if state in ("in_progress", "queued", "pending", "waiting"):
+        return "IN_PROGRESS"
+    return "SUCCESS"
+
+
+def _collect_repo_deployments_graphql(
+    client: ResilientGitHubClient,
+    org: str,
+    repo: str,
+    since: datetime,
+    end: datetime,
+) -> Optional[List[DeploymentRecord]]:
+    """Fetch deployments with inline latestStatus via GraphQL to avoid N+1 REST calls."""
+    query = """
+    query($owner: String!, $name: String!, $cursor: String) {
+      repository(owner: $owner, name: $name) {
+        deployments(first: 100, after: $cursor, orderBy: {field: CREATED_AT, direction: DESC}) {
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+          nodes {
+            databaseId
+            id
+            createdAt
+            environment
+            ref {
+              name
+            }
+            latestStatus {
+              state
+            }
+          }
+        }
+      }
+    }
+    """
+    deployments: List[DeploymentRecord] = []
+    cursor: Optional[str] = None
+    while True:
+        data = client.graphql(org, query, {"owner": org, "name": repo, "cursor": cursor})
+        if not isinstance(data, dict):
+            return None
+        repo_node = (data.get("data") or {}).get("repository")
+        if not isinstance(repo_node, dict):
+            return None
+
+        conn = repo_node.get("deployments") or {}
+        nodes = conn.get("nodes") or []
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            created_str = node.get("createdAt")
+            if not created_str:
+                continue
+            created_at = parse_ts(created_str)
+            if created_at < since:
+                return deployments
+            if created_at > end:
+                continue
+
+            dep_id = str(node.get("databaseId") or node.get("id") or "")
+            env_name = node.get("environment") or "production"
+            ref_name = (node.get("ref") or {}).get("name") or "main"
+            latest_status = (node.get("latestStatus") or {}).get("state")
+
+            deployments.append(
+                DeploymentRecord(
+                    event_type="Deployment",
+                    event_id=dep_id,
+                    name=f"Deploy to {env_name}",
+                    environment=env_name,
+                    status=_map_deployment_state(latest_status),
+                    ref=ref_name,
+                    created_at=created_at,
+                    lead_time_hours=None,
+                )
+            )
+
+        page_info = conn.get("pageInfo") or {}
+        if not page_info.get("hasNextPage"):
+            break
+        cursor = page_info.get("endCursor")
+    return deployments
+
+
 def collect_repo_deployments(
     client: ResilientGitHubClient,
     org: str,
@@ -36,7 +127,14 @@ def collect_repo_deployments(
     end: datetime,
 ) -> List[DeploymentRecord]:
     """Retrieve GitHub Deployment API records for a repository within lookback window."""
-    deployments: List[DeploymentRecord] = []
+    try:
+        gql_deployments = _collect_repo_deployments_graphql(client, org, repo, since, end)
+        if gql_deployments is not None:
+            return gql_deployments
+    except Exception as err:
+        logger.debug("GraphQL deployment query unavailable for %s/%s (%s); falling back to REST", org, repo, err)
+
+    pending_deps: List[Tuple[str, str, str, datetime]] = []
     try:
         endpoint = f"/repos/{org}/{repo}/deployments"
         for dep in client.paginate(org, endpoint):
@@ -49,43 +147,48 @@ def collect_repo_deployments(
             if created_at > end:
                 continue
 
-            dep_id = str(dep.get("id"))
-            env_name = dep.get("environment", "production")
-            ref_name = dep.get("ref", "main")
-
-            # Query deployment status
-            status_state = "SUCCESS"
-            try:
-                statuses = client.get(org, f"/repos/{org}/{repo}/deployments/{dep_id}/statuses")
-                if statuses and isinstance(statuses, list):
-                    latest_state = (statuses[0].get("state") or "").lower()
-                    if latest_state in ("failure", "error"):
-                        status_state = "FAILURE"
-                    elif latest_state in ("in_progress", "queued", "pending"):
-                        status_state = "IN_PROGRESS"
-                    else:
-                        status_state = "SUCCESS"
-            except Exception:
-                pass
-
-            deployments.append(
-                DeploymentRecord(
-                    event_type="Deployment",
-                    event_id=dep_id,
-                    name=f"Deploy to {env_name}",
-                    environment=env_name,
-                    status=status_state,
-                    ref=ref_name,
-                    created_at=created_at,
-                    lead_time_hours=None,
-                )
-            )
+            pending_deps.append((
+                str(dep.get("id")),
+                dep.get("environment", "production"),
+                dep.get("ref", "main"),
+                created_at,
+            ))
     except requests.HTTPError as err:
         if err.response.status_code not in (404, 403):
             logger.debug("Deployment API query failed for %s/%s: %s", org, repo, err)
     except Exception as err:
         logger.debug("Error retrieving deployments for %s/%s: %s", org, repo, err)
-    return deployments
+
+    if not pending_deps:
+        return []
+
+    def _build_record(item: Tuple[str, str, str, datetime]) -> DeploymentRecord:
+        dep_id, env_name, ref_name, created_at = item
+        status_state = "SUCCESS"
+        try:
+            statuses = client.get(org, f"/repos/{org}/{repo}/deployments/{dep_id}/statuses")
+            if statuses and isinstance(statuses, list):
+                status_state = _map_deployment_state(statuses[0].get("state"))
+        except Exception:
+            pass
+        return DeploymentRecord(
+            event_type="Deployment",
+            event_id=dep_id,
+            name=f"Deploy to {env_name}",
+            environment=env_name,
+            status=status_state,
+            ref=ref_name,
+            created_at=created_at,
+            lead_time_hours=None,
+        )
+
+    return map_concurrent(
+        pending_deps,
+        _build_record,
+        max_workers=min(8, len(pending_deps)),
+        max_cap=8,
+        thread_name_prefix="dora-dep-status",
+    )
 
 
 def collect_repo_releases(
@@ -244,6 +347,9 @@ def profile_repo_dora(
     """Collect deployments, releases, workflows, and recovery flow for a repository."""
     metrics = RepoDORAMetrics(org=org, repo=repo)
 
+    if is_dormant_repo(meta, since, parse_ts):
+        return metrics
+
     deps = collect_repo_deployments(client, org, repo, since, end)
     rels = collect_repo_releases(client, org, repo, since, end)
     wf_runs = collect_deploy_workflow_runs(client, org, repo, since, end)
@@ -277,7 +383,7 @@ def collect_dora_data(
     results: List[RepoDORAMetrics] = []
 
     if targets:
-        workers = min(cfg.max_workers, len(targets))
+        workers = resolve_worker_count(cfg.max_workers, len(targets), max_cap=32)
         executor = ThreadPoolExecutor(max_workers=workers)
         try:
             future_to_target = {}
@@ -319,29 +425,49 @@ def build_dora_rows(
 
     org_map: Dict[str, List[RepoDORAMetrics]] = {org: [] for org in orgs}
 
-    for m in metrics_list:
-        org_map.setdefault(m.org, []).append(m)
+    ai_items: List[Tuple[int, RepoDORAMetrics, float, str, str, str, str, str]] = []
+    tier_cache: Dict[int, Tuple[str, str, str, str, str, float]] = {}
 
+    for idx, m in enumerate(metrics_list):
         overall, df_tier, lttc_tier, cfr_tier, mttr_tier = m.get_tiers(window_days)
         df_weekly = m.deployment_frequency_per_week(window_days)
+        tier_cache[idx] = (overall, df_tier, lttc_tier, cfr_tier, mttr_tier, df_weekly)
+        if m.total_deploys > 0 and ai_engine is not None:
+            ai_items.append((idx, m, df_weekly, df_tier, lttc_tier, cfr_tier, mttr_tier, overall))
+
+    ai_advisories: Dict[int, str] = {}
+    if ai_items and ai_engine is not None:
+        recs = run_concurrent_ai(
+            ai_items,
+            lambda item: ai_engine.diagnose_dora_flow(
+                repo=f"{item[1].org}/{item[1].repo}",
+                df_weekly=item[2],
+                df_tier=item[3],
+                lead_time_hours=item[1].median_lead_time_hours,
+                lttc_tier=item[4],
+                cfr_pct=item[1].change_failure_rate_pct,
+                cfr_tier=item[5],
+                mttr_hours=item[1].median_mttr_hours,
+                mttr_tier=item[6],
+                composite_tier=item[7],
+            ),
+            ai_engine=ai_engine,
+            max_workers=8,
+        )
+        for item, adv in zip(ai_items, recs):
+            ai_advisories[item[0]] = adv
+
+    for idx, m in enumerate(metrics_list):
+        org_map.setdefault(m.org, []).append(m)
+
+        overall, df_tier, lttc_tier, cfr_tier, mttr_tier, df_weekly = tier_cache[idx]
         lead_time_val = m.median_lead_time_hours if m.median_lead_time_hours is not None else "N/A"
         mttr_val = m.median_mttr_hours if m.median_mttr_hours is not None else "N/A"
 
         if m.total_deploys == 0:
             flow_advisory = "-"
-        elif ai_engine is not None:
-            flow_advisory = ai_engine.diagnose_dora_flow(
-                repo=f"{m.org}/{m.repo}",
-                df_weekly=df_weekly,
-                df_tier=df_tier,
-                lead_time_hours=m.median_lead_time_hours,
-                lttc_tier=lttc_tier,
-                cfr_pct=m.change_failure_rate_pct,
-                cfr_tier=cfr_tier,
-                mttr_hours=m.median_mttr_hours,
-                mttr_tier=mttr_tier,
-                composite_tier=overall,
-            )
+        elif idx in ai_advisories:
+            flow_advisory = ai_advisories[idx]
         else:
             flow_advisory = "Deployment cadence is within standard benchmarks. Maintain branch protection and CI automation."
             if df_tier in ("Low", "Medium") and cfr_tier in ("Elite", "High"):
