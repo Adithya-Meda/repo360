@@ -122,3 +122,75 @@ def test_setup_app_main_keyboard_interrupt() -> None:
         with patch("src.setup_app.run_wizard", side_effect=KeyboardInterrupt):
             code = setup_main()
             assert code == 130
+
+
+def test_get_manifest_custom_and_invalid_redirect_url() -> None:
+    """Verify custom loopback callback URLs work and query params in redirect_url raise ValueError."""
+    from src.setup_app import _normalize_org_name
+
+    manifest = get_manifest("https://github.com", redirect_url="http://127.0.0.1:54321/callback")
+    assert manifest["redirect_url"] == "http://127.0.0.1:54321/callback"
+
+    with pytest.raises(ValueError, match="query parameters"):
+        get_manifest("https://github.com", redirect_url="http://127.0.0.1:8989/callback?state=bad")
+
+    with pytest.raises(ValueError, match="Invalid GitHub App redirect_url"):
+        get_manifest("https://github.com", redirect_url="not-a-url")
+
+    assert _normalize_org_name("  @fintech-core/ ") == "fintech-core"
+    assert _normalize_org_name("https://github.com/organizations/my-org/") == "my-org"
+    assert _normalize_org_name("https://github.com/my-org/") == "my-org"
+
+
+def test_manifest_callback_handler_dynamic_port_and_oauth_error() -> None:
+    """Verify GET / uses dynamic callback_url and /callback renders escaped OAuth error pages."""
+    import html
+    import json
+    import re
+
+    handler = ManifestCallbackHandler.__new__(ManifestCallbackHandler)
+    handler.path = "/?s=abcd1234"
+    handler.target_org = "test-org"
+    handler.github_domain = "https://github.com"
+    handler.api_domain = "https://api.github.com"
+    handler.callback_url = "http://127.0.0.1:54321/callback"
+    handler.send_response = MagicMock()
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock()
+    handler.wfile = MagicMock()
+    ManifestCallbackHandler.session_nonce = "nonce_dynamic"
+
+    handler.do_GET()
+    written_html = handler.wfile.write.call_args[0][0].decode("utf-8")
+    match = re.search(r"name=\"manifest\"\s+value='([^']+)'", written_html)
+    assert match is not None
+    payload = json.loads(html.unescape(match.group(1)))
+    assert payload["redirect_url"] == "http://127.0.0.1:54321/callback"
+
+    handler.path = "/callback?error=access_denied&error_description=User+%3Ccancelled%3E"
+    handler.wfile.reset_mock()
+    handler.do_GET()
+    handler.send_response.assert_called_with(400)
+    err_html = handler.wfile.write.call_args[0][0].decode("utf-8")
+    assert "access_denied: User &lt;cancelled&gt;" in err_html
+
+
+def test_bind_callback_server_fallback_on_occupied_port() -> None:
+    """Verify _bind_callback_server falls back to an ephemeral port when preferred port is occupied."""
+    import socket
+    from src.setup_app import _bind_callback_server
+
+    occupant = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    occupant.bind(("127.0.0.1", 0))
+    occupant.listen(1)
+    occupied_port = occupant.getsockname()[1]
+
+    fallback_server = None
+    try:
+        fallback_server, bound_port = _bind_callback_server("127.0.0.1", occupied_port)
+        assert bound_port != occupied_port
+        assert bound_port > 0
+    finally:
+        if fallback_server is not None:
+            fallback_server.server_close()
+        occupant.close()

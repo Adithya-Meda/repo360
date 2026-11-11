@@ -294,3 +294,120 @@ def test_check_installation_against_remote_match_and_mismatch(capsys) -> None:
         out_warn = capsys.readouterr().out
         assert "OUTDATED" in out_warn
         assert check_installation_against_remote(strict=True) == 1
+
+
+def test_compare_installed_tree_and_stale_local_snapshot(tmp_path) -> None:
+    """Verify stale non-editable local installs are flagged instead of reporting repo HEAD."""
+    import json
+    from src.upgrade import _compare_installed_tree_to_source, get_installation_details
+
+    installed_pkg = tmp_path / "site-packages" / "src"
+    source_repo = tmp_path / "checkout"
+    source_pkg = source_repo / "src"
+    installed_pkg.mkdir(parents=True)
+    source_pkg.mkdir(parents=True)
+
+    (installed_pkg / "upgrade.py").write_text("# v1\n", encoding="utf-8")
+    (source_pkg / "upgrade.py").write_text("# v1\n", encoding="utf-8")
+    assert _compare_installed_tree_to_source(installed_pkg, source_pkg) == (True, [])
+
+    (source_pkg / "setup_app.py").write_text("# new setup\n", encoding="utf-8")
+    (installed_pkg / "setup_app.py").write_text("# old setup\n", encoding="utf-8")
+    in_sync, mismatched = _compare_installed_tree_to_source(installed_pkg, source_pkg)
+    assert in_sync is False
+    assert mismatched == ["setup_app.py"]
+
+    mock_dist = MagicMock()
+    mock_dist.version = "1.0.0"
+    mock_dist.read_text.side_effect = lambda name: {
+        "INSTALLER": "uv",
+        "direct_url.json": json.dumps({"url": source_repo.as_uri(), "dir_info": {}}),
+    }.get(name)
+
+    fake_git = {
+        "commit": "79098e85192fdb486d4dc6c6c55e7540f374612a",
+        "commit_date": "2026-11-11T13:05:22+05:30",
+        "commit_subject": "feat: fixed exit command time execution",
+        "branch": "main",
+        "is_dirty": False,
+    }
+    with patch("src.upgrade.Path.resolve", side_effect=[installed_pkg, installed_pkg, source_pkg]), \
+         patch("importlib.metadata.distribution", return_value=mock_dist), \
+         patch("src.upgrade._get_git_commit_details", return_value=fake_git):
+        details_stale = get_installation_details()
+        assert details_stale["is_stale_snapshot"] is True
+        assert details_stale["commit"] is None
+        assert details_stale["commit_short"] == "stale"
+        assert details_stale["local_repo_head"] == fake_git["commit"]
+        assert "STALE local snapshot" in details_stale["commit_source"]
+
+
+def test_run_version_cli_shows_commit_details_and_offline_mode(capsys) -> None:
+    """Verify bare 'repo360 version' prints commit message/date & remote sync and respects --offline."""
+    from src.upgrade import check_installation_against_remote, run_version_cli
+
+    details_vcs = {
+        "version": "v1.0.0",
+        "commit": "79098e85192fdb486d4dc6c6c55e7540f374612a",
+        "commit_short": "79098e8",
+        "commit_source": "direct_url.json (vcs_info)",
+        "commit_subject": "",
+        "commit_date": "",
+        "branch": "main",
+        "is_dirty": False,
+        "is_stale_snapshot": False,
+        "installer": "uv",
+        "source_url": "https://github.com/Adithya-Meda/repo360.git",
+        "package_path": "C:/env/repo360",
+    }
+    summary = {
+        "sha": "79098e85192fdb486d4dc6c6c55e7540f374612a",
+        "date": "2026-11-11T07:35:22Z",
+        "subject": "feat: fixed exit command time execution",
+    }
+    with patch("src.upgrade.get_installation_details", return_value=details_vcs), \
+         patch("src.upgrade._fetch_commit_summary", return_value=summary), \
+         patch("src.upgrade.get_remote_commit_sha", return_value="79098e85192fdb486d4dc6c6c55e7540f374612a"):
+        rc = run_version_cli([])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "79098e85192fdb486d4dc6c6c55e7540f374612a" in out
+        assert "feat: fixed exit command time execution" in out
+        assert "2026-11-11T07:35:22Z" in out
+        assert "UP-TO-DATE" in out
+
+    with patch("src.upgrade.get_installation_details", return_value={**details_vcs, "commit_subject": "local msg"}), \
+         patch("src.upgrade._fetch_commit_summary") as mock_fetch:
+        rc_off = run_version_cli(["--offline"])
+        out_off = capsys.readouterr().out
+        assert rc_off == 0
+        mock_fetch.assert_not_called()
+        assert "local msg" in out_off
+        assert "--offline" in out_off
+
+    stale_details = {
+        **details_vcs,
+        "commit": None,
+        "commit_short": "stale",
+        "commit_source": "STALE local snapshot (1 file(s) out of sync)",
+        "is_stale_snapshot": True,
+        "local_repo_head": "79098e85192fdb486d4dc6c6c55e7540f374612a",
+    }
+    with patch("src.upgrade.get_installation_details", return_value=stale_details), \
+         patch("src.upgrade._fetch_commit_summary", return_value=summary), \
+         patch("src.upgrade.get_remote_commit_sha", return_value="79098e85192fdb486d4dc6c6c55e7540f374612a"):
+        assert check_installation_against_remote(strict=True) == 1
+        assert "[STALE]" in capsys.readouterr().out
+
+
+def test_run_upgrade_cli_forces_reinstall_when_stale_or_outdated() -> None:
+    """Verify run_upgrade_cli passes force=True when local commit is None/stale or outdated."""
+    fresh_result = UpgradeResult(0, already_up_to_date=False, version="v1.0.0", commit="79098e85")
+    with patch("src.upgrade.get_local_version_info", return_value=("v1.0.0", None)), \
+         patch("src.upgrade.get_upgrade_commands", return_value=[("uv", ["uv", "pip", "install", "--reinstall-package", "repo360"])]) as mock_cmds, \
+         patch("src.upgrade.execute_upgrade", return_value=fresh_result), \
+         patch("src.upgrade.get_remote_commit_sha", return_value="79098e85"):
+        rc = run_upgrade_cli([])
+        assert rc == 0
+        mock_cmds.assert_called_once()
+        assert mock_cmds.call_args.kwargs.get("force") is True

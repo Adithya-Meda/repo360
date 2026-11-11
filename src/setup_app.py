@@ -20,7 +20,9 @@ import json
 import logging
 import os
 import secrets
+import socket
 import socketserver
+import sys
 import time
 import urllib.parse
 import webbrowser
@@ -57,16 +59,51 @@ def _normalize_github_domain(domain: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else cleaned
 
 
+def _normalize_org_name(org_name: str) -> str:
+    """Normalize a GitHub organization slug, handling stray quotes, @ prefixes, or pasted URLs."""
+    cleaned = (org_name or "").strip().strip("\"'").strip("/")
+    if cleaned.startswith("@"):
+        cleaned = cleaned[1:]
+    if "://" in cleaned or cleaned.lower().startswith("github.com/"):
+        candidate = cleaned if "://" in cleaned else f"https://{cleaned}"
+        parsed = urllib.parse.urlparse(candidate)
+        segments = [seg for seg in parsed.path.split("/") if seg]
+        if segments:
+            if segments[0].lower() == "organizations" and len(segments) >= 2:
+                return segments[1]
+            return segments[0]
+    return cleaned
+
+
+def _validate_callback_url(callback_url: str) -> str:
+    """Ensure the manifest redirect_url is a clean HTTP(S) URL without query params or fragments."""
+    cleaned = (callback_url or "").strip()
+    parsed = urllib.parse.urlparse(cleaned)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError(f"Invalid GitHub App redirect_url: {callback_url!r}")
+    if parsed.query or parsed.fragment:
+        raise ValueError(
+            "GitHub App manifest redirect_url must not contain query parameters or fragments; "
+            "pass CSRF state on the form action URL instead."
+        )
+    return cleaned
+
+
 def _build_default_app_name(org_name: str) -> str:
     """Build a unique GitHub App name respecting GitHub's 34-character limit."""
-    clean_org = org_name.strip() if org_name else ""
+    clean_org = _normalize_org_name(org_name)
     if not clean_org:
         return "Repo360"
     candidate = f"Repo360-{clean_org}"
     return candidate[:34].rstrip("-") or "Repo360"
 
 
-def get_manifest(github_domain: str, app_name: str = "Repo360", state_nonce: str = "") -> dict:
+def get_manifest(
+    github_domain: str,
+    app_name: str = "Repo360",
+    state_nonce: str = "",
+    redirect_url: str = "",
+) -> dict:
     """Generate the GitHub App manifest payload.
 
     GitHub's manifest validator requires `redirect_url` to be a clean callback URL
@@ -74,6 +111,7 @@ def get_manifest(github_domain: str, app_name: str = "Repo360", state_nonce: str
     """
     _ = state_nonce  # Retained for backwards compatibility with callers; state is sent on form action.
     clean_domain = _normalize_github_domain(github_domain)
+    clean_redirect = _validate_callback_url(redirect_url or CALLBACK_URL)
     return {
         "name": app_name or "Repo360",
         "url": clean_domain,
@@ -82,7 +120,7 @@ def get_manifest(github_domain: str, app_name: str = "Repo360", state_nonce: str
             "url": clean_domain,
             "active": False,
         },
-        "redirect_url": CALLBACK_URL,
+        "redirect_url": clean_redirect,
         "default_permissions": {
             "actions": "read",
             "administration": "read",
@@ -100,6 +138,60 @@ def get_manifest(github_domain: str, app_name: str = "Repo360", state_nonce: str
     }
 
 
+def _render_error_page(title: str, detail: str, hint: str) -> str:
+    """Render an escaped dark-themed error response page for local wizard failures."""
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>{html.escape(title)} - Repo360</title>
+  <style>
+    body {{
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      background-color: #0d1117;
+      color: #c9d1d9;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 24px;
+    }}
+    .card {{
+      background-color: #161b22;
+      border: 1px solid #f85149;
+      border-radius: 12px;
+      max-width: 520px;
+      width: 100%;
+      padding: 40px 32px;
+      text-align: center;
+    }}
+    h1 {{ color: #f85149; font-size: 24px; margin-bottom: 12px; }}
+    pre {{
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      padding: 12px;
+      font-size: 13px;
+      color: #ff7b72;
+      text-align: left;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      margin: 16px 0;
+    }}
+    p {{ color: #8b949e; font-size: 14px; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>{html.escape(title)}</h1>
+    <pre>{html.escape(detail)}</pre>
+    <p>{html.escape(hint)}</p>
+  </div>
+</body>
+</html>"""
+
+
 class ManifestCallbackHandler(http.server.BaseHTTPRequestHandler):
     """HTTP handler to serve the initial auto-redirect and receive the GitHub callback."""
 
@@ -107,6 +199,7 @@ class ManifestCallbackHandler(http.server.BaseHTTPRequestHandler):
     app_name: str = ""
     github_domain: str = "https://github.com"
     api_domain: str = "https://api.github.com"
+    callback_url: str = CALLBACK_URL
     conversion_result: dict | None = None
     session_nonce: str = secrets.token_urlsafe(32)
 
@@ -118,15 +211,24 @@ class ManifestCallbackHandler(http.server.BaseHTTPRequestHandler):
         """Handle initial browser landing and GitHub callback redirect."""
         parsed_url = urllib.parse.urlparse(self.path)
 
-        if parsed_url.path == "/":
+        if parsed_url.path in ("", "/"):
             clean_domain = _normalize_github_domain(self.github_domain)
             # Auto-assign unique name using target_org to avoid global GitHub App name collisions
-            clean_org = self.target_org.strip() if self.target_org else ""
+            clean_org = _normalize_org_name(self.target_org)
             default_name = _build_default_app_name(clean_org)
             active_name = self.app_name or default_name
-            manifest_payload = get_manifest(clean_domain, app_name=active_name)
+            active_callback = self.callback_url or CALLBACK_URL
+            manifest_payload = get_manifest(
+                clean_domain,
+                app_name=active_name,
+                redirect_url=active_callback,
+            )
             manifest_json = json.dumps(manifest_payload)
-            logger.debug("Serving manifest form action for org='%s' with redirect_url='%s'", clean_org, manifest_payload.get("redirect_url"))
+            logger.debug(
+                "Serving manifest form action for org='%s' with redirect_url='%s'",
+                clean_org,
+                manifest_payload.get("redirect_url"),
+            )
 
             encoded_org = urllib.parse.quote(clean_org, safe="") if clean_org else ""
             base_action = (
@@ -235,6 +337,7 @@ class ManifestCallbackHandler(http.server.BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
             self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             self.wfile.write(html_page.encode("utf-8"))
@@ -245,11 +348,24 @@ class ManifestCallbackHandler(http.server.BaseHTTPRequestHandler):
             query_params = urllib.parse.parse_qs(parsed_url.query)
             state = query_params.get("state", [""])[0]
             code = query_params.get("code", [""])[0]
+            oauth_error = query_params.get("error", [""])[0]
+            oauth_error_desc = query_params.get("error_description", [""])[0]
 
             if not code:
+                err_detail = (
+                    f"{oauth_error}: {oauth_error_desc}".strip(": ")
+                    if (oauth_error or oauth_error_desc)
+                    else "Missing authorization code in GitHub callback."
+                )
+                error_html = _render_error_page(
+                    "GitHub App Authorization Failed",
+                    err_detail,
+                    "Please return to your terminal and retry 'repo360 setup'.",
+                )
                 self.send_response(400)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.end_headers()
-                self.wfile.write(b"Error: Missing authorization code in callback.")
+                self.wfile.write(error_html.encode("utf-8"))
                 return
 
             if ManifestCallbackHandler.session_nonce and not secrets.compare_digest(state, ManifestCallbackHandler.session_nonce):
@@ -344,55 +460,11 @@ class ManifestCallbackHandler(http.server.BaseHTTPRequestHandler):
 
             except Exception as err:
                 logger.error("Failed to convert manifest code: %s", err)
-                error_html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Setup Error - Repo360</title>
-  <style>
-    body {{
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-      background-color: #0d1117;
-      color: #c9d1d9;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      min-height: 100vh;
-      margin: 0;
-      padding: 24px;
-    }}
-    .card {{
-      background-color: #161b22;
-      border: 1px solid #f85149;
-      border-radius: 12px;
-      max-width: 520px;
-      width: 100%;
-      padding: 40px 32px;
-      text-align: center;
-    }}
-    h1 {{ color: #f85149; font-size: 24px; margin-bottom: 12px; }}
-    pre {{
-      background: #0d1117;
-      border: 1px solid #30363d;
-      border-radius: 6px;
-      padding: 12px;
-      font-size: 13px;
-      color: #ff7b72;
-      text-align: left;
-      overflow-x: auto;
-      margin: 16px 0;
-    }}
-    p {{ color: #8b949e; font-size: 14px; }}
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h1>App Conversion Failed</h1>
-    <pre>{html.escape(str(err))}</pre>
-    <p>Please return to your terminal to inspect the error log or retry.</p>
-  </div>
-</body>
-</html>"""
+                error_html = _render_error_page(
+                    "App Conversion Failed",
+                    str(err),
+                    "Please return to your terminal to inspect the error log or retry.",
+                )
                 self.send_response(500)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.end_headers()
@@ -425,6 +497,37 @@ def resolve_api_base_url(domain: str) -> str:
         return f"{domain}/api/v3"
 
 
+class _LoopbackTCPServer(socketserver.TCPServer):
+    """Loopback TCP server using exclusive port binding on Windows to prevent port hijacking."""
+
+    allow_reuse_address = sys.platform != "win32"
+
+    def server_bind(self) -> None:
+        if sys.platform == "win32":
+            exclusive_opt = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+            if exclusive_opt is not None:
+                try:
+                    self.socket.setsockopt(socket.SOL_SOCKET, exclusive_opt, 1)
+                except OSError:
+                    pass
+        super().server_bind()
+
+
+def _bind_callback_server(
+    host: str = LOOPBACK_HOST,
+    preferred_port: int = PORT,
+) -> tuple[socketserver.TCPServer, int]:
+    """Bind local callback server on preferred_port, falling back to an ephemeral port if busy."""
+    try:
+        server = _LoopbackTCPServer((host, preferred_port), ManifestCallbackHandler)
+    except OSError:
+        if preferred_port == 0:
+            raise
+        server = _LoopbackTCPServer((host, 0), ManifestCallbackHandler)
+    server.timeout = 0.25
+    return server, int(server.server_address[1])
+
+
 def run_wizard(
     org_name: str,
     github_domain: str = "https://github.com",
@@ -432,38 +535,46 @@ def run_wizard(
     open_browser: bool = True,
 ) -> None:
     """Run the interactive setup wizard."""
+    clean_org = _normalize_org_name(org_name)
     github_domain = _normalize_github_domain(github_domain)
     api_domain = resolve_api_base_url(github_domain)
 
-    default_name = _build_default_app_name(org_name)
+    default_name = _build_default_app_name(clean_org)
     chosen_name = app_name or default_name
 
-    ManifestCallbackHandler.target_org = org_name
+    ManifestCallbackHandler.target_org = clean_org
     ManifestCallbackHandler.app_name = chosen_name
     ManifestCallbackHandler.github_domain = github_domain
     ManifestCallbackHandler.api_domain = api_domain
     ManifestCallbackHandler.conversion_result = None
     ManifestCallbackHandler.session_nonce = secrets.token_urlsafe(32)
 
+    server, bound_port = _bind_callback_server(LOOPBACK_HOST, PORT)
+    active_callback_url = f"http://{LOOPBACK_HOST}:{bound_port}/callback"
+    ManifestCallbackHandler.callback_url = active_callback_url
+    # Fail fast before opening browser if configuration would produce an invalid manifest URL.
+    get_manifest(github_domain, app_name=chosen_name, redirect_url=active_callback_url)
+    launch_url = f"http://{LOOPBACK_HOST}:{bound_port}/?s={ManifestCallbackHandler.session_nonce[:8]}"
+
     print("\n" + "=" * 65)
     print("  REPO360 - 1-CLICK GITHUB APP SETUP")
     print("=" * 65)
-    print(f"Target Organization: {org_name}")
+    print(f"Target Organization: {clean_org}")
     print(f"App Name:            {chosen_name}")
     print(f"GitHub Domain:       {github_domain}")
-    print(f"Callback Listener:   {CALLBACK_URL}")
+    print(f"Callback Listener:   {active_callback_url}")
+    print(f"Wizard Launch URL:   {launch_url}")
     print("-" * 65)
+    if bound_port != PORT:
+        print(f"[INFO] Port {PORT} was unavailable; using clean fallback port {bound_port}.")
     print("Starting local listener and opening your browser...")
-
-    socketserver.TCPServer.allow_reuse_address = True
-    server = socketserver.TCPServer((LOOPBACK_HOST, PORT), ManifestCallbackHandler)
-    server.timeout = 0.25
-    register_closable(server)
-    if open_browser:
-        webbrowser.open(f"http://{LOOPBACK_HOST}:{PORT}/")
+    print("(If an older http://localhost:8989 tab is open in your browser, close it.)")
 
     # Wait for the single callback request (short timeout + shutdown flag ensures prompt Ctrl+C)
+    register_closable(server)
     try:
+        if open_browser:
+            webbrowser.open(launch_url)
         while ManifestCallbackHandler.conversion_result is None and not is_shutting_down():
             server.handle_request()
         if is_shutting_down():
@@ -480,7 +591,7 @@ def run_wizard(
     app_id = result.get("id")
     app_slug = result.get("slug") or "repo360"
     pem_key = result.get("pem", "")
-    install_url = f"{github_domain}/organizations/{org_name}/settings/apps/{app_slug}/installations"
+    install_url = f"{github_domain}/organizations/{clean_org}/settings/apps/{app_slug}/installations"
 
     # 1. Automatically save private key to ~/.repo360/secrets/
     key_path = save_private_key(pem_key, app_slug=app_slug)
@@ -534,11 +645,11 @@ def run_wizard(
                 if installations:
                     matched = [
                         i for i in installations
-                        if i.get("account", {}).get("login", "").lower() == org_name.lower()
+                        if i.get("account", {}).get("login", "").lower() == clean_org.lower()
                     ]
                     selected = matched[0] if matched else installations[0]
                     installation_id = int(selected["id"])
-                    org_login = selected.get("account", {}).get("login", org_name)
+                    org_login = selected.get("account", {}).get("login", clean_org)
                     print(f"-> [SUCCESS] Auto-detected Installation ID: {installation_id} for '{org_login}'!")
                     break
                 if is_shutting_down():
@@ -677,9 +788,9 @@ def main() -> None:
     args = parser.parse_args()
 
     try:
-        org = args.org
+        org = _normalize_org_name(args.org)
         if not org:
-            org = input("Enter your target GitHub Organization name: ").strip()
+            org = _normalize_org_name(input("Enter your target GitHub Organization name: "))
 
         if not org:
             print("Error: Organization name is required.")
@@ -701,5 +812,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    import sys
     sys.exit(main())
