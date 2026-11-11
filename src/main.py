@@ -461,7 +461,8 @@ def run_audit(
                 executor.shutdown(wait=False, cancel_futures=True)
                 raise
             finally:
-                stop_event.set()
+                # Cancel remaining futures only on interrupt; normal completion must
+                # leave stop_event clear so Step 3 awaits background AI enrichment.
                 executor.shutdown(wait=False, cancel_futures=True)
         else:
             for idx, target in enumerate(targets, start=1):

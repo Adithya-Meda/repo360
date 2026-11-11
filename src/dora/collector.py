@@ -327,7 +327,9 @@ def build_dora_rows(
         lead_time_val = m.median_lead_time_hours if m.median_lead_time_hours is not None else "N/A"
         mttr_val = m.median_mttr_hours if m.median_mttr_hours is not None else "N/A"
 
-        if ai_engine is not None:
+        if m.total_deploys == 0:
+            flow_advisory = "-"
+        elif ai_engine is not None:
             flow_advisory = ai_engine.diagnose_dora_flow(
                 repo=f"{m.org}/{m.repo}",
                 df_weekly=df_weekly,

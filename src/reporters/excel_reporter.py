@@ -34,6 +34,10 @@ class ExcelReporter(BaseReporter):
         self.fill_warn = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
         self.fill_fail = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
         self.fill_skip = PatternFill(start_color="E0E0E0", end_color="E0E0E0", fill_type="solid")
+        self.fill_zebra = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
+        self.fill_sev_high = PatternFill(start_color="FCE4D6", end_color="FCE4D6", fill_type="solid")
+        self.fill_sev_low = PatternFill(start_color="E8EEF5", end_color="E8EEF5", fill_type="solid")
+        self.font_muted = Font(name="Calibri", size=11, color="7A828E")
 
         thin = Side(border_style="thin", color="D9D9D9")
         self.border_cell = Border(left=thin, right=thin, top=thin, bottom=thin)
@@ -48,23 +52,82 @@ class ExcelReporter(BaseReporter):
             cell.fill = self.fill_fail
         else:
             cell.fill = self.fill_skip
+        cell.font = self.font_bold
+        cell.alignment = Alignment(horizontal="center", vertical="top")
 
-    def _auto_adjust_columns(self, sheet, max_sample_rows: int = 100) -> None:
-        """Autofit column widths in O(1) memory by sampling top rows, preventing OOM on 10,000+ items."""
+    def _apply_severity_style(self, cell, severity: CheckSeverity) -> None:
+        """Apply subtle color-coded badge styling to severity cells."""
+        if severity == CheckSeverity.CRITICAL:
+            cell.fill = self.fill_fail
+        elif severity == CheckSeverity.HIGH:
+            cell.fill = self.fill_sev_high
+        elif severity == CheckSeverity.MEDIUM:
+            cell.fill = self.fill_warn
+        else:
+            cell.fill = self.fill_sev_low
+        cell.font = self.font_bold
+        cell.alignment = Alignment(horizontal="center", vertical="top")
+
+    @staticmethod
+    def _estimate_row_height(
+        values: List[Any],
+        col_widths: Dict[int, float],
+        min_height: float = 20.0,
+        max_height: float = 220.0,
+    ) -> float:
+        """Estimate neat row height accounting for newlines and wrapped character lengths."""
+        max_lines = 1
+        for col_idx, val in enumerate(values, start=1):
+            text = str(val or "")
+            if not text or text == "-":
+                continue
+            width = max(col_widths.get(col_idx, 30.0) - 3.0, 12.0)
+            lines = 0
+            for raw_line in text.splitlines() or [text]:
+                lines += max(1, (len(raw_line) + int(width) - 1) // int(width))
+            if lines > max_lines:
+                max_lines = lines
+        return min(max(min_height, max_lines * 15.0 + 6.0), max_height)
+
+    def _auto_adjust_columns(
+        self,
+        sheet,
+        max_sample_rows: int = 100,
+        col_max_widths: Dict[int, int] | None = None,
+        skip_merged_rows: bool = True,
+    ) -> Dict[int, float]:
+        """Autofit column widths in O(1) memory while ignoring merged footer/banner rows."""
         sampled_rows = list(sheet.iter_rows(max_row=max_sample_rows))
         if not sampled_rows:
-            return
+            return {}
 
+        merged_coords: set[tuple[int, int]] = set()
+        if skip_merged_rows:
+            for rng in sheet.merged_cells.ranges:
+                for r in range(rng.min_row, rng.max_row + 1):
+                    for c in range(rng.min_col, rng.max_col + 1):
+                        merged_coords.add((r, c))
+
+        col_max_widths = col_max_widths or {}
+        computed: Dict[int, float] = {}
         num_cols = len(sampled_rows[0])
         for col_idx in range(num_cols):
-            col_letter = get_column_letter(col_idx + 1)
+            col_num = col_idx + 1
+            col_letter = get_column_letter(col_num)
+            cap = col_max_widths.get(col_num, 45)
             max_len = 0
             for row in sampled_rows:
-                val = str(row[col_idx].value or "")
+                cell = row[col_idx]
+                if (cell.row, cell.column) in merged_coords:
+                    continue
+                val = str(cell.value or "")
                 first_line = val.split("\n")[0]
                 if len(first_line) > max_len:
-                    max_len = min(len(first_line), 45)
-            sheet.column_dimensions[col_letter].width = max(max_len + 4, 12)
+                    max_len = min(len(first_line), cap)
+            width = max(max_len + 4, 12)
+            sheet.column_dimensions[col_letter].width = width
+            computed[col_num] = float(width)
+        return computed
 
     def generate(
         self,
@@ -282,17 +345,18 @@ class ExcelReporter(BaseReporter):
         else:
             notice_row = org_end_row + 2
 
-        c_notice = ws.cell(
-            row=notice_row,
-            column=2,
-            value="AI Safety Notice: All AI-synthesized remediation snippets and summaries are advisory only. Review and validate in non-production environments before deployment.",
-        )
-        c_notice.font = self.font_italic
-        c_notice.alignment = Alignment(wrap_text=True, vertical="center")
-        ws.merge_cells(f"B{notice_row}:M{notice_row}")
-        ws.row_dimensions[notice_row].height = 24
+        if ai_count > 0 or executive_summary:
+            c_notice = ws.cell(
+                row=notice_row,
+                column=2,
+                value="AI Safety Notice: All AI-synthesized remediation snippets and summaries are advisory only. Review and validate in non-production environments before deployment.",
+            )
+            c_notice.font = self.font_italic
+            c_notice.alignment = Alignment(wrap_text=True, vertical="center")
+            ws.merge_cells(f"B{notice_row}:M{notice_row}")
+            ws.row_dimensions[notice_row].height = 24
 
-        self._auto_adjust_columns(ws)
+        self._auto_adjust_columns(ws, col_max_widths={2: 36, 3: 18, 5: 26, 13: 24})
 
         for col_char in ("D", "E", "F", "G", "H", "I", "J", "K", "L", "M"):
             if ws.column_dimensions[col_char].width < 14:
@@ -333,39 +397,57 @@ class ExcelReporter(BaseReporter):
             ws.cell(row=2, column=1).font = self.font_italic
             ws.cell(row=2, column=1).alignment = Alignment(horizontal="center", vertical="center")
             ws.merge_cells("A2:I2")
-        else:
-            for row_idx, c in enumerate(clusters, start=2):
-                repos_str = ", ".join(c["affected_repos"])
-                values = [
-                    self.sanitize_spreadsheet_value(c["category"]),
-                    self.sanitize_spreadsheet_value(c["check_name"]),
-                    c["severity"].value,
-                    self.sanitize_spreadsheet_value(c["detected_stack"]),
-                    self.sanitize_spreadsheet_value(c["target_file"]),
-                    f"{c['affected_count']} repo(s)",
-                    self.sanitize_spreadsheet_value(repos_str),
-                    self.sanitize_spreadsheet_value(c["remediation_code"]),
-                    self.sanitize_spreadsheet_value(c["documentation_url"]),
-                ]
+            ws.row_dimensions[2].height = 24
+            self._auto_adjust_columns(ws)
+            return
 
-                for col_idx, val in enumerate(values, start=1):
-                    cell = ws.cell(row=row_idx, column=col_idx, value=val)
-                    cell.font = self.font_data
-                    cell.border = self.border_cell
-                    cell.alignment = Alignment(vertical="top", wrap_text=True)
+        row_values_cache: List[tuple[int, List[Any], CheckSeverity]] = []
+        for row_idx, c in enumerate(clusters, start=2):
+            repos_str = self.format_repo_list(c["affected_repos"], max_display=6)
+            values: List[Any] = [
+                self.sanitize_spreadsheet_value(c["category"]),
+                self.sanitize_spreadsheet_value(c["check_name"]),
+                c["severity"].value,
+                self.sanitize_spreadsheet_value(c["detected_stack"]),
+                self.sanitize_spreadsheet_value(c["target_file"]),
+                f"{c['affected_count']} repo(s)",
+                self.sanitize_spreadsheet_value(repos_str),
+                self.sanitize_spreadsheet_value(c["remediation_code"]),
+                self.sanitize_spreadsheet_value(c["documentation_url"]),
+            ]
+            row_values_cache.append((row_idx, values, c["severity"]))
+            use_zebra = row_idx % 2 == 1
 
-                    if col_idx == 3:  # Severity column
-                        cell.alignment = Alignment(horizontal="center", vertical="top")
-                    elif col_idx == 6:  # Affected Repos Count
-                        cell.alignment = Alignment(horizontal="center", vertical="top")
-                        cell.font = self.font_bold
-                    elif col_idx == 8:  # Code block
-                        cell.font = self.font_code
+            for col_idx, val in enumerate(values, start=1):
+                cell = ws.cell(row=row_idx, column=col_idx, value=val)
+                cell.font = self.font_data
+                cell.border = self.border_cell
+                cell.alignment = Alignment(vertical="top", wrap_text=True)
+                if use_zebra and col_idx != 3:
+                    cell.fill = self.fill_zebra
 
-        self._auto_adjust_columns(ws)
+                if col_idx == 3:  # Severity column
+                    self._apply_severity_style(cell, c["severity"])
+                elif col_idx == 6:  # Affected Repos Count
+                    cell.alignment = Alignment(horizontal="center", vertical="top")
+                    cell.font = self.font_bold
+                elif col_idx == 8:  # Code block
+                    cell.font = self.font_code
+
+        col_widths = self._auto_adjust_columns(
+            ws,
+            col_max_widths={1: 22, 2: 34, 3: 13, 4: 34, 5: 34, 6: 18, 7: 44, 8: 68, 9: 48},
+        )
+        for row_idx, values, _ in row_values_cache:
+            ws.row_dimensions[row_idx].height = self._estimate_row_height(
+                values, col_widths, min_height=24.0, max_height=240.0
+            )
+        ws.auto_filter.ref = f"A1:I{len(clusters) + 1}"
 
     def _build_ai_recommendations_sheet(self, ws, results: List[CheckResult]) -> None:
-        """Build dedicated worksheet consolidating AI-synthesized remediations across repositories."""
+        """Build dedicated worksheet consolidating AI-synthesized remediations without repetitive clutter."""
+        from ..ai.engine import AIEngine
+
         ws.views.sheetView[0].showGridLines = True
         ws.freeze_panes = "A2"
         ws.row_dimensions[1].height = 26
@@ -395,11 +477,14 @@ class ExcelReporter(BaseReporter):
         is_fallback = False
 
         if not ai_findings:
-            ai_findings = [
-                r for r in results
+            actionable = [
+                r
+                for r in results
                 if r.status in (CheckStatus.WARN, CheckStatus.FAIL)
                 and (r.remediation_snippet_after or r.recommended_state)
             ]
+            scoped = [r for r in actionable if r.check_id in AIEngine.SUPPORTED_REMEDIATION_CHECKS]
+            ai_findings = scoped if scoped else actionable
             is_fallback = True
 
         if not ai_findings:
@@ -411,70 +496,133 @@ class ExcelReporter(BaseReporter):
             ws.cell(row=2, column=1).font = self.font_italic
             ws.cell(row=2, column=1).alignment = Alignment(horizontal="center", vertical="center")
             ws.merge_cells("A2:L2")
-        else:
-            # Consolidate by check_id to avoid repeating identical AI code blocks for every repository
-            grouped_ai: Dict[str, Dict[str, Any]] = {}
-            for f in ai_findings:
-                key = f.check_id
-                if key not in grouped_ai:
-                    grouped_ai[key] = {
-                        "repos": [],
-                        "finding": f,
-                        "stacks": set(),
-                    }
-                if f.repo_name and f.repo_name not in grouped_ai[key]["repos"]:
-                    grouped_ai[key]["repos"].append(f.repo_name)
-                stack_item = f.extra_details.get("detected_stack")
-                if stack_item:
-                    grouped_ai[key]["stacks"].add(stack_item)
+            ws.row_dimensions[2].height = 24
+            self._auto_adjust_columns(ws)
+            return
 
-            for row_idx, item in enumerate(grouped_ai.values(), start=2):
-                f = item["finding"]
-                repos_list = item["repos"]
-                repos_display = ", ".join(repos_list)
-                if len(repos_list) > 3:
-                    repos_display = f"{len(repos_list)} repo(s): {', '.join(repos_list[:3])}..."
+        # Consolidate by (check_id, normalized snippet) so identical remediations merge cleanly
+        # while distinct stack-specific AI snippets remain distinct.
+        grouped_ai: Dict[tuple[str, str], Dict[str, Any]] = {}
+        for f in ai_findings:
+            raw_code = f.remediation_snippet_after or f.recommended_state or ""
+            norm_code = " ".join(raw_code.split())
+            key = (f.check_id, norm_code)
+            if key not in grouped_ai:
+                grouped_ai[key] = {
+                    "repos": [],
+                    "finding": f,
+                    "stacks": [],
+                }
+            if f.repo_name and f.repo_name not in grouped_ai[key]["repos"]:
+                grouped_ai[key]["repos"].append(f.repo_name)
+            stack_item = f.extra_details.get("detected_stack")
+            if stack_item:
+                grouped_ai[key]["stacks"].append(stack_item)
 
-                stacks_list = sorted(item["stacks"])
-                stack_display = ", ".join(stacks_list) if stacks_list else (
-                    f.extra_details.get("detected_stack") or ("Detected Framework" if not is_fallback else "General Platform")
-                )
-                model_name = f.extra_details.get("ai_model") or ("gemini-3.5-flash" if not is_fallback else "Deterministic Policy Engine")
-                source_label = f"AI Tailored ({model_name})" if not is_fallback else "Standard Policy (Offline Fallback)"
-                target_file = self.infer_target_file(f.check_id)
-                remediation_code = f.remediation_snippet_after or f.recommended_state
+        severity_order = {
+            CheckSeverity.CRITICAL: 0,
+            CheckSeverity.HIGH: 1,
+            CheckSeverity.MEDIUM: 2,
+            CheckSeverity.LOW: 3,
+            CheckSeverity.INFO: 4,
+        }
+        sorted_items = sorted(
+            grouped_ai.values(),
+            key=lambda item: (
+                severity_order.get(item["finding"].severity, 9),
+                item["finding"].category,
+                item["finding"].check_name,
+                self.format_detected_stacks(item["stacks"]),
+            ),
+        )
 
-                values = [
-                    self.sanitize_spreadsheet_value(repos_display),
-                    self.sanitize_spreadsheet_value(f.category),
-                    self.sanitize_spreadsheet_value(f.check_name),
-                    f.severity.value,
-                    f.status.value,
-                    self.sanitize_spreadsheet_value(stack_display),
-                    self.sanitize_spreadsheet_value(model_name),
-                    self.sanitize_spreadsheet_value(source_label),
-                    self.sanitize_spreadsheet_value(target_file),
-                    self.sanitize_spreadsheet_value(remediation_code),
-                    self.sanitize_spreadsheet_value(f.explanation),
-                    self.sanitize_spreadsheet_value(f.documentation_url),
-                ]
+        seen_explanations: set[tuple[str, str]] = set()
+        seen_docs: set[tuple[str, str]] = set()
+        row_values_cache: List[tuple[int, List[Any]]] = []
 
-                for col_idx, val in enumerate(values, start=1):
-                    cell = ws.cell(row=row_idx, column=col_idx, value=val)
-                    cell.font = self.font_data
-                    cell.border = self.border_cell
-                    cell.alignment = Alignment(vertical="top", wrap_text=True)
+        for row_idx, item in enumerate(sorted_items, start=2):
+            f = item["finding"]
+            repos_display = self.format_repo_list(item["repos"], max_display=5)
+            stack_fallback = "Detected Framework" if not is_fallback else "General Platform"
+            stack_display = self.format_detected_stacks(
+                item["stacks"] or f.extra_details.get("detected_stack", ""),
+                fallback=stack_fallback,
+                max_items=6,
+            )
+            model_name = f.extra_details.get("ai_model") or (
+                "gemini-3.5-flash" if not is_fallback else "Deterministic Policy Engine"
+            )
+            source_label = "AI Tailored" if not is_fallback else "Standard Policy (Offline Fallback)"
+            target_file = self.infer_target_file(f.check_id)
+            remediation_code = f.remediation_snippet_after or f.recommended_state
 
-                    if col_idx == 5:  # Status
-                        self._apply_status_style(cell, f.status)
-                    elif col_idx == 8:  # Recommendation Source badge
-                        cell.fill = self.fill_ai_badge
-                        cell.font = self.font_ai_badge
-                        cell.alignment = Alignment(horizontal="center", vertical="top")
-                    elif col_idx == 10:  # Code block
-                        cell.font = self.font_code
+            raw_expl = (f.explanation or "").strip()
+            expl_key = (f.check_id, " ".join(raw_expl.split()))
+            if raw_expl and expl_key not in seen_explanations:
+                seen_explanations.add(expl_key)
+                expl_val = raw_expl
+            else:
+                expl_val = "-"
 
-        safety_row = ws.max_row + 2
+            raw_doc = (f.documentation_url or "").strip()
+            doc_key = (f.check_id, raw_doc)
+            if raw_doc and doc_key not in seen_docs:
+                seen_docs.add(doc_key)
+                doc_val = raw_doc
+            else:
+                doc_val = "-"
+
+            values: List[Any] = [
+                self.sanitize_spreadsheet_value(repos_display),
+                self.sanitize_spreadsheet_value(f.category),
+                self.sanitize_spreadsheet_value(f.check_name),
+                f.severity.value,
+                f.status.value,
+                self.sanitize_spreadsheet_value(stack_display),
+                self.sanitize_spreadsheet_value(model_name),
+                self.sanitize_spreadsheet_value(source_label),
+                self.sanitize_spreadsheet_value(target_file),
+                self.sanitize_spreadsheet_value(remediation_code),
+                self.sanitize_spreadsheet_value(expl_val),
+                self.sanitize_spreadsheet_value(doc_val),
+            ]
+            row_values_cache.append((row_idx, values))
+            use_zebra = row_idx % 2 == 1
+
+            for col_idx, val in enumerate(values, start=1):
+                cell = ws.cell(row=row_idx, column=col_idx, value=val)
+                cell.font = self.font_data
+                cell.border = self.border_cell
+                cell.alignment = Alignment(vertical="top", wrap_text=True)
+
+                if use_zebra and col_idx not in (4, 5, 8):
+                    cell.fill = self.fill_zebra
+
+                if col_idx == 4:  # Severity
+                    self._apply_severity_style(cell, f.severity)
+                elif col_idx == 5:  # Status
+                    self._apply_status_style(cell, f.status)
+                elif col_idx == 8:  # Recommendation Source badge
+                    cell.fill = self.fill_ai_badge
+                    cell.font = self.font_ai_badge
+                    cell.alignment = Alignment(horizontal="center", vertical="top")
+                elif col_idx == 10:  # Code block
+                    cell.font = self.font_code
+                elif val == "-":
+                    cell.font = self.font_muted
+                    cell.alignment = Alignment(horizontal="center", vertical="top")
+
+        col_widths = self._auto_adjust_columns(
+            ws,
+            col_max_widths={1: 36, 2: 20, 3: 32, 4: 13, 5: 12, 6: 34, 7: 26, 8: 30, 9: 34, 10: 68, 11: 44, 12: 44},
+        )
+        for row_idx, values in row_values_cache:
+            ws.row_dimensions[row_idx].height = self._estimate_row_height(
+                values, col_widths, min_height=24.0, max_height=240.0
+            )
+        ws.auto_filter.ref = f"A1:L{len(sorted_items) + 1}"
+
+        safety_row = len(sorted_items) + 3
         c_safe = ws.cell(
             row=safety_row,
             column=1,
@@ -485,10 +633,8 @@ class ExcelReporter(BaseReporter):
         ws.merge_cells(f"A{safety_row}:L{safety_row}")
         ws.row_dimensions[safety_row].height = 22
 
-        self._auto_adjust_columns(ws)
-
     def _build_findings_sheet(self, ws, findings: List[CheckResult], is_org: bool) -> None:
-        """Build compact findings worksheet with clean status formatting and minimal repetition."""
+        """Build compact findings worksheet with clean status formatting and minimal vertical repetition."""
         ws.views.sheetView[0].showGridLines = True
         ws.freeze_panes = "A2"
         ws.row_dimensions[1].height = 24
@@ -513,21 +659,68 @@ class ExcelReporter(BaseReporter):
             cell.fill = self.fill_header
             cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
+        if not findings:
+            ws.cell(
+                row=2,
+                column=1,
+                value="No findings recorded for this category.",
+            )
+            ws.cell(row=2, column=1).font = self.font_italic
+            ws.cell(row=2, column=1).alignment = Alignment(horizontal="center", vertical="center")
+            ws.merge_cells("A2:K2")
+            ws.row_dimensions[2].height = 24
+            self._auto_adjust_columns(ws)
+            return
+
+        seen_explanations: set[tuple[str, str]] = set()
+        seen_docs: set[tuple[str, str]] = set()
+        row_values_cache: List[tuple[int, List[Any], CheckStatus]] = []
+        generic_pass_states = {
+            "",
+            "control verified present and compliant.",
+            "verified compliant.",
+            "compliant",
+        }
+
         for row_idx, f in enumerate(findings, start=2):
             target_file = self.infer_target_file(f.check_id)
 
             if f.status == CheckStatus.PASS:
-                current_state_val = "Control verified present and compliant."
-                rec_state_val = "Maintain standard baseline."
-                expl_val = "Verified compliant with organization governance policies."
-                ws.row_dimensions[row_idx].height = 20
+                raw_state = (f.current_state or "").strip()
+                current_state_val = (
+                    "Compliant"
+                    if raw_state.casefold() in generic_pass_states
+                    else raw_state
+                )
+                rec_state_val = "-"
+                expl_val = "-"
+                doc_val = "-"
+            elif f.status == CheckStatus.SKIPPED:
+                current_state_val = (f.current_state or "").strip() or "Skipped / Not Applicable"
+                rec_state_val = "-"
+                expl_val = "-"
+                doc_val = "-"
             else:
                 current_state_val = f.current_state
                 rec_state_val = f.recommended_state
-                expl_val = f"{f.explanation} (Refer to Fleet Playbook for canonical code)"
-                ws.row_dimensions[row_idx].height = 28
 
-            values = [
+                raw_expl = (f.explanation or "").strip()
+                expl_key = (f.check_id, " ".join(raw_expl.split()))
+                if raw_expl and expl_key not in seen_explanations:
+                    seen_explanations.add(expl_key)
+                    expl_val = raw_expl
+                else:
+                    expl_val = "-"
+
+                raw_doc = (f.documentation_url or "").strip()
+                doc_key = (f.check_id, raw_doc)
+                if raw_doc and doc_key not in seen_docs:
+                    seen_docs.add(doc_key)
+                    doc_val = raw_doc
+                else:
+                    doc_val = "-"
+
+            values: List[Any] = [
                 self.sanitize_spreadsheet_value(f.org_name),
                 self.sanitize_spreadsheet_value(f.repo_name),
                 self.sanitize_spreadsheet_value(f.category),
@@ -538,15 +731,40 @@ class ExcelReporter(BaseReporter):
                 self.sanitize_spreadsheet_value(current_state_val),
                 self.sanitize_spreadsheet_value(rec_state_val),
                 self.sanitize_spreadsheet_value(expl_val),
-                self.sanitize_spreadsheet_value(f.documentation_url),
+                self.sanitize_spreadsheet_value(doc_val),
             ]
+            row_values_cache.append((row_idx, values, f.status))
+            use_zebra = row_idx % 2 == 1
+
             for col_idx, val in enumerate(values, start=1):
                 cell = ws.cell(row=row_idx, column=col_idx, value=val)
                 cell.font = self.font_data
                 cell.border = self.border_cell
                 cell.alignment = Alignment(vertical="top", wrap_text=True)
 
+                if use_zebra and col_idx not in (5, 6):
+                    cell.fill = self.fill_zebra
+
                 if col_idx == 5:  # Status column
                     self._apply_status_style(cell, f.status)
+                elif col_idx == 6:  # Severity column
+                    if f.status in (CheckStatus.WARN, CheckStatus.FAIL):
+                        self._apply_severity_style(cell, f.severity)
+                    else:
+                        if use_zebra:
+                            cell.fill = self.fill_zebra
+                        cell.alignment = Alignment(horizontal="center", vertical="top")
+                elif val == "-":
+                    cell.font = self.font_muted
+                    cell.alignment = Alignment(horizontal="center", vertical="top")
 
-        self._auto_adjust_columns(ws)
+        col_widths = self._auto_adjust_columns(
+            ws,
+            col_max_widths={1: 20, 2: 28, 3: 22, 4: 34, 5: 12, 6: 13, 7: 32, 8: 38, 9: 40, 10: 52, 11: 42},
+        )
+        for row_idx, values, status in row_values_cache:
+            min_h = 20.0 if status in (CheckStatus.PASS, CheckStatus.SKIPPED) else 22.0
+            ws.row_dimensions[row_idx].height = self._estimate_row_height(
+                values, col_widths, min_height=min_h, max_height=140.0
+            )
+        ws.auto_filter.ref = f"A1:K{len(findings) + 1}"

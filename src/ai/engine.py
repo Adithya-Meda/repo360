@@ -500,12 +500,6 @@ class AIEngine:
                     elif resp.status_code == 429:
                         self.trip_circuit_breaker(120.0, reason="Anthropic Rate limit (429)")
                         return None
-                        return None
-                    elif resp.status_code == 429:
-                        if attempt == 0:
-                            time.sleep(1)
-                            continue
-                        break
                     elif resp.status_code == 404:
                         break
                     else:
@@ -566,7 +560,9 @@ Keep it factual, authoritative, professional, and actionable. Do not use filler 
         return summary or ""
 
     def _apply_remediation(self, result: CheckResult, snippet: str, detected_stack: str) -> None:
-        """Apply synthesized remediation and metadata to CheckResult."""
+        """Apply synthesized remediation and metadata to CheckResult, preserving canonical baseline."""
+        if result.remediation_snippet_after and not result.extra_details.get("ai_enriched"):
+            result.extra_details.setdefault("baseline_remediation", result.remediation_snippet_after)
         result.remediation_snippet_after = snippet
         result.extra_details["ai_enriched"] = True
         result.extra_details["detected_stack"] = detected_stack
@@ -578,9 +574,10 @@ Keep it factual, authoritative, professional, and actionable. Do not use filler 
         if not self.is_eligible_for_remediation(result):
             return
 
-        languages = ", ".join(tech_stack.get("languages", [])) or "General Software"
-        frameworks = ", ".join(tech_stack.get("frameworks", [])) or "Standard"
-        manifests = ", ".join(tech_stack.get("manifests", [])) or "None"
+        raw_langs = [str(l).strip() for l in tech_stack.get("languages", []) if str(l).strip()]
+        languages = ", ".join(dict.fromkeys(raw_langs)) or "General Software"
+        frameworks = ", ".join(dict.fromkeys(str(f).strip() for f in tech_stack.get("frameworks", []) if str(f).strip())) or "Standard"
+        manifests = ", ".join(dict.fromkeys(str(m).strip() for m in tech_stack.get("manifests", []) if str(m).strip())) or "None"
 
         cache_key = f"{result.check_id}:{languages}:{frameworks}:{manifests}"
 
@@ -609,8 +606,7 @@ Keep it factual, authoritative, professional, and actionable. Do not use filler 
 
             prompt = f"""You are a Senior DevOps Engineer. Generate a production-ready, custom-tailored configuration snippet to remediate this finding:
 
-REPOSITORY CONTEXT:
-- Repository: {self.sanitize_text(result.repo_name)}
+TECH STACK CONTEXT (Reusable across repositories sharing this stack):
 - Detected Languages: {self.sanitize_text(languages)}
 - Detected Frameworks/Libraries: {self.sanitize_text(frameworks)}
 - Build/Config Manifests Found: {self.sanitize_text(manifests)}
@@ -621,7 +617,7 @@ AUDIT FINDING:
 - Recommended Goal: {result.recommended_state}
 
 TASK:
-Provide ONLY the exact, tailored configuration file content to resolve this for this specific tech stack.
+Provide ONLY the exact, tailored configuration file content to resolve this for this specific tech stack. Do not hardcode individual repository names in comments or titles.
 - For 'copilot_instructions': Write a customized .github/copilot-instructions.md with team style rules, testing conventions, and safety guidelines specific to {languages}.
 - For 'devcontainers': Provide a complete, valid .devcontainer/devcontainer.json configured with the right runtime container image, port forwards, and VS Code extensions for {languages} and {frameworks}.
 - For 'dependabot_configuration': Provide a valid .github/dependabot.yml covering all detected package ecosystems ({manifests}).

@@ -146,3 +146,175 @@ def test_local_timestamp_dd_mm_yyyy_format() -> None:
     assert 1 <= day <= 31
     assert 1 <= month <= 12
     assert year >= 2024
+
+
+def test_format_detected_stacks_and_repo_list() -> None:
+    """Verify tech stack deduplication and bounded repository list formatting."""
+    from src.reporters.base_reporter import BaseReporter
+
+    cleaned = BaseReporter.format_detected_stacks(
+        ["C#, C#, C# / .NET Core, Docker Compose, General Software", "C# / .NET Core"]
+    )
+    assert cleaned == "C# / .NET Core, Docker Compose"
+
+    only_placeholder = BaseReporter.format_detected_stacks(["General Software", "General Platform"])
+    assert only_placeholder == "General Software"
+
+    repos = [f"repo-{idx}" for idx in range(1, 9)] + ["repo-1"]
+    capped = BaseReporter.format_repo_list(repos, max_display=6)
+    assert capped == "repo-1, repo-2, repo-3, repo-4, repo-5, repo-6 (+2 more — see Findings tabs)"
+
+
+def test_excel_deduplication_and_clean_rendering() -> None:
+    """Verify cross-sheet separation, findings vertical deduplication, and PASS/SKIPPED cleanup."""
+    from src.checks.base import CheckResult, CheckSeverity, CheckStatus, Persona
+
+    canonical_cfg = '{"name": "Standard Baseline DevContainer"}'
+    ai_py_cfg = '{"name": "Python FastAPI AI Tailored DevContainer"}'
+    ai_dotnet_cfg = '{"name": "DotNet Core AI Tailored DevContainer"}'
+
+    results = [
+        CheckResult(
+            check_id="devcontainers",
+            check_name="DevContainer Configuration",
+            persona=Persona.REPO_ADMIN,
+            category="Developer Ergonomics",
+            status=CheckStatus.FAIL,
+            severity=CheckSeverity.MEDIUM,
+            current_state="Missing .devcontainer/devcontainer.json",
+            recommended_state=canonical_cfg,
+            explanation="Standardize local development environments.",
+            remediation_snippet_after=ai_py_cfg,
+            documentation_url="https://docs.example.com/devcontainers",
+            org_name="acme",
+            repo_name="api-one",
+            extra_details={
+                "detected_stack": "Python, General Software",
+                "ai_enriched": True,
+                "ai_model": "gemini-3.5-flash-lite",
+                "baseline_remediation": canonical_cfg,
+            },
+        ),
+        CheckResult(
+            check_id="devcontainers",
+            check_name="DevContainer Configuration",
+            persona=Persona.REPO_ADMIN,
+            category="Developer Ergonomics",
+            status=CheckStatus.FAIL,
+            severity=CheckSeverity.MEDIUM,
+            current_state="Missing .devcontainer/devcontainer.json",
+            recommended_state=canonical_cfg,
+            explanation="Standardize local development environments.",
+            remediation_snippet_after=ai_dotnet_cfg,
+            documentation_url="https://docs.example.com/devcontainers",
+            org_name="acme",
+            repo_name="api-two",
+            extra_details={
+                "detected_stack": "C#, C# / .NET Core, Python / FastAPI",
+                "ai_enriched": True,
+                "ai_model": "gemini-3.5-flash-lite",
+                "baseline_remediation": canonical_cfg,
+            },
+        ),
+        CheckResult(
+            check_id="codeowners_validation",
+            check_name="CODEOWNERS Validation",
+            persona=Persona.REPO_ADMIN,
+            category="Governance",
+            status=CheckStatus.PASS,
+            severity=CheckSeverity.HIGH,
+            current_state="Control verified present and compliant.",
+            recommended_state="Maintain baseline CODEOWNERS.",
+            explanation="Verified compliant with CODEOWNERS policy.",
+            documentation_url="https://docs.example.com/codeowners",
+            org_name="acme",
+            repo_name="api-one",
+        ),
+        CheckResult(
+            check_id="workflow_sha_pinning",
+            check_name="GitHub Actions SHA Pinning",
+            persona=Persona.CONTRIBUTOR,
+            category="CI/CD Supply Chain",
+            status=CheckStatus.SKIPPED,
+            severity=CheckSeverity.HIGH,
+            current_state="No workflow YAML files to inspect.",
+            recommended_state="Pin third-party actions to full 40-char SHAs.",
+            explanation="Prevents supply chain tag hijacking.",
+            documentation_url="https://docs.example.com/sha-pinning",
+            org_name="acme",
+            repo_name="api-one",
+        ),
+    ]
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as f:
+        temp_path = f.name
+
+    try:
+        ExcelReporter().generate(results, temp_path)
+        wb = openpyxl.load_workbook(temp_path)
+
+        # 1. Fleet_Playbook keeps canonical baseline snippet & clean tech stack
+        ws_fleet = wb["Fleet_Playbook"]
+        assert ws_fleet.max_row == 2
+        assert ws_fleet["D2"].value == "C# / .NET Core, Python / FastAPI"
+        assert ws_fleet["H2"].value == canonical_cfg
+        assert ws_fleet.auto_filter.ref == "A1:I2"
+
+        # 2. AI_Recommendations splits distinct stack snippets while deduplicating repetitive explanation/URL
+        ws_ai = wb["AI_Recommendations"]
+        assert ws_ai.max_row == 5  # Header + 2 distinct stack rows + blank + AI Safety Notice
+        assert ws_ai["F2"].value == "C# / .NET Core, Python / FastAPI"
+        assert ws_ai["F3"].value == "Python"
+        assert ws_ai["G2"].value == "gemini-3.5-flash-lite"
+        assert ws_ai["H2"].value == "AI Tailored"
+        assert ws_ai["J2"].value == ai_dotnet_cfg
+        assert ws_ai["J3"].value == ai_py_cfg
+        assert ws_ai["K2"].value == "Standardize local development environments."
+        assert ws_ai["L2"].value == "https://docs.example.com/devcontainers"
+        assert ws_ai["K3"].value == "-"
+        assert ws_ai["L3"].value == "-"
+
+        # 3. Repo_Admin_Findings: first FAIL shows full explanation/URL, second shows "-", PASS shows clean "-"
+        ws_repo = wb["Repo_Admin_Findings"]
+        assert ws_repo.auto_filter.ref == "A1:K4"
+        assert "(Refer to Fleet Playbook" not in str(ws_repo["J2"].value)
+        assert ws_repo["J2"].value == "Standardize local development environments."
+        assert ws_repo["K2"].value == "https://docs.example.com/devcontainers"
+        assert ws_repo["I3"].value == canonical_cfg
+        assert ws_repo["J3"].value == "-"
+        assert ws_repo["K3"].value == "-"
+        assert ws_repo["H4"].value == "Compliant"
+        assert ws_repo["I4"].value == "-"
+        assert ws_repo["J4"].value == "-"
+        assert ws_repo["K4"].value == "-"
+
+        # 4. Contributor_Findings: SKIPPED shows concise "-" in remediation/doc columns
+        ws_contrib = wb["Contributor_Findings"]
+        assert ws_contrib["H2"].value == "No workflow YAML files to inspect."
+        assert ws_contrib["I2"].value == "-"
+        assert ws_contrib["J2"].value == "-"
+        assert ws_contrib["K2"].value == "-"
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+def test_finops_and_dora_baseline_rows_suppress_repetitive_advice() -> None:
+    """Verify healthy FinOps profiles and zero-deploy DORA repos emit concise '-' instead of filler."""
+    from unittest.mock import MagicMock
+    from src.finops.models import RepoStorageProfile
+    from src.finops.collector import build_finops_rows
+    from src.dora.models import RepoDORAMetrics
+    from src.dora.collector import build_dora_rows
+
+    ai_spy = MagicMock()
+
+    healthy_profile = RepoStorageProfile(org="acme", repo="clean-svc", visibility="private", disk_size_kb=46080)
+    repo_rows, _, _, _ = build_finops_rows([healthy_profile], {}, ["acme"], ai_engine=ai_spy)
+    assert repo_rows[0][-1] == "-"
+    ai_spy.generate_finops_advisory.assert_not_called()
+
+    zero_deploy_metrics = RepoDORAMetrics(org="acme", repo="docs-only")
+    dora_rows, _, _, _ = build_dora_rows([zero_deploy_metrics], ["acme"], window_days=30, ai_engine=ai_spy)
+    assert dora_rows[0][14] == "-"
+    ai_spy.diagnose_dora_flow.assert_not_called()

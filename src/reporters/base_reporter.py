@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterable, List
 
 from ..checks.base import CheckResult
 
@@ -61,6 +61,9 @@ class BaseReporter(ABC):
         """
         if isinstance(value, str):
             stripped = value.lstrip(" \t\r\n")
+            # A standalone hyphen is an inert placeholder, whereas "-expr" can invoke formulas.
+            if stripped == "-":
+                return value
             if stripped.startswith(("=", "+", "-", "@", "\t", "\r")):
                 return f"'{value}"
         return value
@@ -96,12 +99,82 @@ class BaseReporter(ABC):
             "pull_request_templates": ".github/PULL_REQUEST_TEMPLATE.md",
             "issue_templates": ".github/ISSUE_TEMPLATE/bug_report.yml",
             "pre_commit_hooks": ".pre-commit-config.yaml",
+            "branch_rulesets": "Branch Rulesets (Settings)",
             "rulesets_adoption": "Repository Rulesets (Settings)",
             "secret_scanning_push_protection": "Code Security (Settings)",
             "default_workflow_permissions": "Actions Permissions (Settings)",
+            "runner_groups_governance": "Actions Runner Groups (Settings)",
             "runner_groups_isolation": "Actions Runner Groups (Settings)",
         }
         return file_map.get(check_id, "Repository / Organization Config")
+
+    @staticmethod
+    def format_detected_stacks(
+        raw_stacks: str | Iterable[str],
+        fallback: str = "General Platform",
+        max_items: int = 6,
+    ) -> str:
+        """Normalize, deduplicate, and format comma-separated tech stack labels cleanly."""
+        items = [raw_stacks] if isinstance(raw_stacks, str) else list(raw_stacks or [])
+        tokens: List[str] = []
+        seen: set[str] = set()
+        generic_placeholders = {"general software", "general platform", "standard", "none"}
+
+        for entry in items:
+            if not entry:
+                continue
+            for part in str(entry).split(","):
+                clean = part.strip()
+                key = clean.casefold()
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                tokens.append(clean)
+
+        concrete = [t for t in tokens if t.casefold() not in generic_placeholders]
+        if concrete:
+            specific_prefixes = {
+                t.split(" / ", 1)[0].strip().casefold()
+                for t in concrete
+                if " / " in t
+            }
+            filtered = [
+                t
+                for t in concrete
+                if " / " in t or t.casefold() not in specific_prefixes
+            ]
+            ordered = sorted(filtered, key=str.casefold)
+        elif tokens:
+            # Prefer a single canonical placeholder rather than combining both
+            ordered = [tokens[0]]
+        else:
+            return fallback
+
+        if len(ordered) > max_items:
+            return f"{', '.join(ordered[:max_items])} (+{len(ordered) - max_items} more)"
+        return ", ".join(ordered)
+
+    @staticmethod
+    def format_repo_list(repos: Iterable[str], max_display: int = 6) -> str:
+        """Format repository names concisely without dumping unbounded fleet lists into cells."""
+        seen: set[str] = set()
+        unique_repos: List[str] = []
+        for repo in repos:
+            clean = str(repo).strip()
+            if not clean:
+                continue
+            key = clean.casefold()
+            if key not in seen:
+                seen.add(key)
+                unique_repos.append(clean)
+
+        unique_repos.sort(key=str.casefold)
+        if not unique_repos:
+            return "-"
+        if len(unique_repos) <= max_display:
+            return ", ".join(unique_repos)
+        remaining = len(unique_repos) - max_display
+        return f"{', '.join(unique_repos[:max_display])} (+{remaining} more — see Findings tabs)"
 
     @classmethod
     def build_remediation_clusters(cls, results: List[CheckResult]) -> List[Dict[str, Any]]:
@@ -116,9 +189,16 @@ class BaseReporter(ABC):
 
             cluster_key = r.check_id
             stack = r.extra_details.get("detected_stack") or ""
+            baseline_code = r.extra_details.get("baseline_remediation")
+            is_ai_item = cls.is_ai_result(r)
+
+            # Fleet_Playbook keeps the generic canonical baseline so repo-specific AI blocks aren't duplicated across tabs
+            canonical_candidate = baseline_code or (
+                r.remediation_snippet_after if not is_ai_item else ""
+            )
 
             if cluster_key not in clusters:
-                remediation_code = r.remediation_snippet_after or r.recommended_state
+                remediation_code = canonical_candidate or r.remediation_snippet_after or r.recommended_state
                 clusters[cluster_key] = {
                     "cluster_key": cluster_key,
                     "check_id": r.check_id,
@@ -134,34 +214,43 @@ class BaseReporter(ABC):
                     "remediation_snippet_before": r.remediation_snippet_before,
                     "explanation": r.explanation,
                     "documentation_url": r.documentation_url,
-                    "is_ai": cls.is_ai_result(r),
+                    "is_ai": is_ai_item,
                     "ai_model": r.extra_details.get("ai_model", ""),
+                    "_has_canonical_baseline": bool(canonical_candidate),
                     "affected_repos": [],
                 }
-
-            # Prioritize AI-tailored canonical configuration if present
-            if cls.is_ai_result(r) and not clusters[cluster_key]["is_ai"]:
-                clusters[cluster_key]["is_ai"] = True
-                clusters[cluster_key]["ai_model"] = r.extra_details.get("ai_model", "")
-                if r.remediation_snippet_after:
-                    clusters[cluster_key]["remediation_code"] = r.remediation_snippet_after
-                if r.remediation_snippet_before:
-                    clusters[cluster_key]["remediation_snippet_before"] = r.remediation_snippet_before
+            else:
+                cluster = clusters[cluster_key]
+                if is_ai_item and not cluster["is_ai"]:
+                    cluster["is_ai"] = True
+                    cluster["ai_model"] = r.extra_details.get("ai_model", "")
+                if canonical_candidate and not cluster["_has_canonical_baseline"]:
+                    cluster["remediation_code"] = canonical_candidate
+                    cluster["_has_canonical_baseline"] = True
+                if r.remediation_snippet_before and not cluster["remediation_snippet_before"]:
+                    cluster["remediation_snippet_before"] = r.remediation_snippet_before
 
             if stack:
                 clusters[cluster_key]["detected_stacks"].add(stack)
 
-            repo_label = r.repo_name if r.repo_name != "Organization-Wide" else f"{r.org_name} (Org-Wide)"
+            repo_label = (
+                f"{r.org_name} (Org-Wide)"
+                if r.repo_name in ("Organization-Wide", "[Organization-Wide]")
+                else r.repo_name
+            )
             if repo_label not in clusters[cluster_key]["affected_repos"]:
                 clusters[cluster_key]["affected_repos"].append(repo_label)
 
         severity_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
         cluster_list = list(clusters.values())
         for c in cluster_list:
+            c.pop("_has_canonical_baseline", None)
             c["affected_count"] = len(c["affected_repos"])
             c["affected_repos"].sort()
-            stacks = sorted(c["detected_stacks"])
-            c["detected_stack"] = ", ".join(stacks) if stacks else "General Platform"
+            c["detected_stack"] = cls.format_detected_stacks(
+                c["detected_stacks"],
+                fallback="General Platform",
+            )
 
         cluster_list.sort(
             key=lambda x: (

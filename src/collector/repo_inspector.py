@@ -363,8 +363,26 @@ class RepoInspector:
                 if kw in req_content.lower():
                     frameworks.append(kw.capitalize())
 
+        # Deduplicate languages and prefer specific ecosystem labels over bare parent tokens (e.g. 'C# / .NET Core' over 'C#')
+        specific_prefixes = {
+            lang.split(" / ", 1)[0].strip().casefold()
+            for lang in languages
+            if " / " in lang
+        }
+        deduped_languages: List[str] = []
+        seen_langs: Set[str] = set()
+        for lang in languages:
+            clean = lang.strip()
+            key = clean.casefold()
+            if not key or key in seen_langs:
+                continue
+            if " / " not in clean and key in specific_prefixes:
+                continue
+            seen_langs.add(key)
+            deduped_languages.append(clean)
+
         return {
-            "languages": languages or ["General Software"],
+            "languages": deduped_languages or ["General Software"],
             "manifests": manifests,
             "frameworks": frameworks,
         }

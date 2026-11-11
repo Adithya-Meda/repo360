@@ -289,16 +289,26 @@ def build_finops_rows(
     for p in profiles:
         org_profiles.setdefault(p.org, []).append(p)
 
-        rec = p.recommendation
-        if ai_engine is not None:
-            rec = ai_engine.generate_finops_advisory(
-                repo=f"{p.org}/{p.repo}",
-                disk_size_mb=p.disk_size_mb,
-                artifact_mb=p.active_artifact_mb,
-                default_90d_count=p.default_90_day_count,
-                stale_cache_count=len([c for c in p.caches if c.is_stale]),
-                optimization_status=p.optimization_status,
-            )
+        stale_cache_count = sum(1 for c in p.caches if c.is_stale)
+        is_baseline_optimized = (
+            p.optimization_status == "Optimized"
+            and p.default_90_day_count == 0
+            and stale_cache_count == 0
+            and p.total_storage_mb <= 2000
+        )
+        if is_baseline_optimized:
+            rec = "-"
+        else:
+            rec = p.recommendation
+            if ai_engine is not None:
+                rec = ai_engine.generate_finops_advisory(
+                    repo=f"{p.org}/{p.repo}",
+                    disk_size_mb=p.disk_size_mb,
+                    artifact_mb=p.active_artifact_mb,
+                    default_90d_count=p.default_90_day_count,
+                    stale_cache_count=stale_cache_count,
+                    optimization_status=p.optimization_status,
+                )
 
         # Repo row
         repo_rows.append([
