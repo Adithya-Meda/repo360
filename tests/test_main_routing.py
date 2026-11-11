@@ -317,3 +317,16 @@ def test_main_route_health_includes_commit_metadata(monkeypatch, capsys) -> None
     assert payload["version"] == "1.0.0"
     assert payload["installed_commit"] == "cdfeb814"
     assert payload["commit_source"] == "direct_url.json"
+
+
+def test_main_route_uninstall_and_remove(monkeypatch) -> None:
+    """Verify 'uninstall' and 'remove' route cleanly to run_uninstall_cli."""
+    from unittest.mock import MagicMock
+    from src import main as main_mod
+
+    for subcmd in ("uninstall", "remove"):
+        monkeypatch.setattr(sys, "argv", ["repo360", subcmd, "--dry-run"])
+        mock_uninstall = MagicMock(return_value=0)
+        monkeypatch.setattr("src.uninstall.run_uninstall_cli", mock_uninstall)
+        assert main_mod.main() == 0
+        assert mock_uninstall.called

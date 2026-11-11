@@ -88,6 +88,13 @@ repo360 dora --org <your-org>
 # Consolidated Push Protection & Ruleset Bypass Ledger (Executive Excel workbook)
 repo360 bypass
 repo360 bypass --org <your-org>
+
+# Verify Installed Version & Latest Commit Sync
+repo360 version
+repo360 version --check
+
+# Verify GitHub App Auth, Installations & AI Engine Health
+repo360 health
 ```
 
 All reports are written to `./repo360-output/`.
@@ -95,8 +102,16 @@ All reports are written to `./repo360-output/`.
 #### 4. Upgrade
 ```bash
 repo360 upgrade
+repo360 upgrade --check
+repo360 upgrade --force
 ```
 Stored credentials and GitHub App private keys in `~/.repo360/` are automatically preserved across upgrades.
+
+#### 5. Uninstall
+```bash
+repo360 uninstall
+```
+Removes the installed `repo360` package, isolated virtual environment, and `~/.repo360/` configuration and secrets while preserving generated reports in `./repo360-output/`.
 
 ---
 

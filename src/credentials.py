@@ -20,16 +20,23 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger("repo360-credentials")
 
 
-def get_user_config_dir() -> str:
-    """Return OS-standard user configuration directory for Repo360.
+def resolve_user_config_dir() -> str:
+    """Resolve the OS-standard user configuration directory for Repo360 without creating it.
 
-    Can be overridden via REPO360_CONFIG_DIR environment variable.
+    Can be overridden via the REPO360_CONFIG_DIR environment variable.
     """
     custom = os.getenv("REPO360_CONFIG_DIR")
     if custom:
-        path = os.path.abspath(custom)
-    else:
-        path = os.path.expanduser("~/.repo360")
+        return os.path.abspath(custom)
+    return os.path.expanduser("~/.repo360")
+
+
+def get_user_config_dir() -> str:
+    """Return OS-standard user configuration directory for Repo360, creating it if absent.
+
+    Can be overridden via REPO360_CONFIG_DIR environment variable.
+    """
+    path = resolve_user_config_dir()
     os.makedirs(path, exist_ok=True)
     return path
 

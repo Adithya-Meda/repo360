@@ -533,6 +533,7 @@ Commands:
   upgrade     Upgrade Repo360 CLI to the latest version directly from GitHub
   health      Verify GitHub App authentication, organization access, and AI engine status
   version     Display installed Repo360 version, commit SHA, and check for updates
+  uninstall   Uninstall Repo360 CLI and config directories while keeping repo360-output reports
 
 Options:
   -h, --help     Show this help message or help for a specific command
@@ -652,6 +653,15 @@ def main() -> int:
             return run_upgrade_cli()
         except KeyboardInterrupt:
             logger.warning("\nUpgrade cancelled by user (Ctrl+C). Exiting...")
+            return 130
+
+    if subcmd in ("uninstall", "remove"):
+        sys.argv.pop(1)
+        from .uninstall import run_uninstall_cli
+        try:
+            return run_uninstall_cli()
+        except KeyboardInterrupt:
+            logger.warning("\nUninstall cancelled by user (Ctrl+C). Exiting...")
             return 130
 
     if subcmd in ("health", "healthcheck", "status"):
