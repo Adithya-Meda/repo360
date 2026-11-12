@@ -146,6 +146,13 @@ def write_finops_workbook(
                 ["Billing Gross Usage Value (USD)", gross_usd],
                 ["Billing Net Billed Spend (USD)", net_usd],
             ])
+            ytd_mins = round(sum(b.ytd_compute_minutes for b in org_billing.values()), 2)
+            ytd_gross = round(sum(b.ytd_gross_amount_usd for b in org_billing.values()), 4)
+            if ytd_mins > 0 or ytd_gross > 0:
+                kpis.extend([
+                    ["Actions Compute Minutes (YTD)", ytd_mins],
+                    ["Billing Gross Usage Value (YTD USD)", ytd_gross],
+                ])
 
     curr_row = write_table(summary, 4, ("Metric", "Fleet Aggregate"), kpis) + 2
 

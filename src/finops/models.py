@@ -217,6 +217,18 @@ class OrgBillingSummary:
     repo_lfs_gb_hours: Dict[str, float] = field(default_factory=dict)
     items: List[BillingUsageRecord] = field(default_factory=list)
 
+    @property
+    def ytd_compute_minutes(self) -> float:
+        return sum(
+            it.quantity
+            for it in self.items
+            if it.period == "YTD Usage" and "minute" in it.unit_type.lower()
+        )
+
+    @property
+    def ytd_gross_amount_usd(self) -> float:
+        return sum(it.gross_amount for it in self.items if it.period == "YTD Usage")
+
 
 @dataclass
 class ReleaseAssetRecord:
@@ -246,6 +258,7 @@ class RepoStorageProfile:
     packages: List[PackageRecord] = field(default_factory=list)
     lfs_bytes: int = 0
     lfs_files: List[Tuple[str, int]] = field(default_factory=list)
+    lfs_oids: Dict[str, Tuple[str, int]] = field(default_factory=dict)
     lfs_gb_hours: float = 0.0
     release_assets: List[ReleaseAssetRecord] = field(default_factory=list)
     repo_retention_days: Optional[int] = None

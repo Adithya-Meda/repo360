@@ -114,6 +114,7 @@ DEFAULT_GITHUB_APP_PERMISSIONS: dict[str, str] = {
     "members": "read",
     "metadata": "read",
     "organization_administration": "read",
+    "organization_plan": "read",
     "organization_self_hosted_runners": "read",
     "packages": "read",
     "pull_requests": "read",

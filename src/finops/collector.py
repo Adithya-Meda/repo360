@@ -454,13 +454,21 @@ def _parse_lfs_patterns(gitattributes_text: str) -> List[str]:
     return patterns
 
 
-def _parse_lfs_pointer_size(text: str) -> Optional[int]:
+def _parse_lfs_pointer(text: str) -> Optional[Tuple[Optional[str], int]]:
+    """Extract (oid, size_bytes) from a Git LFS pointer blob."""
     if not text or not text.startswith("version https://git-lfs.github.com/spec/v1"):
         return None
-    match = re.search(r"^size\s+(\d+)\s*$", text, re.MULTILINE)
-    if match:
-        return int(match.group(1))
-    return None
+    size_match = re.search(r"^size\s+(\d+)\s*$", text, re.MULTILINE)
+    if not size_match:
+        return None
+    oid_match = re.search(r"^oid\s+(sha256:[0-9a-fA-F]+)\s*$", text, re.MULTILINE)
+    oid = oid_match.group(1).lower() if oid_match else None
+    return oid, int(size_match.group(1))
+
+
+def _parse_lfs_pointer_size(text: str) -> Optional[int]:
+    parsed = _parse_lfs_pointer(text)
+    return parsed[1] if parsed else None
 
 
 def _matches_lfs_pattern(path: str, patterns: List[str]) -> bool:
@@ -478,6 +486,8 @@ def collect_org_repo_assets(
     org: str,
     target_repos: Set[str],
     errors_out: Optional[List[str]] = None,
+    *,
+    lfs_oids_out: Optional[Dict[str, Dict[str, Tuple[str, int]]]] = None,
 ) -> Tuple[Dict[str, List[Tuple[str, int]]], Dict[str, List[ReleaseAssetRecord]]]:
     """Detect Git LFS tracked pointers and GitHub Release binary assets per repository."""
     if not target_repos:
@@ -627,32 +637,47 @@ def collect_org_repo_assets(
             tree_items = tree_resp.get("tree") if isinstance(tree_resp, dict) else None
             if not isinstance(tree_items, list):
                 continue
-            pointer_paths: List[str] = []
+            pointer_entries: List[Tuple[str, str]] = []
             for entry in tree_items:
                 if not isinstance(entry, dict) or entry.get("type") != "blob":
                     continue
                 blob_size = int(entry.get("size") or 0)
                 path = str(entry.get("path") or "")
+                blob_sha = str(entry.get("sha") or "")
                 if 0 < blob_size <= 512 and _matches_lfs_pattern(path, patterns):
-                    pointer_paths.append(path)
-            if not pointer_paths:
+                    pointer_entries.append((path, blob_sha))
+            if not pointer_entries:
                 continue
 
             repo_objects: List[Tuple[str, int]] = []
-            for path in pointer_paths[:100]:
+            repo_oid_map: Dict[str, Tuple[str, int]] = {}
+            for path, blob_sha in pointer_entries[:100]:
                 try:
-                    content_resp = client.get(org, f"/repos/{org}/{repo_name}/contents/{quote(path, safe='/')}")
-                    encoded = content_resp.get("content") if isinstance(content_resp, dict) else None
-                    if not encoded:
-                        continue
-                    decoded = base64.b64decode(encoded).decode("utf-8", errors="replace")
-                    lfs_size = _parse_lfs_pointer_size(decoded)
-                    if lfs_size is not None and lfs_size > 0:
+                    parsed: Optional[Tuple[Optional[str], int]] = None
+                    if blob_sha:
+                        blob_resp = client.get(org, f"/repos/{org}/{repo_name}/git/blobs/{blob_sha}")
+                        encoded_blob = blob_resp.get("content") if isinstance(blob_resp, dict) else None
+                        if encoded_blob:
+                            decoded_blob = base64.b64decode(encoded_blob).decode("utf-8", errors="replace")
+                            parsed = _parse_lfs_pointer(decoded_blob)
+                    if parsed is None:
+                        content_resp = client.get(org, f"/repos/{org}/{repo_name}/contents/{quote(path, safe='/')}")
+                        encoded = content_resp.get("content") if isinstance(content_resp, dict) else None
+                        if encoded:
+                            decoded = base64.b64decode(encoded).decode("utf-8", errors="replace")
+                            parsed = _parse_lfs_pointer(decoded)
+                    if parsed is not None and parsed[1] > 0:
+                        oid, lfs_size = parsed
                         repo_objects.append((path, lfs_size))
+                        if oid:
+                            repo_oid_map[path] = (oid, lfs_size)
                 except Exception as err:
                     logger.debug("Failed reading LFS pointer %s/%s/%s: %s", org, repo_name, path, err)
             if repo_objects:
-                lfs_by_repo[repo_name.lower()] = repo_objects
+                repo_key = repo_name.lower()
+                lfs_by_repo[repo_key] = repo_objects
+                if lfs_oids_out is not None and repo_oid_map:
+                    lfs_oids_out[repo_key] = repo_oid_map
         except Exception as err:
             logger.debug("Failed inspecting Git LFS tree for %s/%s: %s", org, repo_name, err)
     return lfs_by_repo, releases_by_repo
@@ -860,6 +885,7 @@ def collect_finops_data(
     org_cache_repos: Dict[str, Optional[Set[str]]] = {}
     org_retention_defaults: Dict[str, Optional[int]] = {}
     org_lfs_map: Dict[str, Dict[str, List[Tuple[str, int]]]] = {}
+    org_lfs_oids_map: Dict[str, Dict[str, Dict[str, Tuple[str, int]]]] = {}
     org_releases_map: Dict[str, Dict[str, List[ReleaseAssetRecord]]] = {}
     org_billing_map: Dict[str, OrgBillingSummary] = {}
 
@@ -876,6 +902,7 @@ def collect_finops_data(
             Optional[Set[str]],
             Optional[int],
             Dict[str, List[Tuple[str, int]]],
+            Dict[str, Dict[str, Tuple[str, int]]],
             Dict[str, List[ReleaseAssetRecord]],
             OrgBillingSummary,
             List[str],
@@ -884,11 +911,16 @@ def collect_finops_data(
             pkgs = collect_org_packages(client, org_name, errors_out=errs)
             cache_repos = collect_org_cache_repos(client, org_name)
             org_ret = collect_org_retention_days(client, org_name)
+            lfs_oids: Dict[str, Dict[str, Tuple[str, int]]] = {}
             lfs_map, rel_map = collect_org_repo_assets(
-                client, org_name, targets_by_org.get(org_name.lower(), set()), errors_out=errs
+                client,
+                org_name,
+                targets_by_org.get(org_name.lower(), set()),
+                errors_out=errs,
+                lfs_oids_out=lfs_oids,
             )
             billing = collect_org_billing(client, org_name, errors_out=errs)
-            return org_name, pkgs, cache_repos, org_ret, lfs_map, rel_map, billing, errs
+            return org_name, pkgs, cache_repos, org_ret, lfs_map, lfs_oids, rel_map, billing, errs
 
         org_batches = map_concurrent(
             orgs,
@@ -897,11 +929,12 @@ def collect_finops_data(
             max_cap=8,
             thread_name_prefix="finops-org-signals",
         )
-        for o, pkgs, cache_repos, org_ret, lfs_map, rel_map, billing, errs in org_batches:
+        for o, pkgs, cache_repos, org_ret, lfs_map, lfs_oids, rel_map, billing, errs in org_batches:
             org_packages[o] = pkgs
             org_cache_repos[o.lower()] = cache_repos
             org_retention_defaults[o.lower()] = org_ret
             org_lfs_map[o.lower()] = lfs_map
+            org_lfs_oids_map[o.lower()] = lfs_oids
             org_releases_map[o.lower()] = rel_map
             org_billing_map[o] = billing
             if billing_out is not None:
@@ -952,6 +985,7 @@ def collect_finops_data(
                     if lfs_items:
                         profile.lfs_files = lfs_items
                         profile.lfs_bytes = sum(sz for _, sz in lfs_items)
+                        profile.lfs_oids = org_lfs_oids_map.get(org.lower(), {}).get(repo.lower(), {})
                     rel_items = org_releases_map.get(org.lower(), {}).get(repo.lower(), [])
                     if rel_items:
                         profile.release_assets = rel_items
@@ -1056,6 +1090,11 @@ def build_finops_rows(
         for (idx, _, _), rec_val in zip(ai_items, ai_recs):
             rec_by_idx[idx] = rec_val
 
+    oid_repos_by_org: Dict[str, Dict[str, Set[str]]] = {}
+    for p in profiles:
+        for _, (oid, _) in p.lfs_oids.items():
+            oid_repos_by_org.setdefault(p.org.lower(), {}).setdefault(oid, set()).add(p.repo)
+
     org_profiles: Dict[str, List[RepoStorageProfile]] = {org: [] for org in orgs}
     for idx, p in enumerate(profiles):
         org_profiles.setdefault(p.org, []).append(p)
@@ -1122,6 +1161,11 @@ def build_finops_rows(
             detail_parts = [f"{lfs_size:,} bytes"]
             if p.lfs_gb_hours > 0:
                 detail_parts.append(f"{round(p.lfs_gb_hours, 2)} GB-hrs YTD")
+            oid_info = p.lfs_oids.get(lfs_path)
+            if oid_info:
+                shared_repos = oid_repos_by_org.get(p.org.lower(), {}).get(oid_info[0], set())
+                if len(shared_repos) > 1:
+                    detail_parts.append(f"Shared LFS OID across {len(shared_repos)} repos (deduplicated at org level)")
             cache_package_rows.append([
                 p.org,
                 p.repo,
@@ -1162,6 +1206,21 @@ def build_finops_rows(
                 ver_label,
             ])
 
+    def _sum_unique_lfs_bytes(profiles_seq: List[RepoStorageProfile], flagged_only: bool = False) -> int:
+        unique_oids: Dict[str, int] = {}
+        unkeyed_total = 0
+        for prof in profiles_seq:
+            if flagged_only and prof.lfs_mb < 50:
+                continue
+            keyed_bytes = 0
+            for _, (oid, sz) in prof.lfs_oids.items():
+                keyed_bytes += sz
+                if oid not in unique_oids or sz > unique_oids[oid]:
+                    unique_oids[oid] = sz
+            if prof.lfs_bytes > keyed_bytes:
+                unkeyed_total += prof.lfs_bytes - keyed_bytes
+        return sum(unique_oids.values()) + unkeyed_total
+
     for org in orgs:
         p_list = org_profiles.get(org, [])
         pkgs = org_packages.get(org, [])
@@ -1176,7 +1235,7 @@ def build_finops_rows(
         total_cache_bytes = sum(p.cache_bytes for p in p_list)
         total_cache_mb = format_bytes_to_mb(total_cache_bytes)
         total_pkg_bytes = sum(pkg.size_in_bytes for pkg in pkgs)
-        total_lfs_bytes = sum(p.lfs_bytes for p in p_list)
+        total_lfs_bytes = _sum_unique_lfs_bytes(p_list)
         total_release_bytes = sum(p.release_bytes for p in p_list)
         total_footprint_bytes = (
             total_disk_bytes
@@ -1190,7 +1249,7 @@ def build_finops_rows(
 
         inefficient_art_bytes = sum(a.size_in_bytes for p in p_list for a in p.default_90_day_artifacts)
         stale_cache_bytes = sum(c.size_in_bytes for p in p_list for c in p.caches if c.is_stale)
-        flagged_lfs_bytes = sum(p.lfs_bytes for p in p_list if p.lfs_mb >= 50)
+        flagged_lfs_bytes = _sum_unique_lfs_bytes(p_list, flagged_only=True)
         flagged_release_bytes = 0
         for p in p_list:
             if p.release_mb >= 50 and len(p.release_assets) > 1:

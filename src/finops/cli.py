@@ -60,20 +60,26 @@ def print_finops_scorecard(
             if len(r) > 4 and str(r[2]).startswith("Package (") and isinstance(r[4], (int, float))
         )
     )
-    total_lfs_mb = _round_mb(
-        sum(
-            r[4]
-            for r in cache_package_rows
-            if len(r) > 4 and str(r[2]) == "Git LFS Object" and isinstance(r[4], (int, float))
+    if any(len(r) > 13 for r in org_rows):
+        total_lfs_mb = _round_mb(sum(r[13] for r in org_rows if len(r) > 13 and isinstance(r[13], (int, float))))
+    else:
+        total_lfs_mb = _round_mb(
+            sum(
+                r[4]
+                for r in cache_package_rows
+                if len(r) > 4 and str(r[2]) == "Git LFS Object" and isinstance(r[4], (int, float))
+            )
         )
-    )
-    total_release_mb = _round_mb(
-        sum(
-            r[4]
-            for r in cache_package_rows
-            if len(r) > 4 and str(r[2]) == "Release Asset" and isinstance(r[4], (int, float))
+    if any(len(r) > 14 for r in org_rows):
+        total_release_mb = _round_mb(sum(r[14] for r in org_rows if len(r) > 14 and isinstance(r[14], (int, float))))
+    else:
+        total_release_mb = _round_mb(
+            sum(
+                r[4]
+                for r in cache_package_rows
+                if len(r) > 4 and str(r[2]) == "Release Asset" and isinstance(r[4], (int, float))
+            )
         )
-    )
     total_90d_policy_repos = sum(r[12] for r in org_rows if len(r) > 12 and isinstance(r[12], int))
     total_footprint_mb = _round_mb(sum(r[9] for r in org_rows if len(r) > 9 and isinstance(r[9], (int, float))))
     total_waste_mb = _round_mb(sum(r[10] for r in org_rows if len(r) > 10 and isinstance(r[10], (int, float))))

@@ -27,6 +27,7 @@ def test_get_manifest_payload() -> None:
     assert manifest["redirect_url"] == "http://127.0.0.1:8989/callback"
     assert "?" not in manifest["redirect_url"]
     assert manifest["default_permissions"]["organization_administration"] == "read"
+    assert manifest["default_permissions"]["organization_plan"] == "read"
     assert manifest["default_permissions"]["administration"] == "read"
     assert manifest["default_permissions"]["actions"] == "read"
     assert manifest["default_permissions"]["contents"] == "read"

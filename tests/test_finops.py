@@ -465,6 +465,11 @@ def test_finops_retention_rounding_precision_lfs_and_billing(tmp_path: Path):
                                     },
                                 },
                                 {
+                                    "name": "MyShuttle-Java",
+                                    "object": {"text": "*.avi filter=lfs diff=lfs merge=lfs -text\n"},
+                                    "releases": {"pageInfo": {"hasNextPage": False}, "nodes": []},
+                                },
+                                {
                                     "name": "Empty-Repo",
                                     "object": None,
                                     "releases": {"pageInfo": {"hasNextPage": False}, "nodes": []},
@@ -482,8 +487,14 @@ def test_finops_retention_rounding_precision_lfs_and_billing(tmp_path: Path):
         if path.endswith("/artifact-and-log-retention"):
             return {"days": 90}
         if path.endswith("/git/trees/HEAD"):
+            if "MyShuttle-Java" in path:
+                return {"tree": [{"type": "blob", "path": "demo.avi", "sha": "blobsha123", "size": 130}]}
             return {"tree": [{"type": "blob", "path": "demo.avi", "size": 130}]}
+        if path.endswith("/git/blobs/blobsha123"):
+            return {"content": pointer_b64, "encoding": "base64"}
         if path.endswith("/contents/demo.avi"):
+            if "MyShuttle-Java" in path:
+                return {"content": "", "encoding": "none", "size": 120338944}
             return {"content": pointer_b64}
         if path.endswith("/settings/billing/usage/summary"):
             return {
@@ -521,7 +532,17 @@ def test_finops_retention_rounding_precision_lfs_and_billing(tmp_path: Path):
                         "netAmount": 0.0,
                         "unitType": "GigabyteHours",
                         "repositoryName": "Opsera",
-                    }
+                    },
+                    {
+                        "product": "actions",
+                        "sku": "Actions Linux",
+                        "quantity": 615.0,
+                        "grossAmount": 3.69,
+                        "discountAmount": 3.69,
+                        "netAmount": 0.0,
+                        "unitType": "Minutes",
+                        "repositoryName": "Sample-Java-Maven-App",
+                    },
                 ]
             }
         return {}
@@ -556,6 +577,7 @@ def test_finops_retention_rounding_precision_lfs_and_billing(tmp_path: Path):
             ("DefaultOrg24", "Opsera"),
             ("DefaultOrg24", "Repo-Audit"),
             ("DefaultOrg24", "EVChargeBuddy-Frontend"),
+            ("DefaultOrg24", "MyShuttle-Java"),
             ("DefaultOrg24", "Empty-Repo"),
         ],
         FinOpsConfig(output_dir=str(tmp_path)),
@@ -563,6 +585,7 @@ def test_finops_retention_rounding_precision_lfs_and_billing(tmp_path: Path):
             ("defaultorg24", "opsera"): {"size": 20, "private": True},
             ("defaultorg24", "repo-audit"): {"size": 2, "private": True},
             ("defaultorg24", "evchargebuddy-frontend"): {"size": 140, "private": True},
+            ("defaultorg24", "myshuttle-java"): {"size": 1943, "private": True},
             ("defaultorg24", "empty-repo"): {"size": 0, "private": True},
         },
         billing_out=billing_out,
@@ -571,20 +594,25 @@ def test_finops_retention_rounding_precision_lfs_and_billing(tmp_path: Path):
     bill_rows = build_billing_rows(billing_out)
 
     opsera_row = next(r for r in repo_rows if r[1] == "Opsera")
+    myshuttle_row = next(r for r in repo_rows if r[1] == "MyShuttle-Java")
     audit_row = next(r for r in repo_rows if r[1] == "Repo-Audit")
     ev_row = next(r for r in repo_rows if r[1] == "EVChargeBuddy-Frontend")
     empty_row = next(r for r in repo_rows if r[1] == "Empty-Repo")
     assert opsera_row[11] == 114.76
     assert opsera_row[13] == 114.78
     assert opsera_row[14] == "Moderate Waste"
+    assert myshuttle_row[11] == 114.76
+    assert myshuttle_row[14] == "Moderate Waste"
     assert audit_row[3] == 0.002
     assert ev_row[12] == 60.0
     assert ev_row[14] == "Moderate Waste"
     assert empty_row[7] == 90
-    assert org_rows[0][12] == 4
+    assert org_rows[0][12] == 5
+    # Shared OID deduplicated across Opsera and MyShuttle-Java at org level
     assert org_rows[0][13] == 114.76
     assert org_rows[0][14] == 60.0
     assert any(row[2] == "Release Asset" for row in cp_rows)
+    assert any(row[1] == "MyShuttle-Java" and "Shared LFS OID" in str(row[7]) for row in cp_rows)
     assert art_rows[0][7] == 60
     assert art_rows[0][11] == "90 Days"
 
@@ -608,8 +636,10 @@ def test_finops_retention_rounding_precision_lfs_and_billing(tmp_path: Path):
         for row in wb["Executive Summary"].iter_rows()
         if len(row) > 1 and row[0].value is not None
     }
-    assert prod_kpis["Repositories with 90-Day Default Policy"] == 4
+    assert prod_kpis["Repositories with 90-Day Default Policy"] == 5
     assert prod_kpis["Git LFS Storage Tracked (MB)"] == 114.76
     assert prod_kpis["Release Asset Storage Tracked (MB)"] == 60.0
     assert prod_kpis["Estimated Storage Waste / Savings Potential (MB)"] > 0
     assert prod_kpis["Actions Compute Minutes (Current Period)"] == 34.0
+    assert prod_kpis["Actions Compute Minutes (YTD)"] == 615.0
+    assert prod_kpis["Billing Gross Usage Value (YTD USD)"] == 3.7691
