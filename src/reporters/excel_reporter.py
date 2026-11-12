@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 import openpyxl
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -11,6 +11,7 @@ from openpyxl.utils import get_column_letter
 
 from .base_reporter import BaseReporter
 from ..checks.base import CheckResult, CheckSeverity, CheckStatus, Persona
+from ..common.concurrency import AI_NOT_ENABLED_MESSAGE
 
 
 class ExcelReporter(BaseReporter):
@@ -135,6 +136,7 @@ class ExcelReporter(BaseReporter):
         output_path: str,
         executive_summary: str = "",
         model_name: str = "",
+        ai_enabled: Optional[bool] = None,
     ) -> str:
         """Build and write the Excel workbook."""
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
@@ -142,13 +144,19 @@ class ExcelReporter(BaseReporter):
 
         ws_summary = wb.active
         ws_summary.title = "Executive_Summary"
-        self._build_summary_sheet(ws_summary, results, executive_summary, model_name=model_name)
+        self._build_summary_sheet(
+            ws_summary,
+            results,
+            executive_summary,
+            model_name=model_name,
+            ai_enabled=ai_enabled,
+        )
 
         ws_playbook = wb.create_sheet(title="Fleet_Playbook")
         self._build_fleet_playbook_sheet(ws_playbook, results)
 
         ws_ai = wb.create_sheet(title="AI_Recommendations")
-        self._build_ai_recommendations_sheet(ws_ai, results)
+        self._build_ai_recommendations_sheet(ws_ai, results, ai_enabled=ai_enabled)
 
         ws_org = wb.create_sheet(title="Org_Admin_Findings")
         self._build_findings_sheet(
@@ -180,6 +188,7 @@ class ExcelReporter(BaseReporter):
         results: List[CheckResult],
         executive_summary: str = "",
         model_name: str = "",
+        ai_enabled: Optional[bool] = None,
     ) -> None:
         ws.views.sheetView[0].showGridLines = True
         ws["B2"] = "Repo360 Platform Governance & Intelligence Summary"
@@ -190,7 +199,7 @@ class ExcelReporter(BaseReporter):
         warned = sum(1 for r in results if r.status == CheckStatus.WARN)
         failed = sum(1 for r in results if r.status == CheckStatus.FAIL)
         skipped = sum(1 for r in results if r.status == CheckStatus.SKIPPED)
-        ai_count = sum(1 for r in results if self.is_ai_result(r))
+        ai_count = 0 if ai_enabled is False else sum(1 for r in results if self.is_ai_result(r))
 
         effective = total - skipped
         if effective > 0:
@@ -306,7 +315,41 @@ class ExcelReporter(BaseReporter):
         org_end_row = max(13, org_start_row + len(org_metrics))
 
         is_det_summary = model_name == "Deterministic Policy Engine"
-        if executive_summary:
+        if ai_enabled is False and not executive_summary:
+            narrative_title = "AI Executive Risk & Governance Narrative (AI Not Enabled)"
+            narrative_text = AI_NOT_ENABLED_MESSAGE
+            narrative_banner_row = org_end_row + 2
+
+            header_cell = ws.cell(
+                row=narrative_banner_row,
+                column=2,
+                value=narrative_title,
+            )
+            header_cell.font = self.font_header
+            header_cell.fill = self.fill_ai_header
+            header_cell.alignment = Alignment(horizontal="left", vertical="center")
+            ws.merge_cells(f"B{narrative_banner_row}:M{narrative_banner_row}")
+            ws.row_dimensions[narrative_banner_row].height = 26
+            for c in range(2, 14):
+                ws.cell(row=narrative_banner_row, column=c).fill = self.fill_ai_header
+                ws.cell(row=narrative_banner_row, column=c).border = self.border_cell
+
+            narrative_start_row = narrative_banner_row + 1
+            narrative_end_row = narrative_start_row + 1
+            c_narrative = ws.cell(
+                row=narrative_start_row,
+                column=2,
+                value=self.sanitize_spreadsheet_value(narrative_text),
+            )
+            c_narrative.font = self.font_italic
+            c_narrative.alignment = Alignment(wrap_text=True, vertical="center")
+            ws.merge_cells(f"B{narrative_start_row}:M{narrative_end_row}")
+            for r in range(narrative_start_row, narrative_end_row + 1):
+                ws.row_dimensions[r].height = 20
+                for c in range(2, 14):
+                    ws.cell(row=r, column=c).border = self.border_cell
+            notice_row = narrative_end_row + 2
+        elif executive_summary:
             if is_det_summary:
                 narrative_title = "Executive Risk & Governance Narrative (Deterministic Policy Summary)"
             else:
@@ -359,7 +402,7 @@ class ExcelReporter(BaseReporter):
         else:
             notice_row = org_end_row + 2
 
-        if ai_count > 0 or (executive_summary and not is_det_summary):
+        if ai_enabled is not False and (ai_count > 0 or (executive_summary and not is_det_summary)):
             c_notice = ws.cell(
                 row=notice_row,
                 column=2,
@@ -458,7 +501,12 @@ class ExcelReporter(BaseReporter):
             )
         ws.auto_filter.ref = f"A1:I{len(clusters) + 1}"
 
-    def _build_ai_recommendations_sheet(self, ws, results: List[CheckResult]) -> None:
+    def _build_ai_recommendations_sheet(
+        self,
+        ws,
+        results: List[CheckResult],
+        ai_enabled: Optional[bool] = None,
+    ) -> None:
         """Build dedicated worksheet consolidating AI-synthesized remediations without repetitive clutter."""
         from ..ai.engine import AIEngine
 
@@ -486,6 +534,19 @@ class ExcelReporter(BaseReporter):
             cell.font = self.font_header
             cell.fill = self.fill_ai_header
             cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+        if ai_enabled is False:
+            ws.cell(
+                row=2,
+                column=1,
+                value=AI_NOT_ENABLED_MESSAGE,
+            )
+            ws.cell(row=2, column=1).font = self.font_italic
+            ws.cell(row=2, column=1).alignment = Alignment(horizontal="center", vertical="center")
+            ws.merge_cells("A2:L2")
+            ws.row_dimensions[2].height = 28
+            self._auto_adjust_columns(ws)
+            return
 
         ai_findings = [r for r in results if self.is_ai_result(r)]
         if ai_findings:

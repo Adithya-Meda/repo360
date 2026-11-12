@@ -11,11 +11,12 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..auth.github_app_auth import GitHubAppAuth
 from ..common.cli import add_common_scan_arguments, parse_lookback_arg
 from ..common.client import ResilientGitHubClient
+from ..common.concurrency import format_ai_scorecard_status
 from ..common.inventory import (
     discover_app_organizations,
     discover_app_repositories,
@@ -42,6 +43,7 @@ def print_activity_scorecard(
     xlsx_path: Path,
     elapsed_seconds: float,
     failures: Optional[List[Tuple[str, str]]] = None,
+    ai_engine: Optional[Any] = None,
 ) -> None:
     """Print an executive, color-coded terminal scorecard."""
     G = "\033[92m"
@@ -75,6 +77,7 @@ def print_activity_scorecard(
     print(f"   {B}Total Activities      :{X} {B}{total_activities:,}{X}")
     if failures:
         print(f"   {B}Warnings / Errors     :{X} {Y}{len(failures)} items (see workbook Summary){X}")
+    print(f"   {B}AI Insights Engine    :{X} {format_ai_scorecard_status(ai_engine)}")
     print(f"   {B}Duration              :{X} {elapsed_str}")
     print(f"{C}{'-' * 76}{X}")
     print(f"   {B}Executive Workbook (XLSX) :{X} {xlsx_path}")
@@ -292,5 +295,6 @@ def run_activity_cli(argv: Optional[List[str]] = None) -> int:
         xlsx_path=xlsx_path,
         elapsed_seconds=elapsed,
         failures=failures,
+        ai_engine=ai_engine,
     )
     return 0

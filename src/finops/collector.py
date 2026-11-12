@@ -11,7 +11,14 @@ import requests
 
 from ..activity.models import IST, fmt_timestamp, parse_ts
 from ..common.client import ResilientGitHubClient
-from ..common.concurrency import is_empty_repo, map_concurrent, resolve_worker_count, run_concurrent_ai
+from ..common.concurrency import (
+    AI_NOT_ENABLED_LABEL,
+    is_ai_disabled,
+    is_empty_repo,
+    map_concurrent,
+    resolve_worker_count,
+    run_concurrent_ai,
+)
 from .models import (
     ArtifactRecord,
     CacheRecord,
@@ -444,6 +451,7 @@ def build_finops_rows(
 
     ai_items: List[Tuple[int, RepoStorageProfile, int]] = []
     rec_by_idx: Dict[int, str] = {}
+    ai_disabled = is_ai_disabled(ai_engine)
 
     for idx, p in enumerate(profiles):
         stale_cache_count = sum(1 for c in p.caches if c.is_stale)
@@ -455,6 +463,8 @@ def build_finops_rows(
         )
         if is_baseline_optimized:
             rec_by_idx[idx] = "-"
+        elif ai_disabled:
+            rec_by_idx[idx] = AI_NOT_ENABLED_LABEL
         elif ai_engine is not None:
             ai_items.append((idx, p, stale_cache_count))
         else:
@@ -480,7 +490,7 @@ def build_finops_rows(
     org_profiles: Dict[str, List[RepoStorageProfile]] = {org: [] for org in orgs}
     for idx, p in enumerate(profiles):
         org_profiles.setdefault(p.org, []).append(p)
-        rec = rec_by_idx.get(idx, p.recommendation)
+        rec = rec_by_idx.get(idx, AI_NOT_ENABLED_LABEL if ai_disabled else p.recommendation)
 
         repo_rows.append([
             p.org,

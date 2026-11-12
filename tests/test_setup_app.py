@@ -337,3 +337,17 @@ def test_run_manual_setup_interactive_entry_and_template_mode(tmp_path, monkeypa
     out = capsys.readouterr().out
     assert "github.app_id" in out
     assert "repo360 health" in out
+
+
+def test_open_browser_url_handles_headless_and_errors(capsys) -> None:
+    """Headless browser failures print the manual URL instead of aborting setup."""
+    import webbrowser
+    from src.setup_app import _open_browser_url
+
+    with patch("src.setup_app.webbrowser.open", return_value=False):
+        _open_browser_url("http://127.0.0.1:8989/?s=abc", "Open URL manually")
+    assert "Open URL manually: http://127.0.0.1:8989/?s=abc" in capsys.readouterr().out
+
+    with patch("src.setup_app.webbrowser.open", side_effect=webbrowser.Error("no display")):
+        _open_browser_url("http://127.0.0.1:8989/?s=xyz", "Open URL manually")
+    assert "Open URL manually: http://127.0.0.1:8989/?s=xyz" in capsys.readouterr().out

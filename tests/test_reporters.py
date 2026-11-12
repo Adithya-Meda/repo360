@@ -497,3 +497,300 @@ def test_hybrid_ai_and_fallback_recommendations_and_truthful_scorecard(capsys) -
         for p in (run_xlsx, act_xlsx):
             if p.exists():
                 p.unlink()
+
+
+def test_ai_not_enabled_omits_fallback_remediations_across_reports(capsys, tmp_path) -> None:
+    """Verify disabled AI omits fallback remediation suggestions and displays 'AI was not enabled' across reports."""
+    from datetime import datetime, timedelta, timezone
+    from unittest.mock import MagicMock
+    from src.ai.engine import AIEngine
+    from src.activity.models import ActivityConfig
+    from src.activity.reporter import write_activity_workbook
+    from src.bypass.collector import build_bypass_rows, collect_bypass_data
+    from src.bypass.models import BypassConfig
+    from src.bypass.reporter import write_bypass_workbook
+    from src.checks.base import CheckResult, CheckSeverity, CheckStatus, Persona
+    from src.common.concurrency import AI_NOT_ENABLED_LABEL, AI_NOT_ENABLED_MESSAGE
+    from src.dora.collector import build_dora_rows
+    from src.dora.models import DORAConfig, DeploymentRecord, RepoDORAMetrics
+    from src.dora.reporter import write_dora_workbook
+    from src.finops.collector import build_finops_rows
+    from src.finops.models import ArtifactRecord, FinOpsConfig, RepoStorageProfile
+    from src.finops.reporter import write_finops_workbook
+    from src.main import print_terminal_scorecard
+    from src.runners.models import RunnersConfig
+    from src.runners.reporter import write_runners_workbook
+
+    disabled_ai = AIEngine(enabled=False)
+    disabled_ai.disabled_by_cli = True
+
+    audit_results = [
+        CheckResult(
+            check_id="dependabot_configuration",
+            check_name="Dependabot Configuration",
+            persona=Persona.REPO_ADMIN,
+            category="Supply Chain",
+            status=CheckStatus.FAIL,
+            severity=CheckSeverity.HIGH,
+            org_name="acme",
+            repo_name="api",
+            current_state="Missing dependabot.yml",
+            recommended_state="Enable Dependabot updates",
+            explanation="Automate dependency patches.",
+            remediation_snippet_after="version: 2\nupdates:\n  - package-ecosystem: pip",
+        )
+    ]
+
+    audit_xlsx = tmp_path / "audit_no_ai.xlsx"
+    ExcelReporter().generate(audit_results, str(audit_xlsx), ai_enabled=False)
+    wb_audit = openpyxl.load_workbook(audit_xlsx)
+
+    sum_vals = [
+        str(c.value)
+        for row in wb_audit["Executive_Summary"].iter_rows()
+        for c in row
+        if c.value is not None
+    ]
+    assert "AI Executive Risk & Governance Narrative (AI Not Enabled)" in sum_vals
+    assert AI_NOT_ENABLED_MESSAGE in sum_vals
+    assert not any("Deterministic Policy" in v for v in sum_vals)
+
+    ws_ai = wb_audit["AI_Recommendations"]
+    assert ws_ai.max_row == 2
+    assert ws_ai["A2"].value == AI_NOT_ENABLED_MESSAGE
+    ai_vals = [str(c.value) for row in ws_ai.iter_rows() for c in row if c.value is not None]
+    assert not any("Standard Policy (Fallback)" in v or "Deterministic Policy Engine" in v for v in ai_vals)
+
+    print_terminal_scorecard(
+        audit_results,
+        [RepoTarget(org_name="acme", repo_name="api", target_personas={"all"})],
+        {"xlsx": str(audit_xlsx)},
+        ai_engine=disabled_ai,
+    )
+    scorecard_out = capsys.readouterr().out
+    assert "NOT ENABLED" in scorecard_out
+    assert "Deterministic" not in scorecard_out
+
+    now = datetime.now(timezone.utc)
+
+    act_xlsx = tmp_path / "activity_no_ai.xlsx"
+    write_activity_workbook(
+        act_xlsx,
+        ActivityConfig(),
+        now - timedelta(days=30),
+        now,
+        [],
+        [],
+        [],
+        [],
+        1,
+        ai_engine=disabled_ai,
+    )
+    act_vals = [
+        str(c.value)
+        for row in openpyxl.load_workbook(act_xlsx)["Executive Summary"].iter_rows()
+        for c in row
+        if c.value is not None
+    ]
+    assert "AI Contributor Cadence & Collaboration Summary (AI Not Enabled)" in act_vals
+    assert AI_NOT_ENABLED_MESSAGE in act_vals
+    assert not any("Deterministic Policy" in v for v in act_vals)
+
+    run_xlsx = tmp_path / "runners_no_ai.xlsx"
+    write_runners_workbook(
+        run_xlsx,
+        RunnersConfig(),
+        now - timedelta(days=30),
+        now,
+        [],
+        [],
+        [],
+        ai_engine=disabled_ai,
+    )
+    run_vals = [
+        str(c.value)
+        for row in openpyxl.load_workbook(run_xlsx)["Executive Summary"].iter_rows()
+        for c in row
+        if c.value is not None
+    ]
+    assert "AI Fleet Advisory & Autoscaling Guidance (AI Not Enabled)" in run_vals
+    assert AI_NOT_ENABLED_MESSAGE in run_vals
+    assert not any("Actions Runner Controller" in v or "Deterministic Policy" in v for v in run_vals)
+
+    waste_profile = RepoStorageProfile(
+        org="acme",
+        repo="heavy-repo",
+        visibility="private",
+        disk_size_kb=2048,
+        artifacts=[
+            ArtifactRecord(
+                id=1,
+                name="build",
+                size_in_bytes=10485760,
+                created_at=now,
+                expires_at=now + timedelta(days=90),
+            )
+        ],
+    )
+    fin_repo_rows, fin_org_rows, fin_art_rows, fin_cp_rows = build_finops_rows(
+        [waste_profile], {}, ["acme"], ai_engine=disabled_ai
+    )
+    assert fin_repo_rows[0][-1] == AI_NOT_ENABLED_LABEL
+    fin_xlsx = tmp_path / "finops_no_ai.xlsx"
+    write_finops_workbook(
+        fin_xlsx,
+        FinOpsConfig(),
+        now,
+        fin_repo_rows,
+        fin_org_rows,
+        fin_art_rows,
+        fin_cp_rows,
+        [],
+        ai_engine=disabled_ai,
+    )
+    fin_vals = [
+        str(c.value)
+        for row in openpyxl.load_workbook(fin_xlsx)["Executive Summary"].iter_rows()
+        for c in row
+        if c.value is not None
+    ]
+    assert "AI Cost & Storage Advisory (AI Not Enabled)" in fin_vals
+    assert AI_NOT_ENABLED_MESSAGE in fin_vals
+
+    dora_metric = RepoDORAMetrics(
+        org="acme",
+        repo="svc",
+        signal_mode="GitHub Deployments",
+        deployments=[
+            DeploymentRecord(
+                "Deployment",
+                "d1",
+                "prod",
+                "production",
+                "FAILURE",
+                "main",
+                now - timedelta(days=1),
+                commit_sha="abc123",
+            )
+        ],
+    )
+    dora_repo_rows, dora_org_rows, dora_dep_rows, dora_rec_rows = build_dora_rows(
+        [dora_metric], ["acme"], window_days=30, ai_engine=disabled_ai
+    )
+    assert dora_repo_rows[0][14] == AI_NOT_ENABLED_LABEL
+    dora_xlsx = tmp_path / "dora_no_ai.xlsx"
+    write_dora_workbook(
+        dora_xlsx,
+        DORAConfig(),
+        now - timedelta(days=30),
+        now,
+        dora_repo_rows,
+        dora_org_rows,
+        dora_dep_rows,
+        dora_rec_rows,
+        [],
+        ai_engine=disabled_ai,
+    )
+    dora_vals = [
+        str(c.value)
+        for row in openpyxl.load_workbook(dora_xlsx)["Executive Summary"].iter_rows()
+        for c in row
+        if c.value is not None
+    ]
+    assert AI_NOT_ENABLED_MESSAGE in dora_vals
+
+    mock_client = MagicMock()
+    mock_client.auth = None
+    ts_str = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    mock_client.paginate.side_effect = [
+        [
+            {
+                "number": 7,
+                "secret_type_display_name": "GitHub Token",
+                "push_protection_bypassed": True,
+                "push_protection_bypassed_by": {"login": "alice"},
+                "push_protection_bypassed_at": ts_str,
+                "created_at": ts_str,
+            }
+        ],
+        [],
+    ]
+    bypass_profiles = collect_bypass_data(
+        mock_client,
+        ["acme"],
+        [("acme", "svc")],
+        now - timedelta(days=30),
+        BypassConfig(),
+        {("acme", "svc"): {"pushed_at": ts_str}},
+        ai_engine=disabled_ai,
+    )
+    push_rows, ruleset_rows, bypass_org_rows, actor_rows = build_bypass_rows(bypass_profiles, ["acme"])
+    assert push_rows[0][8] == AI_NOT_ENABLED_LABEL
+    assert push_rows[0][9] == AI_NOT_ENABLED_MESSAGE
+
+    bypass_xlsx = tmp_path / "bypass_no_ai.xlsx"
+    write_bypass_workbook(
+        bypass_xlsx,
+        BypassConfig(),
+        now - timedelta(days=30),
+        now,
+        push_rows,
+        ruleset_rows,
+        bypass_org_rows,
+        actor_rows,
+        [],
+        ai_engine=disabled_ai,
+    )
+    bypass_vals = [
+        str(c.value)
+        for row in openpyxl.load_workbook(bypass_xlsx)["Executive Summary"].iter_rows()
+        for c in row
+        if c.value is not None
+    ]
+    assert "AI Security Advisory (AI Not Enabled)" in bypass_vals
+    assert AI_NOT_ENABLED_MESSAGE in bypass_vals
+
+
+def test_audit_cli_default_no_ai_writes_ai_not_enabled_workbook(monkeypatch, capsys, tmp_path) -> None:
+    """Verify 'repo360 audit --mock-mode' without AI enabled omits fallback remediation in the output workbook."""
+    import sys
+    from src import main as main_mod
+    from src.common.concurrency import AI_NOT_ENABLED_MESSAGE
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["repo360", "audit", "--mock-mode", "--output-dir", str(tmp_path)],
+    )
+    monkeypatch.setattr(
+        "src.credentials.resolve_runtime_credentials",
+        lambda: {
+            "app_id": "",
+            "installation_id": "",
+            "private_key": "",
+            "api_base_url": "https://api.github.com",
+            "llm_provider": "gemini",
+            "llm_model": "gemini-3.5-flash",
+            "llm_api_key": "",
+            "llm_enabled": False,
+        },
+    )
+
+    rc = main_mod.main()
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "NOT ENABLED" in out
+
+    workbooks = list(tmp_path.glob("*.xlsx"))
+    assert len(workbooks) == 1
+    wb = openpyxl.load_workbook(workbooks[0])
+    assert wb["AI_Recommendations"].max_row == 2
+    assert wb["AI_Recommendations"]["A2"].value == AI_NOT_ENABLED_MESSAGE
+    sum_vals = [
+        str(c.value)
+        for row in wb["Executive_Summary"].iter_rows()
+        for c in row
+        if c.value is not None
+    ]
+    assert "AI Executive Risk & Governance Narrative (AI Not Enabled)" in sum_vals
+    assert AI_NOT_ENABLED_MESSAGE in sum_vals

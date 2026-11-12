@@ -32,17 +32,40 @@ _VALID_GIT_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
 _SEMVER_TAG_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
 
 
+def _posix_bin_candidates(exe_name: str) -> List[Path]:
+    """Return common POSIX user and Homebrew/system bin locations for CLI tools."""
+    home = Path(os.path.expanduser("~"))
+    return [
+        home / ".local" / "bin" / exe_name,
+        Path("/opt/homebrew/bin") / exe_name,
+        Path("/usr/local/bin") / exe_name,
+        Path("/usr/bin") / exe_name,
+    ]
+
+
+def _first_existing_file(candidates: Sequence[Path]) -> Optional[str]:
+    """Return the string path of the first existing file in candidates."""
+    for cand in candidates:
+        if cand.is_file():
+            return str(cand)
+    return None
+
+
 def find_pipx_executable() -> Optional[str]:
     """Locate pipx executable in PATH or standard user package script directories."""
     path_hit = shutil.which("pipx")
     if path_hit:
         return path_hit
 
-    appdata = os.environ.get("LOCALAPPDATA")
-    candidates = [
-        Path(os.path.expanduser("~")) / ".local" / "bin" / "pipx.exe",
-        Path(os.path.expanduser("~")) / ".local" / "bin" / "pipx",
+    if sys.platform != "win32":
+        return _first_existing_file(_posix_bin_candidates("pipx"))
+
+    home = Path(os.path.expanduser("~"))
+    candidates: List[Path] = [
+        home / ".local" / "bin" / "pipx.exe",
+        home / ".local" / "bin" / "pipx",
     ]
+    appdata = os.environ.get("LOCALAPPDATA")
     if appdata:
         candidates.extend([
             Path(appdata) / "Programs" / "Python" / "Scripts" / "pipx.exe",
@@ -53,10 +76,7 @@ def find_pipx_executable() -> Optional[str]:
             for p in packages_dir.glob("PythonSoftwareFoundation.Python.*/LocalCache/local-packages/Python*/Scripts/pipx.exe"):
                 candidates.append(p)
 
-    for c in candidates:
-        if c.is_file():
-            return str(c)
-    return None
+    return _first_existing_file(candidates)
 
 
 def find_uv_executable() -> Optional[str]:
@@ -66,9 +86,18 @@ def find_uv_executable() -> Optional[str]:
         return path_hit
 
     exe_name = "uv.exe" if sys.platform == "win32" else "uv"
-    candidates: List[Path] = [
-        Path(os.path.expanduser("~")) / ".local" / "bin" / exe_name,
-    ]
+    candidates: List[Path] = []
+    if sys.platform == "win32":
+        home = Path(os.path.expanduser("~"))
+        candidates.extend([
+            home / ".local" / "bin" / "uv.exe",
+            home / ".cargo" / "bin" / "uv.exe",
+        ])
+    else:
+        home = Path(os.path.expanduser("~"))
+        candidates.extend(_posix_bin_candidates("uv"))
+        candidates.append(home / ".cargo" / "bin" / "uv")
+
     pipx_bin = find_pipx_executable()
     if pipx_bin:
         candidates.append(Path(pipx_bin).parent / exe_name)
@@ -83,10 +112,7 @@ def find_uv_executable() -> Optional[str]:
     except Exception:
         pass
 
-    for c in candidates:
-        if c.is_file():
-            return str(c)
-    return None
+    return _first_existing_file(candidates)
 
 
 def _is_uv_tool_install() -> bool:

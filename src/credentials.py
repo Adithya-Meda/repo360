@@ -31,14 +31,36 @@ def resolve_user_config_dir() -> str:
     return os.path.expanduser("~/.repo360")
 
 
+def enforce_strict_permissions(file_path: str, mode: int = 0o600) -> None:
+    """Enforce strict owner permissions (0600 files / 0700 dirs) with safe cross-platform fallback."""
+    try:
+        os.chmod(file_path, mode)
+    except Exception as err:
+        logger.debug("Failed setting permissions (%s) on %s: %s", oct(mode), file_path, err)
+
+
+def _ensure_private_dir(path: str) -> str:
+    """Create directory if absent and apply 0700 permissions on POSIX systems."""
+    os.makedirs(path, exist_ok=True)
+    if os.name == "posix":
+        enforce_strict_permissions(path, mode=0o700)
+    return path
+
+
+def _write_restricted_text(file_path: str, content: str) -> None:
+    """Write sensitive text using 0600 creation mode and explicit permission hardening."""
+    fd = os.open(file_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(content)
+    enforce_strict_permissions(file_path)
+
+
 def get_user_config_dir() -> str:
     """Return OS-standard user configuration directory for Repo360, creating it if absent.
 
     Can be overridden via REPO360_CONFIG_DIR environment variable.
     """
-    path = resolve_user_config_dir()
-    os.makedirs(path, exist_ok=True)
-    return path
+    return _ensure_private_dir(resolve_user_config_dir())
 
 
 def get_credentials_path() -> str:
@@ -48,31 +70,17 @@ def get_credentials_path() -> str:
 
 def get_secrets_dir() -> str:
     """Return path to secrets directory where private keys are stored."""
-    path = os.path.join(get_user_config_dir(), "secrets")
-    os.makedirs(path, exist_ok=True)
-    return path
-
-
-def enforce_strict_permissions(file_path: str) -> None:
-    """Enforce strict owner permissions (0600) with safe cross-platform fallback."""
-    try:
-        os.chmod(file_path, 0o600)
-    except Exception as err:
-        logger.debug("Failed setting file permissions on %s: %s", file_path, err)
+    return _ensure_private_dir(os.path.join(get_user_config_dir(), "secrets"))
 
 
 def save_private_key(key_content: str, app_slug: str = "repo360", dest_dir: Optional[str] = None) -> str:
     """Save RSA private key with standardized naming convention and safe permissions."""
     today_str = time.strftime("%Y-%m-%d")
     filename = f"{app_slug}.{today_str}.private-key.pem"
-    target_dir = dest_dir or get_secrets_dir()
-    os.makedirs(target_dir, exist_ok=True)
+    target_dir = _ensure_private_dir(dest_dir) if dest_dir else get_secrets_dir()
     key_path = os.path.join(target_dir, filename)
 
-    with open(key_path, "w", encoding="utf-8") as f:
-        f.write(key_content)
-
-    enforce_strict_permissions(key_path)
+    _write_restricted_text(key_path, key_content)
     return key_path
 
 
@@ -103,10 +111,7 @@ def save_user_credentials(
     }
 
     config_path = get_credentials_path()
-    with open(config_path, "w", encoding="utf-8") as f:
-        json.dump(config_data, f, indent=2)
-
-    enforce_strict_permissions(config_path)
+    _write_restricted_text(config_path, json.dumps(config_data, indent=2))
     return config_path
 
 

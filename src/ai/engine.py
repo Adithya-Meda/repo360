@@ -1308,8 +1308,8 @@ def init_ai_engine(
             raise RuntimeError("--require-ai was specified but AI engine is disabled or not configured.")
         if ai_engine.disabled_by_cli and verify:
             active_log.info(
-                "AI Remediation Engine: DISABLED (--require-ai no). "
-                "Using deterministic policy rules."
+                "AI Remediation Engine: NOT ENABLED (--require-ai no). "
+                "AI remediation suggestions will be omitted."
             )
         return ai_engine
 
@@ -1327,9 +1327,9 @@ def init_ai_engine(
             raise RuntimeError("--require-ai was specified but AI engine is disabled or not configured.")
         if verify:
             active_log.warning(
-                "AI Remediation Engine: OFFLINE (%s). "
-                "Calculations will proceed using deterministic policy rules. "
-                "To enable AI-tailored outputs, run 'repo360 setup' or configure %s.",
+                "AI Remediation Engine: NOT ENABLED / OFFLINE (%s). "
+                "AI remediation suggestions will be omitted. "
+                "To enable AI-tailored outputs, run 'repo360 setup' or configure %s and pass '--require-ai yes'.",
                 offline_reason,
                 key_hint,
             )
@@ -1352,7 +1352,7 @@ def init_ai_engine(
             ai_engine.enabled = False
             active_log.warning(
                 "AI Remediation Engine: OFFLINE (%s). "
-                "Calculations will proceed using deterministic policy rules.",
+                "AI remediation suggestions will be omitted.",
                 reason,
             )
             if require_ai:

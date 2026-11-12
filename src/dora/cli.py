@@ -7,11 +7,12 @@ import logging
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 from ..auth.github_app_auth import GitHubAppAuth
 from ..common.cli import add_common_scan_arguments
 from ..common.client import ResilientGitHubClient
+from ..common.concurrency import format_ai_scorecard_status
 from ..common.inventory import (
     discover_app_organizations,
     discover_app_repositories,
@@ -33,6 +34,7 @@ def print_dora_scorecard(
     elapsed_seconds: float,
     lookback_days: int,
     failures: Optional[List[Tuple[str, str]]] = None,
+    ai_engine: Optional[Any] = None,
 ) -> None:
     """Print an executive color-coded DORA metrics scorecard to stdout."""
     G = "\033[92m"
@@ -125,6 +127,7 @@ def print_dora_scorecard(
     print(f"   {B}Median Recovery Time (MTTR)    :{X} {mttr_str}")
     print(f"   {B}Deployment Rework Rate         :{X} {rework_str}")
     print(f"   {B}Recovery Incidents Tracked     :{X} {resolved_count} resolved, {open_incidents} open")
+    print(f"   {B}AI Advisory Engine             :{X} {format_ai_scorecard_status(ai_engine)}")
     print(f"   {B}Duration                       :{X} {elapsed_str}")
     if stalled_deploys > 0:
         print(
@@ -273,6 +276,7 @@ def run_dora_cli(argv: Optional[List[str]] = None) -> int:
         recovery_rows=recovery_rows,
         failures=failures,
         execution_duration=elapsed,
+        ai_engine=ai_engine,
     )
 
     print_dora_scorecard(
@@ -284,5 +288,6 @@ def run_dora_cli(argv: Optional[List[str]] = None) -> int:
         elapsed_seconds=elapsed,
         lookback_days=cfg.lookback_days,
         failures=failures,
+        ai_engine=ai_engine,
     )
     return 0

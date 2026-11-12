@@ -20,6 +20,7 @@ from ..activity.reporter import (
     write_empty_table,
     write_table,
 )
+from ..common.concurrency import AI_NOT_ENABLED_MESSAGE, is_ai_disabled
 from .models import (
     FINOPS_ARTIFACT_HEADERS,
     FINOPS_CACHE_PACKAGE_HEADERS,
@@ -52,6 +53,7 @@ def write_finops_workbook(
     cache_package_rows: List[list],
     failures: List[Tuple[str, str]],
     execution_duration: Optional[float] = None,
+    ai_engine: Optional[Any] = None,
 ) -> None:
     """Generate high-fidelity executive FinOps workbook for Actions and repository storage."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -106,6 +108,13 @@ def write_finops_workbook(
         ["Collection / Permission Gaps", len(failures)],
     ]
     curr_row = write_table(summary, 4, ("Metric", "Fleet Aggregate"), kpis) + 2
+
+    if is_ai_disabled(ai_engine):
+        curr_row = section_title(summary, curr_row, "AI Cost & Storage Advisory (AI Not Enabled)")
+        summary.cell(curr_row, 1, AI_NOT_ENABLED_MESSAGE)
+        summary.cell(curr_row, 1).font = Font(name="Calibri", size=10, italic=True, color="595959")
+        summary.row_dimensions[curr_row].height = 24
+        curr_row += 2
 
     curr_row = section_title(summary, curr_row, "Organization Storage & Optimization Overview")
     curr_row = write_table(summary, curr_row, FINOPS_ORG_HEADERS, org_rows, bar_col=9) + 2

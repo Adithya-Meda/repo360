@@ -30,7 +30,7 @@ def add_ai_cli_arguments(
         default=False,
         type=parse_yes_no,
         metavar="{yes,no}",
-        help=help_text or "AI insights: yes or no (default: no; offline fallback).",
+        help=help_text or "AI insights: yes or no (default: no; skips AI remediation suggestions).",
     )
 
 

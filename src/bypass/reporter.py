@@ -20,6 +20,7 @@ from ..activity.reporter import (
     write_empty_table,
     write_table,
 )
+from ..common.concurrency import AI_NOT_ENABLED_MESSAGE, is_ai_disabled
 from .models import (
     BYPASS_ACTOR_HEADERS,
     BYPASS_ORG_HEADERS,
@@ -48,6 +49,7 @@ def write_bypass_workbook(
     actor_rows: List[list],
     failures: List[Tuple[str, str]],
     execution_duration: Optional[float] = None,
+    ai_engine: Optional[Any] = None,
 ) -> None:
     """Generate high-fidelity executive compliance workbook for security and policy bypasses."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -99,6 +101,13 @@ def write_bypass_workbook(
     ]
     curr_row = write_table(summary, 4, ("Metric", "Fleet Aggregate"), kpis) + 2
 
+    if is_ai_disabled(ai_engine):
+        curr_row = section_title(summary, curr_row, "AI Security Advisory (AI Not Enabled)")
+        summary.cell(curr_row, 1, AI_NOT_ENABLED_MESSAGE)
+        summary.cell(curr_row, 1).font = Font(name="Calibri", size=10, italic=True, color="595959")
+        summary.row_dimensions[curr_row].height = 24
+        curr_row += 2
+
     curr_row = section_title(summary, curr_row, "Organization Bypass & Compliance Summary")
     curr_row = write_table(summary, curr_row, BYPASS_ORG_HEADERS, org_rows, bar_col=4) + 2
 
@@ -133,6 +142,9 @@ def write_bypass_workbook(
             elif "Low" in val:
                 cell.fill = PatternFill("solid", fgColor="C6EFCE")
                 cell.font = Font(bold=True, color="006100")
+            elif "AI Not Enabled" in val:
+                cell.fill = PatternFill("solid", fgColor="E0E0E0")
+                cell.font = Font(italic=True, color="595959")
     else:
         write_empty_table(
             push_ws,

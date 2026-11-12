@@ -203,14 +203,28 @@ def _find_pipx_venv_dir(pipx_bin: Optional[str]) -> Optional[Path]:
             pass
 
     home = Path.home()
-    candidates = [
-        home / ".local" / "pipx" / "venvs" / "repo360",
-        home / ".local" / "share" / "pipx" / "venvs" / "repo360",
-    ]
+    candidates: List[Path] = []
+    env_local_venvs = os.environ.get("PIPX_LOCAL_VENVS")
+    if env_local_venvs:
+        candidates.append(Path(env_local_venvs) / "repo360")
+    env_pipx_home = os.environ.get("PIPX_HOME")
+    if env_pipx_home:
+        candidates.append(Path(env_pipx_home) / "venvs" / "repo360")
+
     local_appdata = os.environ.get("LOCALAPPDATA")
     if local_appdata:
-        candidates.insert(0, Path(local_appdata) / "pipx" / "pipx" / "venvs" / "repo360")
-        candidates.insert(1, Path(local_appdata) / "pipx" / "venvs" / "repo360")
+        candidates.extend([
+            Path(local_appdata) / "pipx" / "pipx" / "venvs" / "repo360",
+            Path(local_appdata) / "pipx" / "venvs" / "repo360",
+        ])
+
+    if sys.platform == "darwin":
+        candidates.append(home / "Library" / "Application Support" / "pipx" / "venvs" / "repo360")
+
+    candidates.extend([
+        home / ".local" / "pipx" / "venvs" / "repo360",
+        home / ".local" / "share" / "pipx" / "venvs" / "repo360",
+    ])
 
     for cand in candidates:
         if cand.is_dir():

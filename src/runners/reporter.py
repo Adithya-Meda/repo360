@@ -20,7 +20,7 @@ from ..activity.reporter import (
     write_empty_table,
     write_table,
 )
-from ..common.concurrency import is_ai_live
+from ..common.concurrency import AI_NOT_ENABLED_MESSAGE, is_ai_disabled, is_ai_live
 from .models import ORG_RUNNER_HEADERS, RUNNER_HEADERS, RunnerInfo, RunnersConfig
 
 
@@ -128,8 +128,12 @@ def write_runners_workbook(
     avg_queue_wait_s = float(avg_queue_wait_raw) if isinstance(avg_queue_wait_raw, (int, float)) else 0.0
     p95_queue_wait_s = float(p95_queue_wait_raw) if isinstance(p95_queue_wait_raw, (int, float)) else 0.0
 
-    advisory_text = (
-        ai_engine.generate_runner_fleet_advisory(
+    if is_ai_disabled(ai_engine):
+        advisory_title = "AI Fleet Advisory & Autoscaling Guidance (AI Not Enabled)"
+        advisory_text = AI_NOT_ENABLED_MESSAGE
+    elif is_ai_live(ai_engine):
+        advisory_title = "AI Fleet Advisory & Autoscaling Guidance"
+        advisory_text = ai_engine.generate_runner_fleet_advisory(
             total_runners=total_runners,
             availability_pct=availability_pct,
             busy_count=busy_count,
@@ -138,17 +142,29 @@ def write_runners_workbook(
             sla_breaches=total_sla_breaches,
             ephemeral_count=ephemeral_count,
         )
-        if ai_engine is not None
-        else (
-            f"Queue latency breaches 60s SLA ({total_sla_breaches} jobs delayed, P95: {p95_queue_wait_s:.0f}s). Adopt Actions Runner Controller (ARC) with HorizontalRunnerAutoscaler to dynamically expand runner capacity during peak build windows."
-            if (total_sla_breaches > 0 or p95_queue_wait_s > 60)
+    else:
+        advisory_title = "Fleet Advisory & Autoscaling Guidance (Deterministic Policy)"
+        advisory_text = (
+            ai_engine.generate_runner_fleet_advisory(
+                total_runners=total_runners,
+                availability_pct=availability_pct,
+                busy_count=busy_count,
+                avg_queue_wait_s=avg_queue_wait_s,
+                p95_queue_wait_s=p95_queue_wait_s,
+                sla_breaches=total_sla_breaches,
+                ephemeral_count=ephemeral_count,
+            )
+            if ai_engine is not None
             else (
-                f"Persistent runner sprawl detected ({total_runners - ephemeral_count} non-ephemeral). Migrate to ephemeral container runner scale sets to ensure reproducible CI environments and prevent security cross-contamination."
-                if (ephemeral_count < (total_runners / 2) and total_runners > 0)
-                else "Runner fleet capacity is well-provisioned. Availability and queue latency remain within target SLAs."
+                f"Queue latency breaches 60s SLA ({total_sla_breaches} jobs delayed, P95: {p95_queue_wait_s:.0f}s). Adopt Actions Runner Controller (ARC) with HorizontalRunnerAutoscaler to dynamically expand runner capacity during peak build windows."
+                if (total_sla_breaches > 0 or p95_queue_wait_s > 60)
+                else (
+                    f"Persistent runner sprawl detected ({total_runners - ephemeral_count} non-ephemeral). Migrate to ephemeral container runner scale sets to ensure reproducible CI environments and prevent security cross-contamination."
+                    if (ephemeral_count < (total_runners / 2) and total_runners > 0)
+                    else "Runner fleet capacity is well-provisioned. Availability and queue latency remain within target SLAs."
+                )
             )
         )
-    )
 
     kpis = [
         ["Total Duration", duration_str],
@@ -173,11 +189,6 @@ def write_runners_workbook(
     ]
     curr_row = write_table(summary, 4, ("Metric", "Fleet Aggregate"), kpis) + 2
 
-    advisory_title = (
-        "AI Fleet Advisory & Autoscaling Guidance"
-        if is_ai_live(ai_engine)
-        else "Fleet Advisory & Autoscaling Guidance (Deterministic Policy)"
-    )
     curr_row = section_title(summary, curr_row, advisory_title)
     summary.cell(curr_row, 1, advisory_text)
     summary.cell(curr_row, 1).font = Font(name="Calibri", size=10, italic=True)

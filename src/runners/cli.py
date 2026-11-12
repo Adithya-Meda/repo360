@@ -9,11 +9,12 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..auth.github_app_auth import GitHubAppAuth
 from ..common.cli import add_common_scan_arguments, parse_max_runs_arg
 from ..common.client import ResilientGitHubClient
+from ..common.concurrency import format_ai_scorecard_status
 from ..common.inventory import (
     discover_app_organizations,
     discover_app_repositories,
@@ -33,6 +34,7 @@ def print_runners_scorecard(
     elapsed_seconds: float,
     org_runner_metrics: Optional[Dict[str, Any]] = None,
     failures: Optional[List[Tuple[str, str]]] = None,
+    ai_engine: Optional[Any] = None,
 ) -> None:
     """Print an executive color-coded scorecard to stdout."""
     G = "\033[92m"
@@ -107,6 +109,7 @@ def print_runners_scorecard(
     print(f"   {B}Queue SLA Delays (>60s) :{X} {R if total_sla_breaches else G}{total_sla_breaches} breaches{X}")
     if fail_count:
         print(f"   {B}Warnings / Errors       :{X} {Y}{fail_count} items (see workbook Summary){X}")
+    print(f"   {B}AI Advisory Engine      :{X} {format_ai_scorecard_status(ai_engine)}")
     print(f"   {B}Duration                :{X} {elapsed_str}")
     print(f"{C}{'-' * 76}{X}")
     print(f"   {B}Executive Workbook (XLSX) :{X} {xlsx_path}")
@@ -235,5 +238,6 @@ def run_runners_cli(argv: Optional[List[str]] = None) -> int:
         elapsed_seconds=elapsed,
         org_runner_metrics=org_runner_metrics,
         failures=failures,
+        ai_engine=ai_engine,
     )
     return 0

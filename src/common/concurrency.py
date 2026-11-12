@@ -73,6 +73,13 @@ def map_concurrent(
     return results  # type: ignore[return-value]
 
 
+AI_NOT_ENABLED_LABEL = "AI Not Enabled"
+AI_NOT_ENABLED_MESSAGE = (
+    "AI was not enabled for this run. Re-run with '--require-ai yes' "
+    "to generate AI remediation suggestions."
+)
+
+
 def is_ai_live(ai_engine: Optional[Any]) -> bool:
     """Return True if an AI engine is available and not currently rate-limit tripped."""
     if ai_engine is None:
@@ -84,6 +91,51 @@ def is_ai_live(ai_engine: Optional[Any]) -> bool:
     if callable(is_circuit_fn) and is_circuit_fn() is True:
         return False
     return True
+
+
+def is_ai_disabled(ai_engine: Optional[Any]) -> bool:
+    """Return True when an initialized AI engine is explicitly disabled or offline without circuit-breaker trip."""
+    if ai_engine is None:
+        return False
+    is_circuit_fn = getattr(ai_engine, "is_circuit_active", None)
+    if callable(is_circuit_fn) and is_circuit_fn() is True:
+        return False
+    if getattr(ai_engine, "disabled_by_cli", False) is True:
+        return True
+    is_avail_fn = getattr(ai_engine, "is_available", None)
+    if callable(is_avail_fn) and is_avail_fn() is False:
+        return True
+    if getattr(ai_engine, "enabled", True) is False:
+        return True
+    return False
+
+
+def format_ai_scorecard_status(
+    ai_engine: Optional[Any],
+    enriched_count: Optional[int] = None,
+) -> str:
+    """Format a consistent terminal scorecard status string for the AI engine."""
+    green = "\033[92m"
+    yellow = "\033[93m"
+    reset = "\033[0m"
+
+    is_avail_fn = getattr(ai_engine, "is_available", None) if ai_engine is not None else None
+    is_circuit_fn = getattr(ai_engine, "is_circuit_active", None) if ai_engine is not None else None
+    if (
+        ai_engine is not None
+        and callable(is_avail_fn)
+        and is_avail_fn() is True
+        and callable(is_circuit_fn)
+        and is_circuit_fn() is True
+    ):
+        model = getattr(ai_engine, "model_name", "Configured LLM")
+        if enriched_count is not None:
+            return f"{yellow}RATE LIMITED / FALLBACK ({model} - {enriched_count} AI, remainder deterministic){reset}"
+        return f"{yellow}RATE LIMITED / FALLBACK ({model}){reset}"
+    if is_ai_live(ai_engine):
+        model = getattr(ai_engine, "model_name", "Configured LLM")
+        return f"{green}ONLINE ({model}){reset}"
+    return f"{yellow}NOT ENABLED (AI remediation skipped; re-run with '--require-ai yes' to enable){reset}"
 
 
 def run_concurrent_ai(

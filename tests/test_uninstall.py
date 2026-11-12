@@ -169,3 +169,24 @@ def test_spawn_windows_deferred_uninstall_creates_helper_and_spawns(tmp_path: Pa
     assert popen_cmd[0] == "C:/Python312/python.exe"
     assert str(mock_venv) in popen_cmd
     assert mock_popen.call_args[1]["close_fds"] is True
+
+
+def test_find_pipx_venv_dir_supports_env_and_macos_paths(tmp_path: Path, monkeypatch) -> None:
+    """Resolve pipx venv from PIPX_HOME env var and macOS Application Support fallback."""
+    from src.uninstall import _find_pipx_venv_dir
+
+    custom_venv = tmp_path / "custom-pipx" / "venvs" / "repo360"
+    custom_venv.mkdir(parents=True)
+    monkeypatch.setenv("PIPX_HOME", str(tmp_path / "custom-pipx"))
+    monkeypatch.delenv("PIPX_LOCAL_VENVS", raising=False)
+    with patch("src.uninstall.sys.prefix", str(tmp_path / "other")):
+        assert _find_pipx_venv_dir(None) == custom_venv
+
+    monkeypatch.delenv("PIPX_HOME", raising=False)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    mac_venv = tmp_path / "Library" / "Application Support" / "pipx" / "venvs" / "repo360"
+    mac_venv.mkdir(parents=True)
+    with patch("src.uninstall.sys.prefix", str(tmp_path / "other")), \
+         patch("src.uninstall.sys.platform", "darwin"), \
+         patch("src.uninstall.Path.home", return_value=tmp_path):
+        assert _find_pipx_venv_dir(None) == mac_venv

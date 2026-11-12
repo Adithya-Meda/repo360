@@ -9,11 +9,12 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..auth.github_app_auth import GitHubAppAuth
 from ..common.cli import add_common_scan_arguments
 from ..common.client import ResilientGitHubClient
+from ..common.concurrency import format_ai_scorecard_status
 from ..common.inventory import (
     discover_app_organizations,
     discover_app_repositories,
@@ -34,6 +35,7 @@ def print_finops_scorecard(
     xlsx_path: Path,
     elapsed_seconds: float,
     unaudited_count: int = 0,
+    ai_engine: Optional[Any] = None,
 ) -> None:
     """Print an executive color-coded FinOps scorecard to stdout."""
     G = "\033[92m"
@@ -84,6 +86,7 @@ def print_finops_scorecard(
     print(f"   {B}Est. Inefficient Storage Waste :{X} {waste_color}{total_waste_mb:,.2f} MB{X}")
     if unaudited_count > 0:
         print(f"   {B}Collection / Permission Gaps   :{X} {Y}{unaudited_count} signal check(s) skipped (403/API error){X}")
+    print(f"   {B}AI Advisory Engine             :{X} {format_ai_scorecard_status(ai_engine)}")
     print(f"   {B}Duration                       :{X} {elapsed_str}")
     print(f"{C}{'-' * 76}{X}")
     print(f"   {B}Executive FinOps Workbook (XLSX):{X} {xlsx_path}")
@@ -195,6 +198,7 @@ def run_finops_cli(argv: Optional[List[str]] = None) -> int:
         cache_package_rows=cache_package_rows,
         failures=failures,
         execution_duration=elapsed,
+        ai_engine=ai_engine,
     )
 
     print_finops_scorecard(
@@ -205,5 +209,6 @@ def run_finops_cli(argv: Optional[List[str]] = None) -> int:
         xlsx_path=xlsx_path,
         elapsed_seconds=elapsed,
         unaudited_count=len(failures),
+        ai_engine=ai_engine,
     )
     return 0

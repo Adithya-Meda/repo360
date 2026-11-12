@@ -13,7 +13,7 @@ from openpyxl.formatting.rule import DataBarRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from ..common.concurrency import is_ai_live
+from ..common.concurrency import AI_NOT_ENABLED_MESSAGE, is_ai_disabled, is_ai_live
 from .models import (
     DATE_FMT,
     IST,
@@ -262,8 +262,12 @@ def write_activity_workbook(
     prs_merged = sum(row[TOTAL_IDX + 3] for row in user_rows) if user_rows else 0
     org_names = ", ".join(str(r[0]) for r in org_rows) if org_rows else "Monitored Fleet"
 
-    advisory_text = (
-        ai_engine.generate_activity_insights(
+    if is_ai_disabled(ai_engine):
+        advisory_title = "AI Contributor Cadence & Collaboration Summary (AI Not Enabled)"
+        advisory_text = AI_NOT_ENABLED_MESSAGE
+    elif is_ai_live(ai_engine):
+        advisory_title = "AI Contributor Cadence & Collaboration Summary"
+        advisory_text = ai_engine.generate_activity_insights(
             org_name=org_names,
             total_contributors=len(user_rows),
             active_contributors=active_contributors,
@@ -272,9 +276,21 @@ def write_activity_workbook(
             prs_opened=prs_opened,
             prs_merged=prs_merged,
         )
-        if ai_engine is not None
-        else f"Engineering activity across {org_names}: {active_contributors} active contributors ({total_activities} actions, {prs_merged} PRs merged). Maintain balanced code review assignments to prevent reviewer fatigue."
-    )
+    else:
+        advisory_title = "Contributor Cadence & Collaboration Summary (Deterministic Policy)"
+        advisory_text = (
+            ai_engine.generate_activity_insights(
+                org_name=org_names,
+                total_contributors=len(user_rows),
+                active_contributors=active_contributors,
+                total_activities=total_activities,
+                total_commits=total_commits,
+                prs_opened=prs_opened,
+                prs_merged=prs_merged,
+            )
+            if ai_engine is not None
+            else f"Engineering activity across {org_names}: {active_contributors} active contributors ({total_activities} actions, {prs_merged} PRs merged). Maintain balanced code review assignments to prevent reviewer fatigue."
+        )
 
     kpis = [
         ["Total Duration", duration_str],
@@ -289,11 +305,6 @@ def write_activity_workbook(
     ]
     curr_row = write_table(summary, 4, ("Metric", "Value"), kpis) + 2
 
-    advisory_title = (
-        "AI Contributor Cadence & Collaboration Summary"
-        if is_ai_live(ai_engine)
-        else "Contributor Cadence & Collaboration Summary (Deterministic Policy)"
-    )
     curr_row = section_title(summary, curr_row, advisory_title)
     summary.cell(curr_row, 1, advisory_text)
     summary.cell(curr_row, 1).font = Font(name="Calibri", size=10, italic=True)

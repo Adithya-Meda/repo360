@@ -15,7 +15,14 @@ import requests
 
 from ..activity.models import fmt_timestamp, parse_ts
 from ..common.client import ResilientGitHubClient
-from ..common.concurrency import is_dormant_repo, map_concurrent, resolve_worker_count, run_concurrent_ai
+from ..common.concurrency import (
+    AI_NOT_ENABLED_LABEL,
+    is_ai_disabled,
+    is_dormant_repo,
+    map_concurrent,
+    resolve_worker_count,
+    run_concurrent_ai,
+)
 from .models import (
     DORAConfig,
     DeploymentRecord,
@@ -1224,12 +1231,13 @@ def build_dora_rows(
 
     ai_items: List[Tuple[int, RepoDORAMetrics, float, str, str, str, str, str]] = []
     tier_cache: Dict[int, Tuple[str, str, str, str, str, float]] = {}
+    ai_disabled = is_ai_disabled(ai_engine)
 
     for idx, m in enumerate(metrics_list):
         overall, df_tier, lttc_tier, cfr_tier, mttr_tier = m.get_tiers(window_days)
         df_weekly = m.deployment_frequency_per_week(window_days)
         tier_cache[idx] = (overall, df_tier, lttc_tier, cfr_tier, mttr_tier, df_weekly)
-        if m.total_deploys > 0 and ai_engine is not None:
+        if m.total_deploys > 0 and ai_engine is not None and not ai_disabled:
             ai_items.append((idx, m, df_weekly, df_tier, lttc_tier, cfr_tier, mttr_tier, overall))
 
     ai_advisories: Dict[int, str] = {}
@@ -1279,6 +1287,8 @@ def build_dora_rows(
                 if m.stalled_deploys_count > 0
                 else "-"
             )
+        elif ai_disabled:
+            flow_advisory = AI_NOT_ENABLED_LABEL
         else:
             if idx in ai_advisories:
                 flow_advisory = ai_advisories[idx]

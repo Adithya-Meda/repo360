@@ -74,5 +74,5 @@ def add_common_scan_arguments(
     )
     add_ai_cli_arguments(
         parser,
-        help_text=f"AI {ai_subject}: yes or no (default: no; offline fallback).",
+        help_text=f"AI {ai_subject}: yes or no (default: no; skips AI suggestions).",
     )

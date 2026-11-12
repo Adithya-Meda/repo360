@@ -12,7 +12,15 @@ import requests
 
 from ..activity.models import IST, fmt_timestamp, parse_ts
 from ..common.client import ResilientGitHubClient
-from ..common.concurrency import is_dormant_repo, is_empty_repo, resolve_worker_count, run_concurrent_ai
+from ..common.concurrency import (
+    AI_NOT_ENABLED_LABEL,
+    AI_NOT_ENABLED_MESSAGE,
+    is_ai_disabled,
+    is_dormant_repo,
+    is_empty_repo,
+    resolve_worker_count,
+    run_concurrent_ai,
+)
 from .models import (
     BypassConfig,
     PushProtectionBypassRecord,
@@ -57,20 +65,24 @@ def collect_repo_push_bypasses(
             if ts and ts < since:
                 continue
 
-            if not resolution or resolution in ("wont_fix", "revoked"):
-                risk = "High Risk"
-            elif resolution in ("false_positive", "used_in_tests") and comment != "-":
-                risk = "Moderate Risk"
+            if is_ai_disabled(ai_engine):
+                risk = AI_NOT_ENABLED_LABEL
+                advisory = AI_NOT_ENABLED_MESSAGE
             else:
-                risk = "Moderate Risk"
-            advisory = f"Push protection was bypassed by {actor}. Review resolution comment: '{comment}'."
-            if ai_engine is not None:
-                risk, advisory = ai_engine.analyze_push_protection_bypass(
-                    secret_type=secret_type,
-                    comment=comment,
-                    actor=actor,
-                    repo=repo,
-                )
+                if not resolution or resolution in ("wont_fix", "revoked"):
+                    risk = "High Risk"
+                elif resolution in ("false_positive", "used_in_tests") and comment != "-":
+                    risk = "Moderate Risk"
+                else:
+                    risk = "Moderate Risk"
+                advisory = f"Push protection was bypassed by {actor}. Review resolution comment: '{comment}'."
+                if ai_engine is not None:
+                    risk, advisory = ai_engine.analyze_push_protection_bypass(
+                        secret_type=secret_type,
+                        comment=comment,
+                        actor=actor,
+                        repo=repo,
+                    )
 
             records.append(
                 PushProtectionBypassRecord(
@@ -261,7 +273,11 @@ def collect_bypass_data(
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
 
-    if ai_engine is not None:
+    if is_ai_disabled(ai_engine):
+        for rec in (rec for p in profiles for rec in p.push_bypasses):
+            rec.ai_risk_assessment = AI_NOT_ENABLED_LABEL
+            rec.ai_security_advisory = AI_NOT_ENABLED_MESSAGE
+    elif ai_engine is not None:
         all_push_records = [rec for p in profiles for rec in p.push_bypasses]
 
         def _enrich_push(rec: PushProtectionBypassRecord) -> None:

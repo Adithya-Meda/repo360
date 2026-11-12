@@ -124,3 +124,21 @@ def test_resolve_runtime_credentials_unified_ai_key() -> None:
             os.environ.pop("REPO360_CONFIG_DIR", None)
             os.environ.pop("AI_API_KEY", None)
             os.environ.pop("AI_MODEL", None)
+
+
+def test_posix_directory_and_file_permissions(tmp_path) -> None:
+    """POSIX mode creates config/secrets dirs with 0700 and sensitive files with 0600."""
+    from unittest.mock import patch
+
+    cfg_dir = tmp_path / ".repo360"
+    with patch.dict(os.environ, {"REPO360_CONFIG_DIR": str(cfg_dir)}), \
+         patch("src.credentials.os.name", "posix"), \
+         patch("src.credentials.os.chmod") as mock_chmod:
+        key_path = save_private_key("PRIVATE_KEY", app_slug="demo")
+        cfg_path = save_user_credentials(app_id=123, private_key_path=key_path)
+
+    chmod_calls = [call.args for call in mock_chmod.call_args_list]
+    assert (str(cfg_dir), 0o700) in chmod_calls
+    assert (str(cfg_dir / "secrets"), 0o700) in chmod_calls
+    assert (key_path, 0o600) in chmod_calls
+    assert (cfg_path, 0o600) in chmod_calls

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
@@ -18,6 +18,7 @@ from ..activity.reporter import (
     write_empty_table,
     write_table,
 )
+from ..common.concurrency import AI_NOT_ENABLED_MESSAGE, is_ai_disabled
 from .models import (
     DORA_DEPLOYMENT_HEADERS,
     DORA_ORG_HEADERS,
@@ -73,6 +74,7 @@ def write_dora_workbook(
     recovery_rows: List[list],
     failures: List[Tuple[str, str]],
     execution_duration: Optional[float] = None,
+    ai_engine: Optional[Any] = None,
 ) -> None:
     """Generate executive DORA delivery and recovery performance workbook."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -228,6 +230,8 @@ def write_dora_workbook(
         )
 
     curr_row = section_title(summary, curr_row, "Native GitHub Signal Methodology & Scope")
+    if is_ai_disabled(ai_engine):
+        methodology_rows.append(["AI Flow Advisory", AI_NOT_ENABLED_MESSAGE])
     curr_row = write_table(summary, curr_row, ("Metric", "Methodology & Compliance Scope"), methodology_rows) + 2
 
     if failures:

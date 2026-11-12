@@ -42,7 +42,13 @@ from .checks import (
 from .collector.client import Repo360Client
 from .collector.repo_inspector import RepoInspector
 from .common.cli import add_common_scan_arguments
-from .common.concurrency import is_ai_live, map_concurrent, resolve_worker_count
+from .common.concurrency import (
+    format_ai_scorecard_status,
+    is_ai_disabled,
+    is_ai_live,
+    map_concurrent,
+    resolve_worker_count,
+)
 from .reporters.excel_reporter import ExcelReporter
 from .validator import ConfigValidator, RepoTarget
 
@@ -183,15 +189,7 @@ def print_terminal_scorecard(
         score_str = f"{Y}N/A (All Skipped){X}"
 
     ai_enriched_count = sum(1 for r in results if r.extra_details.get("ai_enriched"))
-    ai_status = (
-        f"{Y}RATE LIMITED / FALLBACK ({ai_engine.model_name} - {ai_enriched_count} AI, remainder deterministic){X}"
-        if (ai_engine and ai_engine.is_available() and ai_engine.is_circuit_active())
-        else f"{G}ONLINE ({ai_engine.model_name}){X}"
-        if (ai_engine and ai_engine.is_available())
-        else f"{Y}DISABLED (Deterministic Policy){X}"
-        if (ai_engine and getattr(ai_engine, "disabled_by_cli", False))
-        else f"{Y}OFFLINE (Deterministic Fallback){X}"
-    )
+    ai_status = format_ai_scorecard_status(ai_engine, enriched_count=ai_enriched_count)
 
     elapsed_str = (
         f"{int(elapsed_seconds // 60)}m {int(elapsed_seconds % 60)}s"
@@ -988,13 +986,15 @@ def _run_cli() -> int:
             _print_failure_banner(f"Audit execution error: {err}")
             return 1
 
+    ai_not_enabled = is_ai_disabled(ai_engine)
     executive_summary = ""
     active_model = ""
     if args.mock_mode:
-        executive_summary = (
-            "Simulated Executive Risk & Governance Briefing for offline audit verification."
-        )
-    else:
+        if not ai_not_enabled:
+            executive_summary = (
+                "Simulated Executive Risk & Governance Briefing for offline audit verification."
+            )
+    elif not ai_not_enabled:
         unique_orgs = sorted(
             set(installed_org_logins if "installed_org_logins" in locals() else [])
             | {t.org_name for t in targets}
@@ -1019,7 +1019,13 @@ def _run_cli() -> int:
     xlsx_path = os.path.join(output_dir, f"{prefix}_{timestamp}.xlsx")
 
     logger.info("Generating Excel Report: %s", xlsx_path)
-    ExcelReporter().generate(results, xlsx_path, executive_summary=executive_summary, model_name=active_model)
+    ExcelReporter().generate(
+        results,
+        xlsx_path,
+        executive_summary=executive_summary,
+        model_name=active_model,
+        ai_enabled=not ai_not_enabled,
+    )
 
     report_paths = {
         "xlsx": os.path.abspath(xlsx_path),

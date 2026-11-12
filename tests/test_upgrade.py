@@ -700,3 +700,24 @@ def test_get_installation_details_trusts_dist_version_even_when_1_0_0() -> None:
         assert details["version"] == "v1.0.0"
         assert details["branch"] == "v1.0.0"
 
+
+def test_posix_tool_discovery_falls_back_to_user_and_cargo_bins(tmp_path: Path) -> None:
+    """POSIX pipx and uv discovery check user local and Cargo bin dirs when omitted from PATH."""
+    from src.upgrade import find_pipx_executable
+
+    local_bin = tmp_path / ".local" / "bin"
+    cargo_bin = tmp_path / ".cargo" / "bin"
+    local_bin.mkdir(parents=True)
+    cargo_bin.mkdir(parents=True)
+    pipx_bin = local_bin / "pipx"
+    uv_bin = cargo_bin / "uv"
+    pipx_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+    uv_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    with patch("src.upgrade.sys.platform", "linux"), \
+         patch("src.upgrade.shutil.which", return_value=None), \
+         patch("src.upgrade.os.path.expanduser", return_value=str(tmp_path)), \
+         patch.dict(sys.modules, {"uv": None}):
+        assert find_pipx_executable() == str(pipx_bin)
+        assert find_uv_executable() == str(uv_bin)
+

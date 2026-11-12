@@ -537,6 +537,17 @@ def _bind_callback_server(
     return server, int(server.server_address[1])
 
 
+def _open_browser_url(url: str, fallback_message: str) -> None:
+    """Best-effort browser launch with clear terminal fallback on headless hosts."""
+    opened = False
+    try:
+        opened = bool(webbrowser.open(url))
+    except Exception:
+        opened = False
+    if not opened:
+        print(f"[INFO] {fallback_message}: {url}")
+
+
 def run_wizard(
     org_name: str,
     github_domain: str = "https://github.com",
@@ -582,7 +593,10 @@ def run_wizard(
     register_closable(server)
     try:
         if open_browser:
-            webbrowser.open(launch_url)
+            _open_browser_url(
+                launch_url,
+                "Could not open browser automatically; open the Wizard Launch URL manually",
+            )
         while ManifestCallbackHandler.conversion_result is None and not is_shutting_down():
             server.handle_request()
         if is_shutting_down():
@@ -625,10 +639,10 @@ def run_wizard(
     print("-" * 65)
 
     if open_browser:
-        try:
-            webbrowser.open(install_url)
-        except Exception:
-            pass
+        _open_browser_url(
+            install_url,
+            "Could not open browser automatically; open the Installation URL above manually",
+        )
 
     installation_id: Optional[int] = None
     try:
