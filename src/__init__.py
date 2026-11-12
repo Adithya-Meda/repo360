@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from .common.interrupts import install_signal_handlers
+
+install_signal_handlers()
+
 import warnings
 
 # Suppress external SDK deprecation and syntax warnings on Python 3.12+ (e.g. google-genai invalid escape sequences)

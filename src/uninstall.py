@@ -14,11 +14,10 @@ import stat
 import subprocess
 import sys
 import tempfile
-import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from .common.interrupts import run_interruptible_subprocess, SHUTDOWN_EVENT
+from .common.interrupts import interruptible_input, run_interruptible_subprocess
 from .credentials import resolve_user_config_dir
 from .upgrade import find_pipx_executable, get_installation_details
 
@@ -488,37 +487,8 @@ def execute_uninstall(plan: Dict[str, Any], dry_run: bool = False, keep_config: 
 
 
 def _prompt_confirmation(prompt: str) -> str:
-    """Prompt for user confirmation in a background thread so Ctrl+C exits cleanly.
-
-    On Windows, ``input()`` blocks in a native console read that cannot be
-    interrupted by Python signal handlers alone.  Running it on a daemon thread
-    allows the main thread to poll ``SHUTDOWN_EVENT`` and abort promptly when
-    Ctrl+C is pressed without waiting for the user to press Enter.
-    """
-    result: List[str] = []
-    exc_holder: List[BaseException] = []
-
-    def _read() -> None:
-        try:
-            result.append(input(prompt).strip().lower())
-        except EOFError:
-            result.append("")
-        except KeyboardInterrupt:
-            pass
-        except BaseException as err:  # pragma: no cover
-            exc_holder.append(err)
-
-    reader = threading.Thread(target=_read, daemon=True)
-    reader.start()
-    while reader.is_alive():
-        if SHUTDOWN_EVENT.is_set():
-            # Ctrl+C was received — abandon the blocking read and treat as cancel.
-            raise KeyboardInterrupt
-        reader.join(timeout=0.1)
-
-    if exc_holder:
-        raise exc_holder[0]
-    return result[0] if result else ""
+    """Prompt for user confirmation cleanly while aborting immediately on Ctrl+C."""
+    return interruptible_input(prompt, eof_default="").strip().lower()
 
 
 def run_uninstall_cli(argv: Optional[List[str]] = None) -> int:

@@ -605,3 +605,34 @@ def test_bounded_cli_flag_limits_and_cross_field_validation(
     with pytest.raises(SystemExit) as exc:
         main_mod.main()
     assert exc.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "subcmd,target_attr",
+    [
+        ("audit", "src.main._run_cli"),
+        ("setup", "src.setup_app.main"),
+        ("version", "src.upgrade.run_version_cli"),
+        ("upgrade", "src.upgrade.run_upgrade_cli"),
+        ("uninstall", "src.uninstall.run_uninstall_cli"),
+        ("health", "src.main._run_health_cli"),
+        ("activity", "src.activity.cli.run_activity_cli"),
+        ("runners", "src.runners.cli.run_runners_cli"),
+        ("finops", "src.finops.cli.run_finops_cli"),
+        ("dora", "src.dora.cli.run_dora_cli"),
+        ("bypass", "src.bypass.cli.run_bypass_cli"),
+    ],
+)
+def test_ctrl_c_exits_silently_with_130_across_all_subcommands(
+    monkeypatch, capsys, subcmd: str, target_attr: str
+) -> None:
+    """Verify Ctrl+C exits silently with code 130 and zero banners across all commands."""
+    from src import main as main_mod
+
+    monkeypatch.setattr(target_attr, MagicMock(side_effect=KeyboardInterrupt))
+    monkeypatch.setattr(sys, "argv", ["repo360", subcmd])
+    rc = main_mod.main()
+    assert rc == 130
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""

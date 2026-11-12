@@ -37,6 +37,7 @@ _ACTIVE_PROCESSES: "weakref.WeakSet[subprocess.Popen[Any]]" = weakref.WeakSet()
 _ACTIVE_CLOSABLES: "weakref.WeakSet[Any]" = weakref.WeakSet()
 _ORIG_SUBPROCESS_RUN = subprocess.run
 _ORIG_TIME_SLEEP = time.sleep
+_ORIG_EXCEPTHOOK = sys.excepthook
 
 
 def is_shutting_down() -> bool:
@@ -110,6 +111,7 @@ def interruptible_sleep(seconds: float, sleep_fn: Optional[Callable[[float], Any
     if ``SHUTDOWN_EVENT`` is set before or during the wait.
     """
     if SHUTDOWN_EVENT.is_set():
+        note_manual_interrupt()
         raise KeyboardInterrupt
     if seconds <= 0:
         return False
@@ -117,16 +119,19 @@ def interruptible_sleep(seconds: float, sleep_fn: Optional[Callable[[float], Any
     if sleep_fn is not None and sleep_fn is not _ORIG_TIME_SLEEP:
         sleep_fn(seconds)
         if SHUTDOWN_EVENT.is_set():
+            note_manual_interrupt()
             raise KeyboardInterrupt
         return False
 
     if time.sleep is not _ORIG_TIME_SLEEP:
         time.sleep(seconds)
         if SHUTDOWN_EVENT.is_set():
+            note_manual_interrupt()
             raise KeyboardInterrupt
         return False
 
     if SHUTDOWN_EVENT.wait(timeout=float(seconds)):
+        note_manual_interrupt()
         raise KeyboardInterrupt
     return False
 
@@ -136,9 +141,11 @@ def wait_future(future: concurrent.futures.Future[Any], poll_interval: float = 0
     while not future.done():
         if SHUTDOWN_EVENT.is_set():
             future.cancel()
+            note_manual_interrupt()
             raise KeyboardInterrupt
         concurrent.futures.wait((future,), timeout=poll_interval)
     if SHUTDOWN_EVENT.is_set():
+        note_manual_interrupt()
         raise KeyboardInterrupt
     return future.result()
 
@@ -147,12 +154,13 @@ def iter_completed(
     futures: Iterable[concurrent.futures.Future[Any]],
     poll_interval: float = 0.2,
 ) -> Iterator[concurrent.futures.Future[Any]]:
-    """Yield completed futures cleanly without blocking indefintely in C Condition.wait on Windows."""
+    """Yield completed futures cleanly without blocking indefinitely in C Condition.wait on Windows."""
     pending = set(futures)
     while pending:
         if SHUTDOWN_EVENT.is_set():
             for fut in pending:
                 fut.cancel()
+            note_manual_interrupt()
             raise KeyboardInterrupt
         done, pending = concurrent.futures.wait(
             pending,
@@ -163,8 +171,63 @@ def iter_completed(
             if SHUTDOWN_EVENT.is_set():
                 for rem in pending:
                     rem.cancel()
+                note_manual_interrupt()
                 raise KeyboardInterrupt
             yield fut
+
+
+def interruptible_input(
+    prompt: str = "",
+    *,
+    eof_default: Optional[str] = None,
+    poll_interval: float = 0.02,
+) -> str:
+    """Read a line from stdin via ``input()`` while aborting immediately on Ctrl+C.
+
+    On Windows, native console reads (``ReadConsoleW``) can block or convert Ctrl+C
+    into ``EOFError`` ahead of Python's signal delivery. Running ``input()`` on a
+    daemon reader thread ensures Ctrl+C always wakes immediately as
+    ``KeyboardInterrupt`` rather than leaking ``EOFError``.
+    """
+    if SHUTDOWN_EVENT.is_set():
+        note_manual_interrupt()
+        raise KeyboardInterrupt
+
+    result: List[str] = []
+    exc_holder: List[BaseException] = []
+    done_event = threading.Event()
+
+    def _read() -> None:
+        try:
+            result.append(input(prompt))
+        except EOFError as err:
+            if SHUTDOWN_EVENT.is_set():
+                return
+            if eof_default is not None:
+                result.append(eof_default)
+            else:
+                exc_holder.append(err)
+        except BaseException as err:  # pragma: no cover
+            if not SHUTDOWN_EVENT.is_set():
+                exc_holder.append(err)
+        finally:
+            done_event.set()
+
+    reader = threading.Thread(target=_read, name="repo360-stdin-reader", daemon=True)
+    reader.start()
+
+    while not done_event.is_set():
+        if SHUTDOWN_EVENT.is_set():
+            note_manual_interrupt()
+            raise KeyboardInterrupt
+        done_event.wait(timeout=poll_interval)
+
+    if SHUTDOWN_EVENT.is_set():
+        note_manual_interrupt()
+        raise KeyboardInterrupt
+    if exc_holder:
+        raise exc_holder[0]
+    return result[0] if result else ""
 
 
 def run_interruptible_subprocess(
@@ -180,6 +243,7 @@ def run_interruptible_subprocess(
 ) -> subprocess.CompletedProcess[Any]:
     """Execute a subprocess cleanly while draining pipes and aborting promptly on Ctrl+C."""
     if SHUTDOWN_EVENT.is_set():
+        note_manual_interrupt()
         raise KeyboardInterrupt
 
     # Preserve full unit-test compatibility when tests monkeypatch subprocess.run
@@ -264,6 +328,7 @@ def run_interruptible_subprocess(
                             stream.close()
                         except Exception:
                             pass
+                note_manual_interrupt()
                 raise KeyboardInterrupt
 
             wait_slice = poll_interval
@@ -297,18 +362,6 @@ def run_interruptible_subprocess(
         unregister_active_process(proc)
 
 
-def _write_stderr_lockfree(message: bytes) -> None:
-    """Write status directly to stderr fd without acquiring Python logging locks."""
-    try:
-        os.write(sys.stderr.fileno(), message)
-    except Exception:
-        try:
-            sys.stderr.write(message.decode("utf-8", errors="replace"))
-            sys.stderr.flush()
-        except Exception:
-            pass
-
-
 class InterruptController:
     """Manages signal handling, cleanup dispatch, and hard-exit watchdog deadlines."""
 
@@ -322,13 +375,14 @@ class InterruptController:
         self._state_lock = threading.Lock()
         self._triggered = False
         self._expect_python_signal = False
+        self._manual_interrupt_raised = False
+        self._finalizing = False
         self._first_trigger_ts = 0.0
         self._watchdog_timer: Optional[threading.Timer] = None
         self._installed = False
         self._win_handler_ref: Any = None
 
     def _on_watchdog_timeout(self, exit_code: int) -> None:
-        _write_stderr_lockfree(b"\n[TERMINATION] Cleanup timed out; forcing immediate exit.\n")
         try:
             sys.stdout.flush()
             sys.stderr.flush()
@@ -341,8 +395,13 @@ class InterruptController:
         terminate_active_processes()
         close_active_closables()
 
+    def note_manual_interrupt(self) -> None:
+        """Record that a helper already raised KeyboardInterrupt via SHUTDOWN_EVENT."""
+        with self._state_lock:
+            self._manual_interrupt_raised = True
+
     def trigger(self, signum: int = 2, from_os_thread: bool = False) -> None:
-        """Initiate immediate shutdown and start the bounded exit watchdog."""
+        """Initiate immediate silent shutdown and start the bounded exit watchdog."""
         exit_code = 130 if signum in (getattr(signal, "SIGINT", 2), 0, 1) else 128 + signum
         now = time.monotonic()
 
@@ -358,7 +417,6 @@ class InterruptController:
             # Ignore dual OS/Python signal delivery within 150ms for the same keystroke;
             # a genuine second Ctrl+C exits immediately.
             if elapsed_since_first >= _DOUBLE_SIGNAL_DEBOUNCE_SECONDS:
-                _write_stderr_lockfree(b"\n[TERMINATION] Force exiting immediately...\n")
                 self.exit_fn(exit_code)
             return
 
@@ -368,8 +426,6 @@ class InterruptController:
         with self._state_lock:
             self._watchdog_timer = timer
         timer.start()
-
-        _write_stderr_lockfree(b"\n[TERMINATION] Received Ctrl+C. Exiting cleanly...\n")
 
         cleaner = threading.Thread(target=self._cleanup_async, name="repo360-interrupt-cleanup", daemon=True)
         cleaner.start()
@@ -383,8 +439,15 @@ class InterruptController:
     def handle_python_signal(self, signum: int, _frame: Any) -> None:
         """Python signal handler callback raising KeyboardInterrupt after starting watchdog."""
         with self._state_lock:
+            if self._finalizing:
+                self._expect_python_signal = False
+                self._manual_interrupt_raised = False
+                return
             if self._expect_python_signal:
                 self._expect_python_signal = False
+                if self._manual_interrupt_raised:
+                    self._manual_interrupt_raised = False
+                    return
                 raise KeyboardInterrupt
         self.trigger(signum=signum, from_os_thread=False)
         raise KeyboardInterrupt
@@ -396,14 +459,18 @@ class InterruptController:
         try:
             import ctypes
 
-            handler_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_uint)
+            # Win32 PHANDLER_ROUTINE returns BOOL (32-bit c_int), not 8-bit c_bool.
+            handler_type = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_uint)
 
-            def _ctrl_handler(ctrl_type: int) -> bool:
-                # CTRL_C_EVENT=0, CTRL_BREAK_EVENT=1, CTRL_CLOSE_EVENT=2
-                if ctrl_type in (0, 1, 2):
-                    self.trigger(signum=int(ctrl_type), from_os_thread=True)
-                    return True
-                return False
+            def _ctrl_handler(ctrl_type: int) -> int:
+                try:
+                    # CTRL_C_EVENT=0, CTRL_BREAK_EVENT=1, CTRL_CLOSE_EVENT=2
+                    if ctrl_type in (0, 1, 2):
+                        self.trigger(signum=int(ctrl_type), from_os_thread=True)
+                        return 1
+                except BaseException:
+                    return 1
+                return 0
 
             ref = handler_type(_ctrl_handler)
             if ctypes.windll.kernel32.SetConsoleCtrlHandler(ref, True):
@@ -412,12 +479,14 @@ class InterruptController:
             pass
 
     def install(self, force_in_tests: bool = False) -> None:
-        """Install Python signal handlers and native Windows console handler once."""
+        """Install Python signal handlers, silent excepthook, and native Windows console handler once."""
         if os.environ.get("PYTEST_CURRENT_TEST") and not force_in_tests:
             return
         if self._installed:
             return
         self._installed = True
+
+        sys.excepthook = _silent_interrupt_excepthook
 
         try:
             signal.signal(signal.SIGINT, self.handle_python_signal)
@@ -434,6 +503,9 @@ class InterruptController:
     def finalize_exit(self, code: int = 130) -> int:
         """Complete interrupt teardown, bypassing atexit ThreadPoolExecutor joins on real Ctrl+C."""
         with self._state_lock:
+            self._finalizing = True
+            self._expect_python_signal = False
+            self._manual_interrupt_raised = False
             timer = self._watchdog_timer
             self._watchdog_timer = None
             triggered = self._triggered
@@ -446,8 +518,10 @@ class InterruptController:
         terminate_active_processes()
         close_active_closables()
         try:
-            sys.stdout.flush()
-            sys.stderr.flush()
+            if sys.stdout and not sys.stdout.closed:
+                sys.stdout.flush()
+            if sys.stderr and not sys.stderr.closed:
+                sys.stderr.flush()
         except Exception:
             pass
         self.exit_fn(code)
@@ -461,11 +535,34 @@ class InterruptController:
                 self._watchdog_timer = None
             self._triggered = False
             self._expect_python_signal = False
+            self._manual_interrupt_raised = False
+            self._finalizing = False
             self._first_trigger_ts = 0.0
+        if sys.excepthook is _silent_interrupt_excepthook:
+            sys.excepthook = _ORIG_EXCEPTHOOK
         SHUTDOWN_EVENT.clear()
 
 
 _DEFAULT_CONTROLLER = InterruptController()
+
+
+def _silent_interrupt_excepthook(
+    exc_type: type[BaseException],
+    exc_value: BaseException,
+    exc_tb: Any,
+) -> None:
+    """Exit silently with code 130 when KeyboardInterrupt escapes without printing a traceback."""
+    if isinstance(exc_type, type) and issubclass(exc_type, KeyboardInterrupt):
+        _DEFAULT_CONTROLLER.finalize_exit(130)
+        if not os.environ.get("PYTEST_CURRENT_TEST"):
+            _DEFAULT_CONTROLLER.exit_fn(130)
+        return
+    _ORIG_EXCEPTHOOK(exc_type, exc_value, exc_tb)
+
+
+def note_manual_interrupt() -> None:
+    """Record that Shutdown detection already converted an interrupt into KeyboardInterrupt."""
+    _DEFAULT_CONTROLLER.note_manual_interrupt()
 
 
 def install_signal_handlers(grace_seconds: float = DEFAULT_INTERRUPT_GRACE_SECONDS) -> None:

@@ -114,8 +114,9 @@ def test_manifest_callback_handler_validates_state_and_exchanges_code() -> None:
     assert ManifestCallbackHandler.conversion_result == {"id": 12345, "slug": "repo360-test-org", "pem": "PEM"}
 
 
-def test_setup_app_main_keyboard_interrupt() -> None:
-    """Verify that Ctrl+C in setup_app exits cleanly with code 130."""
+def test_setup_app_main_keyboard_interrupt(capsys) -> None:
+    """Verify that Ctrl+C in setup_app exits silently with code 130 and no extra text."""
+    from src.common.interrupts import SHUTDOWN_EVENT, reset_shutdown
     from src.setup_app import main as setup_main
 
     with patch("argparse.ArgumentParser.parse_args") as mock_args:
@@ -123,6 +124,30 @@ def test_setup_app_main_keyboard_interrupt() -> None:
         with patch("src.setup_app.run_wizard", side_effect=KeyboardInterrupt):
             code = setup_main()
             assert code == 130
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+
+    # Simulate Windows Ctrl+C on the interactive Enter GitHub Domain prompt (ReadConsoleW -> EOFError)
+    responses = iter(["my-org"])
+
+    def _mock_domain_ctrlc(prompt: str = "") -> str:
+        try:
+            return next(responses)
+        except StopIteration:
+            SHUTDOWN_EVENT.set()
+            raise EOFError
+
+    try:
+        with patch("sys.argv", ["repo360"]):
+            with patch("builtins.input", side_effect=_mock_domain_ctrlc):
+                code = setup_main()
+                assert code == 130
+        captured_domain = capsys.readouterr()
+        assert "Operation cancelled" not in captured_domain.out
+        assert "EOFError" not in captured_domain.err
+    finally:
+        reset_shutdown()
 
 
 def test_get_manifest_custom_and_invalid_redirect_url() -> None:

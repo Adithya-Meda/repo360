@@ -14,6 +14,7 @@ import pytest
 from src.common.interrupts import (
     InterruptController,
     SHUTDOWN_EVENT,
+    interruptible_input,
     interruptible_sleep,
     iter_completed,
     register_closable,
@@ -174,4 +175,88 @@ def test_run_interruptible_subprocess_drains_large_utf8_output_without_deadlock(
     assert "env-propagated-ok" in proc.stdout
     assert proc.stdout.count("\u2714") == 1500
     assert proc.stderr.count("\u2714") == 1500
+
+
+def test_interruptible_input_returns_value_and_aborts_cleanly_on_shutdown() -> None:
+    """interruptible_input converts Ctrl+C/EOFError during shutdown to KeyboardInterrupt without blocking."""
+    with patch("builtins.input", return_value="https://ghe.example.com"):
+        assert interruptible_input("Domain: ") == "https://ghe.example.com"
+
+    # Simulated blocking console read aborted by SHUTDOWN_EVENT must raise KeyboardInterrupt quickly.
+    release_read = threading.Event()
+
+    def _blocked_input(_prompt: str = "") -> str:
+        release_read.wait(timeout=5.0)
+        raise EOFError
+
+    timer = threading.Timer(0.05, SHUTDOWN_EVENT.set)
+    timer.start()
+    start = time.monotonic()
+    try:
+        with patch("builtins.input", side_effect=_blocked_input):
+            with pytest.raises(KeyboardInterrupt):
+                interruptible_input("Domain: ", eof_default="", poll_interval=0.01)
+    finally:
+        timer.cancel()
+        release_read.set()
+    assert (time.monotonic() - start) < 0.5
+
+    # Genuine EOF without shutdown returns eof_default when configured, or raises EOFError otherwise.
+    reset_shutdown()
+    with patch("builtins.input", side_effect=EOFError):
+        assert interruptible_input("Domain: ", eof_default="") == ""
+    with patch("builtins.input", side_effect=EOFError):
+        with pytest.raises(EOFError):
+            interruptible_input("Domain: ")
+
+
+def test_interrupt_controller_is_silent_and_suppresses_duplicate_teardown_signal(capsys) -> None:
+    """Ctrl+C handling must produce no extra terminal noise and suppress stale queued SIGINT."""
+    exit_calls = []
+    ctrl = InterruptController(grace_seconds=1.0, exit_fn=lambda code: exit_calls.append(code))
+    try:
+        with patch("src.common.interrupts._thread.interrupt_main"):
+            ctrl.trigger(signum=2, from_os_thread=True)
+
+        # Manual shutdown conversion (e.g. interruptible_input) makes pending OS SIGINT a silent no-op.
+        ctrl.note_manual_interrupt()
+        ctrl.handle_python_signal(2, None)
+        assert exit_calls == []
+
+        # A genuine second Ctrl+C (>= 0.15s later) still triggers immediate force-exit silently.
+        time.sleep(0.18)
+        with pytest.raises(KeyboardInterrupt):
+            ctrl.handle_python_signal(2, None)
+        assert exit_calls == [130]
+
+        # Watchdog timeout exit must also emit zero terminal text.
+        ctrl.reset()
+        exit_calls.clear()
+        ctrl.grace_seconds = 0.08
+        with patch("src.common.interrupts._thread.interrupt_main"):
+            ctrl.trigger(signum=2, from_os_thread=False)
+        time.sleep(0.2)
+        assert exit_calls == [130]
+
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err == ""
+    finally:
+        ctrl.reset()
+
+
+def test_silent_interrupt_excepthook_suppresses_keyboard_interrupt_traceback(capsys) -> None:
+    """Uncaught KeyboardInterrupt exits via silent excepthook without traceback noise."""
+    from src.common import interrupts as int_mod
+
+    orig_calls = []
+    with patch.object(int_mod, "_ORIG_EXCEPTHOOK", side_effect=lambda *args: orig_calls.append(args[0])):
+        int_mod._silent_interrupt_excepthook(KeyboardInterrupt, KeyboardInterrupt(), None)
+        assert orig_calls == []
+        int_mod._silent_interrupt_excepthook(ValueError, ValueError("boom"), None)
+        assert orig_calls == [ValueError]
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
 

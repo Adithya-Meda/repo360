@@ -29,14 +29,18 @@ import webbrowser
 from typing import Optional
 import requests
 
-from .auth.github_app_auth import GitHubAppAuth
 from .common.interrupts import (
     finalize_interrupt_exit,
+    install_signal_handlers,
+    interruptible_input,
     interruptible_sleep,
     is_shutting_down,
     register_closable,
     unregister_closable,
 )
+install_signal_handlers()
+
+from .auth.github_app_auth import GitHubAppAuth
 from .credentials import (
     save_private_key,
     save_user_credentials,
@@ -633,10 +637,10 @@ def run_wizard(
             "Press Enter once you clicked 'Install' in the browser to auto-fetch your Installation ID\n"
             "(or enter 'm' to input manually, 's' to skip and auto-discover at runtime): "
         )
-        choice = input(prompt_msg).strip().lower()
+        choice = interruptible_input(prompt_msg, eof_default="").strip().lower()
 
         if choice == "m":
-            manual_in = input("Enter Installation ID: ").strip()
+            manual_in = interruptible_input("Enter Installation ID: ", eof_default="").strip()
             if manual_in.isdigit():
                 installation_id = int(manual_in)
         elif choice != "s":
@@ -659,12 +663,20 @@ def run_wizard(
 
             if not installation_id:
                 print("Could not auto-detect active installation yet.")
-                manual_in = input("Enter Installation ID manually (or press Enter to auto-discover at runtime): ").strip()
+                manual_in = interruptible_input(
+                    "Enter Installation ID manually (or press Enter to auto-discover at runtime): ",
+                    eof_default="",
+                ).strip()
                 if manual_in.isdigit():
                     installation_id = int(manual_in)
+    except (KeyboardInterrupt, SystemExit):
+        raise
     except Exception as err:
         logger.debug("Installation discovery error: %s", err)
-        manual_in = input("Enter Installation ID manually (or press Enter to auto-discover at runtime): ").strip()
+        manual_in = interruptible_input(
+            "Enter Installation ID manually (or press Enter to auto-discover at runtime): ",
+            eof_default="",
+        ).strip()
         if manual_in.isdigit():
             installation_id = int(manual_in)
 
@@ -679,7 +691,7 @@ def run_wizard(
     print("  [4] None / Disable AI (Deterministic policy checks only)")
     print("-" * 65)
 
-    llm_choice = input("Select provider [1-4] (default: 1): ").strip() or "1"
+    llm_choice = interruptible_input("Select provider [1-4] (default: 1): ", eof_default="").strip() or "1"
     llm_provider = "gemini"
     llm_model = "gemini-3.5-flash"
     llm_api_key = ""
@@ -688,15 +700,15 @@ def run_wizard(
     if llm_choice == "2":
         llm_provider = "openai"
         llm_model = "gpt-4o"
-        llm_api_key = input("Enter OPENAI_API_KEY (press Enter to skip): ").strip()
-        custom_model = input(f"Enter model name [{llm_model}]: ").strip()
+        llm_api_key = interruptible_input("Enter OPENAI_API_KEY (press Enter to skip): ", eof_default="").strip()
+        custom_model = interruptible_input(f"Enter model name [{llm_model}]: ", eof_default="").strip()
         if custom_model:
             llm_model = custom_model
     elif llm_choice == "3":
         llm_provider = "anthropic"
         llm_model = "claude-3-5-sonnet-20241022"
-        llm_api_key = input("Enter ANTHROPIC_API_KEY (press Enter to skip): ").strip()
-        custom_model = input(f"Enter model name [{llm_model}]: ").strip()
+        llm_api_key = interruptible_input("Enter ANTHROPIC_API_KEY (press Enter to skip): ", eof_default="").strip()
+        custom_model = interruptible_input(f"Enter model name [{llm_model}]: ", eof_default="").strip()
         if custom_model:
             llm_model = custom_model
     elif llm_choice == "4":
@@ -707,8 +719,8 @@ def run_wizard(
     else:
         llm_provider = "gemini"
         llm_model = "gemini-3.5-flash"
-        llm_api_key = input("Enter GEMINI_API_KEY (press Enter to skip): ").strip()
-        custom_model = input(f"Enter model name [{llm_model}]: ").strip()
+        llm_api_key = interruptible_input("Enter GEMINI_API_KEY (press Enter to skip): ", eof_default="").strip()
+        custom_model = interruptible_input(f"Enter model name [{llm_model}]: ", eof_default="").strip()
         if custom_model:
             llm_model = custom_model
 
@@ -771,7 +783,8 @@ def _parse_app_name(value: str) -> str:
     return cleaned
 
 
-def main() -> None:
+def main() -> int:
+    install_signal_handlers()
     parser = argparse.ArgumentParser(
         prog="repo360 setup",
         description="Register the GitHub App and configure local credentials.",
@@ -798,12 +811,14 @@ def main() -> None:
         metavar="URL",
         help="GitHub host URL (default: https://github.com).",
     )
-    args = parser.parse_args()
 
     try:
+        args = parser.parse_args()
         org = _normalize_org_name(args.org)
         if not org:
-            org = _normalize_org_name(input("Enter your target GitHub Organization name: "))
+            org = _normalize_org_name(
+                interruptible_input("Enter your target GitHub Organization name: ", eof_default="")
+            )
 
         if not org:
             print("Error: Organization name is required.")
@@ -811,8 +826,9 @@ def main() -> None:
 
         domain = args.domain
         if not args.org and domain == "https://github.com":
-            custom_domain = input(
-                "Enter GitHub Domain [https://github.com] (press Enter for default, or e.g. https://<enterprise>.ghe.com or https://ghe.company.com): "
+            custom_domain = interruptible_input(
+                "Enter GitHub Domain [https://github.com] (press Enter for default, or e.g. https://<enterprise>.ghe.com or https://ghe.company.com): ",
+                eof_default="",
             ).strip()
             if custom_domain:
                 domain = custom_domain
@@ -820,7 +836,6 @@ def main() -> None:
         run_wizard(org_name=org, github_domain=domain, app_name=args.app_name)
         return 0
     except KeyboardInterrupt:
-        print("\n\nOperation cancelled by user (Ctrl+C). Exiting...")
         return finalize_interrupt_exit(130)
 
 

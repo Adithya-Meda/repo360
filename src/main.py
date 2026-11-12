@@ -18,7 +18,17 @@ import os
 import sys
 import threading
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+from .common.interrupts import (
+    finalize_interrupt_exit,
+    install_signal_handlers,
+    is_shutting_down,
+    iter_completed,
+)
+
+# Arm fast Ctrl+C signal handlers and silent excepthook before importing heavy dependencies.
+install_signal_handlers()
 
 from .ai import AIEngine, resolve_ai_cli_flag
 from .auth.github_app_auth import GitHubAppAuth
@@ -33,12 +43,6 @@ from .collector.client import Repo360Client
 from .collector.repo_inspector import RepoInspector
 from .common.cli import add_common_scan_arguments
 from .common.concurrency import is_ai_live, map_concurrent, resolve_worker_count
-from .common.interrupts import (
-    finalize_interrupt_exit,
-    install_signal_handlers,
-    is_shutting_down,
-    iter_completed,
-)
 from .reporters.excel_reporter import ExcelReporter
 from .validator import ConfigValidator, RepoTarget
 
@@ -650,19 +654,12 @@ def _run_health_cli() -> int:
         return 1
 
 
-def _run_interruptible_command(
-    fn,
-    cancel_message: str = "\nExecution cancelled by user (Ctrl+C). Exiting...",
-    on_cancel=None,
-) -> int:
-    """Install fast signal/watchdog handlers, run ``fn()``, and finalize Ctrl+C exit cleanly."""
+def _run_interruptible_command(fn: Callable[[], int]) -> int:
+    """Install fast signal/watchdog handlers, run ``fn()``, and finalize Ctrl+C exit silently."""
     install_signal_handlers()
     try:
         return fn()
     except KeyboardInterrupt:
-        logger.warning(cancel_message)
-        if on_cancel is not None:
-            on_cancel()
         return finalize_interrupt_exit(130)
 
 
@@ -673,84 +670,81 @@ def main() -> int:
     """
     install_signal_handlers()
 
-    # 1. Bare invocation: 'repo360' with no arguments displays help
-    if len(sys.argv) <= 1:
-        return _print_root_help()
+    try:
+        # 1. Bare invocation: 'repo360' with no arguments displays help
+        if len(sys.argv) <= 1:
+            return _print_root_help()
 
-    subcmd = sys.argv[1].lower()
+        subcmd = sys.argv[1].lower()
 
-    # 2. Root help flags
-    if subcmd in ("-h", "--help"):
-        return _print_root_help()
+        # 2. Root help flags
+        if subcmd in ("-h", "--help"):
+            return _print_root_help()
 
-    # 3. Single canonical command per functionality
-    if subcmd == "version":
-        sys.argv.pop(1)
-        from .upgrade import run_version_cli
-        return _run_interruptible_command(run_version_cli, "\nVersion check cancelled by user (Ctrl+C). Exiting...")
+        # 3. Single canonical command per functionality
+        if subcmd == "version":
+            sys.argv.pop(1)
+            from .upgrade import run_version_cli
+            return _run_interruptible_command(run_version_cli)
 
-    if subcmd == "audit":
-        sys.argv.pop(1)
-        return _run_interruptible_command(
-            _run_cli,
-            on_cancel=lambda: _print_failure_banner("Audit cancelled by user (Ctrl+C). No final reports generated."),
-        )
+        if subcmd == "audit":
+            sys.argv.pop(1)
+            return _run_interruptible_command(_run_cli)
 
-    if subcmd == "setup":
-        sys.argv.pop(1)
-        from .setup_app import main as setup_main
-        return _run_interruptible_command(setup_main, "\nSetup cancelled by user (Ctrl+C). Exiting...")
+        if subcmd == "setup":
+            sys.argv.pop(1)
+            from .setup_app import main as setup_main
+            return _run_interruptible_command(setup_main)
 
-    if subcmd == "activity":
-        sys.argv.pop(1)
-        from .activity.cli import run_activity_cli
-        return _run_interruptible_command(run_activity_cli)
+        if subcmd == "activity":
+            sys.argv.pop(1)
+            from .activity.cli import run_activity_cli
+            return _run_interruptible_command(run_activity_cli)
 
-    if subcmd == "runners":
-        sys.argv.pop(1)
-        from .runners.cli import run_runners_cli
-        return _run_interruptible_command(run_runners_cli)
+        if subcmd == "runners":
+            sys.argv.pop(1)
+            from .runners.cli import run_runners_cli
+            return _run_interruptible_command(run_runners_cli)
 
-    if subcmd == "finops":
-        sys.argv.pop(1)
-        from .finops.cli import run_finops_cli
-        return _run_interruptible_command(run_finops_cli)
+        if subcmd == "finops":
+            sys.argv.pop(1)
+            from .finops.cli import run_finops_cli
+            return _run_interruptible_command(run_finops_cli)
 
-    if subcmd == "dora":
-        sys.argv.pop(1)
-        from .dora.cli import run_dora_cli
-        return _run_interruptible_command(run_dora_cli)
+        if subcmd == "dora":
+            sys.argv.pop(1)
+            from .dora.cli import run_dora_cli
+            return _run_interruptible_command(run_dora_cli)
 
-    if subcmd == "bypass":
-        sys.argv.pop(1)
-        from .bypass.cli import run_bypass_cli
-        return _run_interruptible_command(run_bypass_cli)
+        if subcmd == "bypass":
+            sys.argv.pop(1)
+            from .bypass.cli import run_bypass_cli
+            return _run_interruptible_command(run_bypass_cli)
 
-    if subcmd == "upgrade":
-        sys.argv.pop(1)
-        from .upgrade import run_upgrade_cli
-        return _run_interruptible_command(run_upgrade_cli, "\nUpgrade cancelled by user (Ctrl+C). Exiting...")
+        if subcmd == "upgrade":
+            sys.argv.pop(1)
+            from .upgrade import run_upgrade_cli
+            return _run_interruptible_command(run_upgrade_cli)
 
-    if subcmd == "uninstall":
-        sys.argv.pop(1)
-        from .uninstall import run_uninstall_cli
-        return _run_interruptible_command(run_uninstall_cli, "\nUninstall cancelled by user (Ctrl+C). Exiting...")
+        if subcmd == "uninstall":
+            sys.argv.pop(1)
+            from .uninstall import run_uninstall_cli
+            return _run_interruptible_command(run_uninstall_cli)
 
-    if subcmd == "health":
-        sys.argv.pop(1)
-        return _run_interruptible_command(_run_health_cli, "\nHealth check cancelled by user (Ctrl+C). Exiting...")
+        if subcmd == "health":
+            sys.argv.pop(1)
+            return _run_interruptible_command(_run_health_cli)
 
-    # 4. Unknown subcommand or misplaced option
-    print(f"Error: Unknown command '{sys.argv[1]}'. Run 'repo360 --help' for available commands.\n")
-    return 1
+        # 4. Unknown subcommand or misplaced option
+        print(f"Error: Unknown command '{sys.argv[1]}'. Run 'repo360 --help' for available commands.\n")
+        return 1
+    except KeyboardInterrupt:
+        return finalize_interrupt_exit(130)
 
 
 def run_audit_cli() -> int:
     """Dedicated entrypoint for programmatic governance audit execution."""
-    return _run_interruptible_command(
-        _run_cli,
-        on_cancel=lambda: _print_failure_banner("Audit cancelled by user (Ctrl+C). No final reports generated."),
-    )
+    return _run_interruptible_command(_run_cli)
 
 
 def _run_cli() -> int:
