@@ -409,8 +409,66 @@ def test_finops_retention_rounding_precision_lfs_and_billing(tmp_path: Path):
                         "repositories": {
                             "pageInfo": {"hasNextPage": False, "endCursor": None},
                             "nodes": [
-                                {"name": "Opsera", "object": {"text": "*.avi filter=lfs diff=lfs merge=lfs -text\n"}},
-                                {"name": "Repo-Audit", "object": None},
+                                {
+                                    "name": "Opsera",
+                                    "object": {"text": "*.avi filter=lfs diff=lfs merge=lfs -text\n"},
+                                    "releases": {"pageInfo": {"hasNextPage": False}, "nodes": []},
+                                },
+                                {
+                                    "name": "Repo-Audit",
+                                    "object": None,
+                                    "releases": {"pageInfo": {"hasNextPage": False}, "nodes": []},
+                                },
+                                {
+                                    "name": "EVChargeBuddy-Frontend",
+                                    "object": None,
+                                    "releases": {
+                                        "pageInfo": {"hasNextPage": False},
+                                        "nodes": [
+                                            {
+                                                "tagName": "demo-15",
+                                                "name": "Demo 15",
+                                                "isDraft": False,
+                                                "isPrerelease": False,
+                                                "createdAt": "2026-03-01T10:00:00Z",
+                                                "releaseAssets": {
+                                                    "pageInfo": {"hasNextPage": False},
+                                                    "nodes": [
+                                                        {
+                                                            "name": "app-release.apk",
+                                                            "size": 31457280,
+                                                            "downloadCount": 5,
+                                                            "contentType": "application/vnd.android.package-archive",
+                                                        }
+                                                    ],
+                                                },
+                                            },
+                                            {
+                                                "tagName": "demo-10",
+                                                "name": "Demo 10",
+                                                "isDraft": False,
+                                                "isPrerelease": False,
+                                                "createdAt": "2026-02-01T10:00:00Z",
+                                                "releaseAssets": {
+                                                    "pageInfo": {"hasNextPage": False},
+                                                    "nodes": [
+                                                        {
+                                                            "name": "app-release.apk",
+                                                            "size": 31457280,
+                                                            "downloadCount": 2,
+                                                            "contentType": "application/vnd.android.package-archive",
+                                                        }
+                                                    ],
+                                                },
+                                            },
+                                        ],
+                                    },
+                                },
+                                {
+                                    "name": "Empty-Repo",
+                                    "object": None,
+                                    "releases": {"pageInfo": {"hasNextPage": False}, "nodes": []},
+                                },
                             ],
                         }
                     }
@@ -494,11 +552,18 @@ def test_finops_retention_rounding_precision_lfs_and_billing(tmp_path: Path):
     profiles, org_pkgs = collect_finops_data(
         live_client,
         ["DefaultOrg24"],
-        [("DefaultOrg24", "Opsera"), ("DefaultOrg24", "Repo-Audit")],
+        [
+            ("DefaultOrg24", "Opsera"),
+            ("DefaultOrg24", "Repo-Audit"),
+            ("DefaultOrg24", "EVChargeBuddy-Frontend"),
+            ("DefaultOrg24", "Empty-Repo"),
+        ],
         FinOpsConfig(output_dir=str(tmp_path)),
         {
             ("defaultorg24", "opsera"): {"size": 20, "private": True},
             ("defaultorg24", "repo-audit"): {"size": 2, "private": True},
+            ("defaultorg24", "evchargebuddy-frontend"): {"size": 140, "private": True},
+            ("defaultorg24", "empty-repo"): {"size": 0, "private": True},
         },
         billing_out=billing_out,
     )
@@ -507,9 +572,19 @@ def test_finops_retention_rounding_precision_lfs_and_billing(tmp_path: Path):
 
     opsera_row = next(r for r in repo_rows if r[1] == "Opsera")
     audit_row = next(r for r in repo_rows if r[1] == "Repo-Audit")
-    assert opsera_row[10] == 114.78
-    assert opsera_row[11] == "Moderate Waste"
+    ev_row = next(r for r in repo_rows if r[1] == "EVChargeBuddy-Frontend")
+    empty_row = next(r for r in repo_rows if r[1] == "Empty-Repo")
+    assert opsera_row[11] == 114.76
+    assert opsera_row[13] == 114.78
+    assert opsera_row[14] == "Moderate Waste"
     assert audit_row[3] == 0.002
+    assert ev_row[12] == 60.0
+    assert ev_row[14] == "Moderate Waste"
+    assert empty_row[7] == 90
+    assert org_rows[0][12] == 4
+    assert org_rows[0][13] == 114.76
+    assert org_rows[0][14] == 60.0
+    assert any(row[2] == "Release Asset" for row in cp_rows)
     assert art_rows[0][7] == 60
     assert art_rows[0][11] == "90 Days"
 
@@ -533,5 +608,8 @@ def test_finops_retention_rounding_precision_lfs_and_billing(tmp_path: Path):
         for row in wb["Executive Summary"].iter_rows()
         if len(row) > 1 and row[0].value is not None
     }
+    assert prod_kpis["Repositories with 90-Day Default Policy"] == 4
     assert prod_kpis["Git LFS Storage Tracked (MB)"] == 114.76
+    assert prod_kpis["Release Asset Storage Tracked (MB)"] == 60.0
+    assert prod_kpis["Estimated Storage Waste / Savings Potential (MB)"] > 0
     assert prod_kpis["Actions Compute Minutes (Current Period)"] == 34.0

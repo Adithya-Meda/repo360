@@ -23,6 +23,9 @@ FINOPS_ORG_HEADERS = (
     "Total Storage Footprint (MB)",
     "Est. Inefficient Storage (MB)",
     "Storage Optimization Potential",
+    "Repos with 90-Day Policy",
+    "Git LFS (MB)",
+    "Release Assets (MB)",
 )
 
 FINOPS_REPO_HEADERS = (
@@ -33,9 +36,12 @@ FINOPS_REPO_HEADERS = (
     "Active Artifacts",
     "Artifact Storage (MB)",
     "90-Day Retention Count",
+    "Repo Policy (Days)",
     "Actions Caches",
     "Cache Storage (MB)",
     "Packages Count",
+    "Git LFS (MB)",
+    "Release Assets (MB)",
     "Total Storage (MB)",
     "Optimization Status",
     "Actionable Recommendation",
@@ -213,6 +219,21 @@ class OrgBillingSummary:
 
 
 @dataclass
+class ReleaseAssetRecord:
+    """Metadata representing a binary asset attached to a GitHub release."""
+
+    tag_name: str
+    asset_name: str
+    size_in_bytes: int
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    @property
+    def size_mb(self) -> float:
+        return format_bytes_to_mb(self.size_in_bytes)
+
+
+@dataclass
 class RepoStorageProfile:
     """Aggregated FinOps storage profile for a single repository."""
 
@@ -226,6 +247,7 @@ class RepoStorageProfile:
     lfs_bytes: int = 0
     lfs_files: List[Tuple[str, int]] = field(default_factory=list)
     lfs_gb_hours: float = 0.0
+    release_assets: List[ReleaseAssetRecord] = field(default_factory=list)
     repo_retention_days: Optional[int] = None
     errors: List[str] = field(default_factory=list)
 
@@ -236,6 +258,18 @@ class RepoStorageProfile:
     @property
     def lfs_mb(self) -> float:
         return format_bytes_to_mb(self.lfs_bytes)
+
+    @property
+    def release_bytes(self) -> int:
+        return sum(a.size_in_bytes for a in self.release_assets)
+
+    @property
+    def release_mb(self) -> float:
+        return format_bytes_to_mb(self.release_bytes)
+
+    @property
+    def has_90_day_repo_policy(self) -> bool:
+        return self.repo_retention_days is not None and self.repo_retention_days >= 85
 
     @property
     def active_artifacts(self) -> List[ArtifactRecord]:
@@ -281,6 +315,7 @@ class RepoStorageProfile:
             + self.cache_bytes
             + self.package_bytes
             + self.lfs_bytes
+            + self.release_bytes
         )
 
     @property
@@ -295,6 +330,7 @@ class RepoStorageProfile:
             or self.active_artifact_mb > 500
             or self.cache_mb > 1000
             or self.lfs_mb > 500
+            or self.release_mb > 500
         ):
             return "High Waste"
         if (
@@ -302,6 +338,7 @@ class RepoStorageProfile:
             or self.active_artifact_mb > 100
             or self.cache_mb > 300
             or self.lfs_mb >= 50
+            or self.release_mb >= 50
         ):
             return "Moderate Waste"
         return "Optimized"
@@ -319,6 +356,8 @@ class RepoStorageProfile:
             recs.append(f"Purge {len(stale_caches)} stale Actions caches (Frees ~{stale_mb} MB)")
         if self.lfs_mb >= 50:
             recs.append(f"Audit {len(self.lfs_files) or 'tracked'} Git LFS objects ({self.lfs_mb} MB) and purge obsolete binary blobs")
+        if self.release_mb >= 50:
+            recs.append(f"Prune superseded GitHub Release binaries ({len(self.release_assets)} assets, {self.release_mb} MB)")
         if self.repo_retention_days is not None and self.repo_retention_days >= 85 and self.active_artifacts:
             recs.append(f"Lower repository Actions artifact retention policy from {self.repo_retention_days} days to <=30 days")
         if not recs:

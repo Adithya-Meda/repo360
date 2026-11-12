@@ -326,7 +326,7 @@ def test_build_finops_and_dora_concurrent_ai():
         profiles.append(p)
 
     repo_rows, _, _, _ = build_finops_rows(profiles, {"org": []}, ["org"], ai_engine=mock_ai)
-    assert [r[12] for r in repo_rows] == ["AI FinOps for org/repo-a", "AI FinOps for org/repo-b", "AI FinOps for org/repo-c"]
+    assert [r[-1] for r in repo_rows] == ["AI FinOps for org/repo-a", "AI FinOps for org/repo-b", "AI FinOps for org/repo-c"]
 
     dora_metrics = []
     for name in ("svc-1", "svc-2"):

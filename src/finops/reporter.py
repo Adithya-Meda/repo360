@@ -92,13 +92,27 @@ def write_finops_workbook(
             if len(r) > 4 and str(r[2]).startswith("Package (") and isinstance(r[4], (int, float))
         )
     )
-    total_lfs_mb = _round_mb(
-        sum(
-            r[4]
-            for r in cache_package_rows
-            if len(r) > 4 and str(r[2]) == "Git LFS Object" and isinstance(r[4], (int, float))
+    if any(len(r) > 13 for r in org_rows):
+        total_lfs_mb = _round_mb(sum(r[13] for r in org_rows if len(r) > 13 and isinstance(r[13], (int, float))))
+    else:
+        total_lfs_mb = _round_mb(
+            sum(
+                r[4]
+                for r in cache_package_rows
+                if len(r) > 4 and str(r[2]) == "Git LFS Object" and isinstance(r[4], (int, float))
+            )
         )
-    )
+    if any(len(r) > 14 for r in org_rows):
+        total_release_mb = _round_mb(sum(r[14] for r in org_rows if len(r) > 14 and isinstance(r[14], (int, float))))
+    else:
+        total_release_mb = _round_mb(
+            sum(
+                r[4]
+                for r in cache_package_rows
+                if len(r) > 4 and str(r[2]) == "Release Asset" and isinstance(r[4], (int, float))
+            )
+        )
+    total_90d_policy_repos = sum(r[12] for r in org_rows if len(r) > 12 and isinstance(r[12], int))
     total_footprint_mb = _round_mb(sum(r[9] for r in org_rows if len(r) > 9 and isinstance(r[9], (int, float))))
     total_waste_mb = _round_mb(sum(r[10] for r in org_rows if len(r) > 10 and isinstance(r[10], (int, float))))
 
@@ -106,8 +120,10 @@ def write_finops_workbook(
         ["Total Duration", duration_str],
         ["Organizations Monitored", len(org_rows)],
         ["Repositories Profiled", len(repo_rows)],
+        ["Repositories with 90-Day Default Policy", total_90d_policy_repos],
         ["Repository Disk Footprint (MB)", total_disk_mb],
         ["Git LFS Storage Tracked (MB)", total_lfs_mb],
+        ["Release Asset Storage Tracked (MB)", total_release_mb],
         ["Active Workflow Artifacts", total_active_artifacts],
         ["Active Artifact Storage (MB)", total_artifact_mb],
         ["Inefficient 90-Day Retention Artifacts", total_90d_count],
@@ -143,7 +159,10 @@ def write_finops_workbook(
     curr_row = section_title(summary, curr_row, "Organization Storage & Optimization Overview")
     curr_row = write_table(summary, curr_row, FINOPS_ORG_HEADERS, org_rows, bar_col=9) + 2
 
-    waste_candidates = [r for r in repo_rows if len(r) > 11 and r[11] in ("High Waste", "Moderate Waste")]
+    status_col_zero = FINOPS_REPO_HEADERS.index("Optimization Status")
+    waste_candidates = [
+        r for r in repo_rows if len(r) > status_col_zero and r[status_col_zero] in ("High Waste", "Moderate Waste")
+    ]
     if waste_candidates:
         curr_row = section_title(summary, curr_row, "Priority Cost & Storage Optimization Candidates")
         write_table(summary, curr_row, FINOPS_REPO_HEADERS, waste_candidates[:15])
@@ -157,6 +176,7 @@ def write_finops_workbook(
         finalize_sheet(repo_ws, 1, last_repo, len(FINOPS_REPO_HEADERS), "C2")
 
         status_col_idx = FINOPS_REPO_HEADERS.index("Optimization Status") + 1
+        policy_col_idx = FINOPS_REPO_HEADERS.index("Repo Policy (Days)") + 1
         for r_idx in range(2, last_repo + 1):
             cell = repo_ws.cell(r_idx, status_col_idx)
             val = str(cell.value).strip()
@@ -164,6 +184,10 @@ def write_finops_workbook(
                 fill, font_col = OPTIMIZATION_STYLES[val]
                 cell.fill = PatternFill("solid", fgColor=fill)
                 cell.font = Font(bold=True, color=font_col)
+            policy_cell = repo_ws.cell(r_idx, policy_col_idx)
+            if isinstance(policy_cell.value, (int, float)) and policy_cell.value >= 85:
+                policy_cell.fill = PatternFill("solid", fgColor="FFEB9C")
+                policy_cell.font = Font(bold=True, color="9C5700")
     else:
         write_empty_table(repo_ws, 1, FINOPS_REPO_HEADERS, "No repositories found on target organizations.")
 

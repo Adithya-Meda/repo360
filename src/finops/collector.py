@@ -7,7 +7,7 @@ import fnmatch
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote
 
@@ -30,6 +30,7 @@ from .models import (
     FinOpsConfig,
     OrgBillingSummary,
     PackageRecord,
+    ReleaseAssetRecord,
     RepoStorageProfile,
     format_bytes_to_mb,
 )
@@ -472,20 +473,20 @@ def _matches_lfs_pattern(path: str, patterns: List[str]) -> bool:
     return False
 
 
-def collect_org_lfs_usage(
+def collect_org_repo_assets(
     client: ResilientGitHubClient,
     org: str,
     target_repos: Set[str],
     errors_out: Optional[List[str]] = None,
-) -> Dict[str, List[Tuple[str, int]]]:
-    """Detect Git LFS tracked pointer objects and byte footprints per repository."""
+) -> Tuple[Dict[str, List[Tuple[str, int]]], Dict[str, List[ReleaseAssetRecord]]]:
+    """Detect Git LFS tracked pointers and GitHub Release binary assets per repository."""
     if not target_repos:
-        return {}
+        return {}, {}
 
-    gql_gitattributes = """
+    gql_repos = """
     query($org: String!, $cursor: String) {
       organization(login: $org) {
-        repositories(first: 100, after: $cursor) {
+        repositories(first: 50, after: $cursor) {
           pageInfo {
             hasNextPage
             endCursor
@@ -497,17 +498,39 @@ def collect_org_lfs_usage(
                 text
               }
             }
+            releases(first: 20, orderBy: {field: CREATED_AT, direction: DESC}) {
+              pageInfo {
+                hasNextPage
+              }
+              nodes {
+                tagName
+                createdAt
+                releaseAssets(first: 20) {
+                  pageInfo {
+                    hasNextPage
+                  }
+                  nodes {
+                    name
+                    size
+                    updatedAt
+                  }
+                }
+              }
+            }
           }
         }
       }
     }
     """
     lfs_candidates: Dict[str, List[str]] = {}
+    releases_by_repo: Dict[str, List[ReleaseAssetRecord]] = {}
+    rest_release_repos: List[str] = []
+
     try:
         cursor: Optional[str] = None
         seen: Set[str] = set()
-        for _ in range(50):
-            data = client.graphql(org, gql_gitattributes, {"org": org, "cursor": cursor})
+        for _ in range(100):
+            data = client.graphql(org, gql_repos, {"org": org, "cursor": cursor})
             repos_conn = (data.get("data") or {}).get("organization", {}).get("repositories") or {}
             nodes = repos_conn.get("nodes") or []
             for node in nodes:
@@ -520,6 +543,40 @@ def collect_org_lfs_usage(
                 patterns = _parse_lfs_patterns(blob_text)
                 if patterns:
                     lfs_candidates[rname] = patterns
+
+                rel_conn = node.get("releases") or {}
+                rel_nodes = rel_conn.get("nodes") or []
+                needs_rest_rel = bool((rel_conn.get("pageInfo") or {}).get("hasNextPage"))
+                repo_assets: List[ReleaseAssetRecord] = []
+                for rel in rel_nodes:
+                    if not isinstance(rel, dict):
+                        continue
+                    tag = str(rel.get("tagName") or "untagged")
+                    rel_created = parse_ts(rel.get("createdAt")) if rel.get("createdAt") else None
+                    assets_conn = rel.get("releaseAssets") or {}
+                    if (assets_conn.get("pageInfo") or {}).get("hasNextPage"):
+                        needs_rest_rel = True
+                    for asset in assets_conn.get("nodes") or []:
+                        if not isinstance(asset, dict):
+                            continue
+                        asize = int(asset.get("size") or 0)
+                        aname = str(asset.get("name") or "asset")
+                        aupdated = parse_ts(asset.get("updatedAt")) if asset.get("updatedAt") else None
+                        if asize > 0:
+                            repo_assets.append(
+                                ReleaseAssetRecord(
+                                    tag_name=tag,
+                                    asset_name=aname,
+                                    size_in_bytes=asize,
+                                    created_at=rel_created,
+                                    updated_at=aupdated,
+                                )
+                            )
+                if needs_rest_rel:
+                    rest_release_repos.append(rname)
+                elif repo_assets:
+                    releases_by_repo[rname.lower()] = repo_assets
+
             page_info = repos_conn.get("pageInfo") or {}
             if not page_info.get("hasNextPage"):
                 break
@@ -529,10 +586,39 @@ def collect_org_lfs_usage(
             seen.add(next_cursor)
             cursor = next_cursor
     except Exception as err:
-        logger.debug("GraphQL .gitattributes scan unavailable for %s: %s", org, err)
+        logger.debug("GraphQL repository asset scan unavailable for %s: %s", org, err)
         if errors_out is not None:
-            errors_out.append(f"Git LFS .gitattributes scan unavailable: {err}")
-        return {}
+            errors_out.append(f"Git LFS & Release scan unavailable: {err}")
+        return {}, {}
+
+    for rname in rest_release_repos:
+        try:
+            repo_assets = []
+            for rel in client.paginate(org, f"/repos/{org}/{rname}/releases"):
+                if not isinstance(rel, dict):
+                    continue
+                tag = str(rel.get("tag_name") or rel.get("name") or "untagged")
+                rel_created = parse_ts(rel.get("created_at")) if rel.get("created_at") else None
+                for asset in rel.get("assets") or []:
+                    if not isinstance(asset, dict):
+                        continue
+                    asize = int(asset.get("size") or 0)
+                    aname = str(asset.get("name") or "asset")
+                    aupdated = parse_ts(asset.get("updated_at")) if asset.get("updated_at") else None
+                    if asize > 0:
+                        repo_assets.append(
+                            ReleaseAssetRecord(
+                                tag_name=tag,
+                                asset_name=aname,
+                                size_in_bytes=asize,
+                                created_at=rel_created,
+                                updated_at=aupdated,
+                            )
+                        )
+            if repo_assets:
+                releases_by_repo[rname.lower()] = repo_assets
+        except Exception as err:
+            logger.debug("Release asset pagination failed for %s/%s: %s", org, rname, err)
 
     lfs_by_repo: Dict[str, List[Tuple[str, int]]] = {}
     for repo_name, patterns in lfs_candidates.items():
@@ -569,6 +655,17 @@ def collect_org_lfs_usage(
                 lfs_by_repo[repo_name.lower()] = repo_objects
         except Exception as err:
             logger.debug("Failed inspecting Git LFS tree for %s/%s: %s", org, repo_name, err)
+    return lfs_by_repo, releases_by_repo
+
+
+def collect_org_lfs_usage(
+    client: ResilientGitHubClient,
+    org: str,
+    target_repos: Set[str],
+    errors_out: Optional[List[str]] = None,
+) -> Dict[str, List[Tuple[str, int]]]:
+    """Detect Git LFS tracked pointer objects and byte footprints per repository."""
+    lfs_by_repo, _ = collect_org_repo_assets(client, org, target_repos, errors_out=errors_out)
     return lfs_by_repo
 
 
@@ -732,18 +829,19 @@ def profile_single_repo(
         repo_retention_days=org_default_retention_days,
     )
 
-    if is_empty_repo(repo_meta):
-        return profile
-
-    profile.artifacts = collect_repo_artifacts(client, org, repo, errors_out=profile.errors)
-    if fetch_caches:
-        profile.caches = collect_repo_caches(client, org, repo, errors_out=profile.errors)
     if fetch_retention_policy:
         repo_days, blocked = collect_repo_retention_policy(client, org, repo)
         if repo_days is not None:
             profile.repo_retention_days = repo_days
         elif blocked:
             profile.errors.append("__RETENTION_403__")
+
+    if is_empty_repo(repo_meta):
+        return profile
+
+    profile.artifacts = collect_repo_artifacts(client, org, repo, errors_out=profile.errors)
+    if fetch_caches:
+        profile.caches = collect_repo_caches(client, org, repo, errors_out=profile.errors)
     return profile
 
 
@@ -756,12 +854,13 @@ def collect_finops_data(
     failures_out: Optional[List[Tuple[str, str]]] = None,
     billing_out: Optional[Dict[str, OrgBillingSummary]] = None,
 ) -> Tuple[List[RepoStorageProfile], Dict[str, List[PackageRecord]]]:
-    """Collect storage profiles, packages, Git LFS objects, and billing data across all targets."""
+    """Collect storage profiles, packages, Git LFS objects, release assets, and billing data."""
     profiles: List[RepoStorageProfile] = []
     org_packages: Dict[str, List[PackageRecord]] = {}
     org_cache_repos: Dict[str, Optional[Set[str]]] = {}
     org_retention_defaults: Dict[str, Optional[int]] = {}
     org_lfs_map: Dict[str, Dict[str, List[Tuple[str, int]]]] = {}
+    org_releases_map: Dict[str, Dict[str, List[ReleaseAssetRecord]]] = {}
     org_billing_map: Dict[str, OrgBillingSummary] = {}
 
     targets_by_org: Dict[str, Set[str]] = {}
@@ -777,6 +876,7 @@ def collect_finops_data(
             Optional[Set[str]],
             Optional[int],
             Dict[str, List[Tuple[str, int]]],
+            Dict[str, List[ReleaseAssetRecord]],
             OrgBillingSummary,
             List[str],
         ]:
@@ -784,11 +884,11 @@ def collect_finops_data(
             pkgs = collect_org_packages(client, org_name, errors_out=errs)
             cache_repos = collect_org_cache_repos(client, org_name)
             org_ret = collect_org_retention_days(client, org_name)
-            lfs_map = collect_org_lfs_usage(
+            lfs_map, rel_map = collect_org_repo_assets(
                 client, org_name, targets_by_org.get(org_name.lower(), set()), errors_out=errs
             )
             billing = collect_org_billing(client, org_name, errors_out=errs)
-            return org_name, pkgs, cache_repos, org_ret, lfs_map, billing, errs
+            return org_name, pkgs, cache_repos, org_ret, lfs_map, rel_map, billing, errs
 
         org_batches = map_concurrent(
             orgs,
@@ -797,11 +897,12 @@ def collect_finops_data(
             max_cap=8,
             thread_name_prefix="finops-org-signals",
         )
-        for o, pkgs, cache_repos, org_ret, lfs_map, billing, errs in org_batches:
+        for o, pkgs, cache_repos, org_ret, lfs_map, rel_map, billing, errs in org_batches:
             org_packages[o] = pkgs
             org_cache_repos[o.lower()] = cache_repos
             org_retention_defaults[o.lower()] = org_ret
             org_lfs_map[o.lower()] = lfs_map
+            org_releases_map[o.lower()] = rel_map
             org_billing_map[o] = billing
             if billing_out is not None:
                 billing_out[o] = billing
@@ -851,6 +952,9 @@ def collect_finops_data(
                     if lfs_items:
                         profile.lfs_files = lfs_items
                         profile.lfs_bytes = sum(sz for _, sz in lfs_items)
+                    rel_items = org_releases_map.get(org.lower(), {}).get(repo.lower(), [])
+                    if rel_items:
+                        profile.release_assets = rel_items
                     billing_summary = org_billing_map.get(org)
                     if billing_summary:
                         profile.lfs_gb_hours = billing_summary.repo_lfs_gb_hours.get(repo.lower(), 0.0)
@@ -917,11 +1021,13 @@ def build_finops_rows(
     for idx, p in enumerate(profiles):
         stale_cache_count = sum(1 for c in p.caches if c.is_stale)
         has_high_lfs = p.lfs_mb >= 50
+        has_high_releases = p.release_mb >= 50
         is_baseline_optimized = (
             p.optimization_status == "Optimized"
             and p.default_90_day_count == 0
             and stale_cache_count == 0
             and not has_high_lfs
+            and not has_high_releases
             and p.total_storage_mb <= 2000
         )
         if is_baseline_optimized:
@@ -954,6 +1060,7 @@ def build_finops_rows(
     for idx, p in enumerate(profiles):
         org_profiles.setdefault(p.org, []).append(p)
         rec = rec_by_idx.get(idx, AI_NOT_ENABLED_LABEL if ai_disabled else p.recommendation)
+        repo_policy_val = p.repo_retention_days if p.repo_retention_days is not None else "-"
 
         repo_rows.append([
             p.org,
@@ -963,9 +1070,12 @@ def build_finops_rows(
             len(p.active_artifacts),
             p.active_artifact_mb,
             p.default_90_day_count,
+            repo_policy_val,
             len(p.caches),
             p.cache_mb,
             len(p.packages),
+            p.lfs_mb,
+            p.release_mb,
             p.total_storage_mb,
             p.optimization_status,
             rec,
@@ -1023,6 +1133,18 @@ def build_finops_rows(
                 " | ".join(detail_parts),
             ])
 
+        for rel_asset in p.release_assets:
+            cache_package_rows.append([
+                p.org,
+                p.repo,
+                "Release Asset",
+                f"{rel_asset.tag_name} / {rel_asset.asset_name}",
+                rel_asset.size_mb,
+                fmt_timestamp(rel_asset.created_at),
+                fmt_timestamp(rel_asset.updated_at),
+                f"{rel_asset.size_in_bytes:,} bytes",
+            ])
+
     for org, pkgs in org_packages.items():
         for pkg in pkgs:
             created_ist = fmt_timestamp(pkg.created_at)
@@ -1049,19 +1171,39 @@ def build_finops_rows(
         total_art_bytes = sum(p.active_artifact_bytes for p in p_list)
         total_art_mb = format_bytes_to_mb(total_art_bytes)
         total_90d_count = sum(p.default_90_day_count for p in p_list)
+        repos_90d_policy_count = sum(1 for p in p_list if p.has_90_day_repo_policy)
         total_cache_count = sum(len(p.caches) for p in p_list)
         total_cache_bytes = sum(p.cache_bytes for p in p_list)
         total_cache_mb = format_bytes_to_mb(total_cache_bytes)
         total_pkg_bytes = sum(pkg.size_in_bytes for pkg in pkgs)
         total_lfs_bytes = sum(p.lfs_bytes for p in p_list)
+        total_release_bytes = sum(p.release_bytes for p in p_list)
         total_footprint_bytes = (
-            total_disk_bytes + total_art_bytes + total_cache_bytes + total_pkg_bytes + total_lfs_bytes
+            total_disk_bytes
+            + total_art_bytes
+            + total_cache_bytes
+            + total_pkg_bytes
+            + total_lfs_bytes
+            + total_release_bytes
         )
         total_footprint_mb = format_bytes_to_mb(total_footprint_bytes)
 
         inefficient_art_bytes = sum(a.size_in_bytes for p in p_list for a in p.default_90_day_artifacts)
         stale_cache_bytes = sum(c.size_in_bytes for p in p_list for c in p.caches if c.is_stale)
-        est_waste_mb = format_bytes_to_mb(inefficient_art_bytes + stale_cache_bytes)
+        flagged_lfs_bytes = sum(p.lfs_bytes for p in p_list if p.lfs_mb >= 50)
+        flagged_release_bytes = 0
+        for p in p_list:
+            if p.release_mb >= 50 and len(p.release_assets) > 1:
+                ordered = sorted(
+                    p.release_assets,
+                    key=lambda a: (a.created_at or datetime.min.replace(tzinfo=timezone.utc)),
+                    reverse=True,
+                )
+                latest_tag = ordered[0].tag_name
+                flagged_release_bytes += sum(a.size_in_bytes for a in ordered if a.tag_name != latest_tag)
+        est_waste_mb = format_bytes_to_mb(
+            inefficient_art_bytes + stale_cache_bytes + flagged_lfs_bytes + flagged_release_bytes
+        )
 
         savings_potential = "Low"
         if est_waste_mb > 500 or total_90d_count > 20:
@@ -1082,6 +1224,9 @@ def build_finops_rows(
             total_footprint_mb,
             est_waste_mb,
             savings_potential,
+            repos_90d_policy_count,
+            format_bytes_to_mb(total_lfs_bytes),
+            format_bytes_to_mb(total_release_bytes),
         ])
 
     return repo_rows, org_rows, artifact_rows, cache_package_rows

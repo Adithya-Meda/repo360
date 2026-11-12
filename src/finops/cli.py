@@ -67,6 +67,14 @@ def print_finops_scorecard(
             if len(r) > 4 and str(r[2]) == "Git LFS Object" and isinstance(r[4], (int, float))
         )
     )
+    total_release_mb = _round_mb(
+        sum(
+            r[4]
+            for r in cache_package_rows
+            if len(r) > 4 and str(r[2]) == "Release Asset" and isinstance(r[4], (int, float))
+        )
+    )
+    total_90d_policy_repos = sum(r[12] for r in org_rows if len(r) > 12 and isinstance(r[12], int))
     total_footprint_mb = _round_mb(sum(r[9] for r in org_rows if len(r) > 9 and isinstance(r[9], (int, float))))
     total_waste_mb = _round_mb(sum(r[10] for r in org_rows if len(r) > 10 and isinstance(r[10], (int, float))))
 
@@ -82,9 +90,10 @@ def print_finops_scorecard(
     print(f"{B}{C}   REPO360 FINOPS STORAGE QUOTA & ARTIFACT PROFILER SCORECARD{X}")
     print(f"{C}{'=' * 76}{X}")
     print(f"   {B}Organizations Monitored        :{X} {len(org_rows)}")
-    print(f"   {B}Repositories Profiled          :{X} {total_repos}")
+    print(f"   {B}Repositories Profiled          :{X} {total_repos} ({total_90d_policy_repos} with 90-day repo policy)")
     print(f"   {B}Repository Git Storage         :{X} {total_disk_mb:,.2f} MB")
     print(f"   {B}Git LFS Objects Tracked        :{X} {total_lfs_mb:,.2f} MB")
+    print(f"   {B}Release Asset Binaries         :{X} {total_release_mb:,.2f} MB")
     print(f"   {B}Active Workflow Artifacts      :{X} {total_active_artifacts:,} ({total_artifact_mb:,.2f} MB)")
     print(f"   {B}Default 90-Day Retention Ineff.:{X} {waste_color}{total_90d_count} artifacts (Retention policy override recommended){X}")
     print(f"   {B}Actions Caches Tracked         :{X} {total_caches:,} ({total_cache_mb:,.2f} MB)")
