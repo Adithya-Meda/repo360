@@ -20,8 +20,8 @@ from ..common.inventory import (
     discover_app_repositories,
 )
 from ..credentials import resolve_runtime_credentials
-from .collector import build_finops_rows, collect_finops_data
-from .models import FinOpsConfig
+from .collector import build_billing_rows, build_finops_rows, collect_finops_data
+from .models import FinOpsConfig, OrgBillingSummary, _round_mb
 from .reporter import write_finops_workbook
 
 logger = logging.getLogger("repo360.finops")
@@ -53,16 +53,22 @@ def print_finops_scorecard(
     total_caches = sum(r[6] for r in org_rows if len(r) > 6 and isinstance(r[6], int))
     total_cache_mb = round(sum(r[7] for r in org_rows if len(r) > 7 and isinstance(r[7], (int, float))), 2)
     total_packages = sum(r[8] for r in org_rows if len(r) > 8 and isinstance(r[8], int))
-    total_package_mb = round(
+    total_package_mb = _round_mb(
         sum(
             r[4]
             for r in cache_package_rows
             if len(r) > 4 and str(r[2]).startswith("Package (") and isinstance(r[4], (int, float))
-        ),
-        2,
+        )
     )
-    total_footprint_mb = round(sum(r[9] for r in org_rows if len(r) > 9 and isinstance(r[9], (int, float))), 2)
-    total_waste_mb = round(sum(r[10] for r in org_rows if len(r) > 10 and isinstance(r[10], (int, float))), 2)
+    total_lfs_mb = _round_mb(
+        sum(
+            r[4]
+            for r in cache_package_rows
+            if len(r) > 4 and str(r[2]) == "Git LFS Object" and isinstance(r[4], (int, float))
+        )
+    )
+    total_footprint_mb = _round_mb(sum(r[9] for r in org_rows if len(r) > 9 and isinstance(r[9], (int, float))))
+    total_waste_mb = _round_mb(sum(r[10] for r in org_rows if len(r) > 10 and isinstance(r[10], (int, float))))
 
     elapsed_str = (
         f"{int(elapsed_seconds // 60)}m {int(elapsed_seconds % 60)}s"
@@ -78,6 +84,7 @@ def print_finops_scorecard(
     print(f"   {B}Organizations Monitored        :{X} {len(org_rows)}")
     print(f"   {B}Repositories Profiled          :{X} {total_repos}")
     print(f"   {B}Repository Git Storage         :{X} {total_disk_mb:,.2f} MB")
+    print(f"   {B}Git LFS Objects Tracked        :{X} {total_lfs_mb:,.2f} MB")
     print(f"   {B}Active Workflow Artifacts      :{X} {total_active_artifacts:,} ({total_artifact_mb:,.2f} MB)")
     print(f"   {B}Default 90-Day Retention Ineff.:{X} {waste_color}{total_90d_count} artifacts (Retention policy override recommended){X}")
     print(f"   {B}Actions Caches Tracked         :{X} {total_caches:,} ({total_cache_mb:,.2f} MB)")
@@ -170,18 +177,31 @@ def run_finops_cli(argv: Optional[List[str]] = None) -> int:
                 f"       1. In GitHub App Settings -> Permissions & events -> Repository permissions -> set 'Packages' to Read-only.\n"
                 f"       2. Accept updated permissions at: https://github.com/organizations/{org_name}/settings/installations\n"
             )
+        if perms and perms.get("actions") not in ("read", "write"):
+            print(
+                f"\033[93m[WARN]\033[0m GitHub App on '{org_name}' is missing permission: actions: read.\n"
+                f"       Workflow artifact and cache profiling requires 'actions: read' permission.\n"
+            )
 
     print(f"\033[96m[INFO]\033[0m Profiling repository storage, workflow artifacts, and caches across {len(orgs)} organization(s)...")
 
     failures: List[Tuple[str, str]] = []
+    org_billing: Dict[str, OrgBillingSummary] = {}
     profiles, org_packages = collect_finops_data(
-        client, orgs, targets, cfg, metadata_cache, failures_out=failures
+        client,
+        orgs,
+        targets,
+        cfg,
+        metadata_cache,
+        failures_out=failures,
+        billing_out=org_billing,
     )
     for p in profiles:
         for err in p.errors:
             failures.append((f"{p.org}/{p.repo}", err))
 
     repo_rows, org_rows, artifact_rows, cache_package_rows = build_finops_rows(profiles, org_packages, orgs, ai_engine=ai_engine)
+    billing_rows = build_billing_rows(org_billing)
 
     out_dir = Path(cfg.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -199,6 +219,8 @@ def run_finops_cli(argv: Optional[List[str]] = None) -> int:
         failures=failures,
         execution_duration=elapsed,
         ai_engine=ai_engine,
+        billing_rows=billing_rows,
+        org_billing=org_billing,
     )
 
     print_finops_scorecard(

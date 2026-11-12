@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -23,11 +23,14 @@ from ..activity.reporter import (
 from ..common.concurrency import AI_NOT_ENABLED_MESSAGE, is_ai_disabled
 from .models import (
     FINOPS_ARTIFACT_HEADERS,
+    FINOPS_BILLING_HEADERS,
     FINOPS_CACHE_PACKAGE_HEADERS,
     FINOPS_ORG_HEADERS,
     FINOPS_REPO_HEADERS,
     FINOPS_SUMMARY_HEADERS,
     FinOpsConfig,
+    OrgBillingSummary,
+    _round_mb,
 )
 
 OPTIMIZATION_STYLES = {
@@ -54,6 +57,8 @@ def write_finops_workbook(
     failures: List[Tuple[str, str]],
     execution_duration: Optional[float] = None,
     ai_engine: Optional[Any] = None,
+    billing_rows: Optional[List[list]] = None,
+    org_billing: Optional[Dict[str, OrgBillingSummary]] = None,
 ) -> None:
     """Generate high-fidelity executive FinOps workbook for Actions and repository storage."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -73,29 +78,36 @@ def write_finops_workbook(
     )
     summary["A2"].font = Font(italic=True, color="595959")
 
-    total_disk_mb = round(sum(r[2] for r in org_rows if len(r) > 2 and isinstance(r[2], (int, float))), 2)
+    total_disk_mb = _round_mb(sum(r[2] for r in org_rows if len(r) > 2 and isinstance(r[2], (int, float))))
     total_active_artifacts = sum(r[3] for r in org_rows if len(r) > 3 and isinstance(r[3], int))
-    total_artifact_mb = round(sum(r[4] for r in org_rows if len(r) > 4 and isinstance(r[4], (int, float))), 2)
+    total_artifact_mb = _round_mb(sum(r[4] for r in org_rows if len(r) > 4 and isinstance(r[4], (int, float))))
     total_90d_count = sum(r[5] for r in org_rows if len(r) > 5 and isinstance(r[5], int))
     total_caches = sum(r[6] for r in org_rows if len(r) > 6 and isinstance(r[6], int))
-    total_cache_mb = round(sum(r[7] for r in org_rows if len(r) > 7 and isinstance(r[7], (int, float))), 2)
+    total_cache_mb = _round_mb(sum(r[7] for r in org_rows if len(r) > 7 and isinstance(r[7], (int, float))))
     total_packages = sum(r[8] for r in org_rows if len(r) > 8 and isinstance(r[8], int))
-    total_package_mb = round(
+    total_package_mb = _round_mb(
         sum(
             r[4]
             for r in cache_package_rows
             if len(r) > 4 and str(r[2]).startswith("Package (") and isinstance(r[4], (int, float))
-        ),
-        2,
+        )
     )
-    total_footprint_mb = round(sum(r[9] for r in org_rows if len(r) > 9 and isinstance(r[9], (int, float))), 2)
-    total_waste_mb = round(sum(r[10] for r in org_rows if len(r) > 10 and isinstance(r[10], (int, float))), 2)
+    total_lfs_mb = _round_mb(
+        sum(
+            r[4]
+            for r in cache_package_rows
+            if len(r) > 4 and str(r[2]) == "Git LFS Object" and isinstance(r[4], (int, float))
+        )
+    )
+    total_footprint_mb = _round_mb(sum(r[9] for r in org_rows if len(r) > 9 and isinstance(r[9], (int, float))))
+    total_waste_mb = _round_mb(sum(r[10] for r in org_rows if len(r) > 10 and isinstance(r[10], (int, float))))
 
     kpis = [
         ["Total Duration", duration_str],
         ["Organizations Monitored", len(org_rows)],
         ["Repositories Profiled", len(repo_rows)],
         ["Repository Disk Footprint (MB)", total_disk_mb],
+        ["Git LFS Storage Tracked (MB)", total_lfs_mb],
         ["Active Workflow Artifacts", total_active_artifacts],
         ["Active Artifact Storage (MB)", total_artifact_mb],
         ["Inefficient 90-Day Retention Artifacts", total_90d_count],
@@ -107,6 +119,18 @@ def write_finops_workbook(
         ["Estimated Storage Waste / Savings Potential (MB)", total_waste_mb],
         ["Collection / Permission Gaps", len(failures)],
     ]
+    if org_billing:
+        has_billing = any(b.items for b in org_billing.values())
+        if has_billing:
+            compute_mins = round(sum(b.actions_compute_minutes for b in org_billing.values()), 2)
+            gross_usd = round(sum(b.gross_amount_usd for b in org_billing.values()), 4)
+            net_usd = round(sum(b.net_amount_usd for b in org_billing.values()), 4)
+            kpis.extend([
+                ["Actions Compute Minutes (Current Period)", compute_mins],
+                ["Billing Gross Usage Value (USD)", gross_usd],
+                ["Billing Net Billed Spend (USD)", net_usd],
+            ])
+
     curr_row = write_table(summary, 4, ("Metric", "Fleet Aggregate"), kpis) + 2
 
     if is_ai_disabled(ai_engine):
@@ -166,6 +190,11 @@ def write_finops_workbook(
             FINOPS_CACHE_PACKAGE_HEADERS,
             "No Actions caches or packages found on target organizations.",
         )
+
+    if billing_rows:
+        bill_ws = wb.create_sheet("Billing & Compute Usage")
+        last_bill = write_table(bill_ws, 1, FINOPS_BILLING_HEADERS, billing_rows)
+        finalize_sheet(bill_ws, 1, last_bill, len(FINOPS_BILLING_HEADERS), "C2")
 
     if failures:
         gap_ws = wb.create_sheet("Collection & Permission Gaps")

@@ -658,7 +658,7 @@ def build_rows(
         active_days_count = len(act.active_days)
         active_months = len(act.commit_months)
         avg_commits = round(act.commits / active_months, 2) if active_months else None
-        days_since_last = (end - act.last_active).days if act.last_active else None
+        days_since_last = max(0, int((end - act.last_active).total_seconds() // 86400)) if act.last_active else None
 
         user_rows.append([
             disp_org,

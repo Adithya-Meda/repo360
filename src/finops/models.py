@@ -53,6 +53,7 @@ FINOPS_ARTIFACT_HEADERS = (
     "Default 90-Day Policy",
     "Status",
     "Workflow Run ID",
+    "Repo Policy (Days)",
 )
 
 FINOPS_CACHE_PACKAGE_HEADERS = (
@@ -66,14 +67,41 @@ FINOPS_CACHE_PACKAGE_HEADERS = (
     "Details / Versions",
 )
 
+FINOPS_BILLING_HEADERS = (
+    "Organization",
+    "Scope / Repository",
+    "Period",
+    "Product",
+    "SKU",
+    "Quantity",
+    "Unit",
+    "Gross Amount (USD)",
+    "Discount Amount (USD)",
+    "Net Amount (USD)",
+)
+
+
+def _round_mb(mb_value: float) -> float:
+    """Keep 2 decimals for normal sizes and 4 decimals for sub-0.01 MB values so non-zero items stay visible."""
+    if mb_value <= 0:
+        return 0.0
+    if mb_value >= 0.01:
+        return round(mb_value, 2)
+    return max(0.0001, round(mb_value, 4))
+
 
 def format_bytes_to_mb(size_in_bytes: int) -> float:
-    """Convert bytes to Megabytes rounded to 2 decimal places."""
-    return round(size_in_bytes / (1024 * 1024), 2)
+    """Convert bytes to MiB rounded with precision preservation for small resources."""
+    return _round_mb(size_in_bytes / (1024 * 1024))
+
+
+def format_kb_to_mb(size_in_kb: int) -> float:
+    """Convert KiB to MiB rounded with precision preservation for small repositories."""
+    return _round_mb(size_in_kb / 1024)
 
 
 def format_bytes_to_gb(size_in_bytes: int) -> float:
-    """Convert bytes to Gigabytes rounded to 2 decimal places."""
+    """Convert bytes to GiB rounded to 2 decimal places."""
     return round(size_in_bytes / (1024 * 1024 * 1024), 2)
 
 
@@ -96,8 +124,8 @@ class ArtifactRecord:
     @property
     def retention_days(self) -> int:
         if self.created_at and self.expires_at:
-            delta = self.expires_at - self.created_at
-            return max(0, delta.days)
+            total_seconds = (self.expires_at - self.created_at).total_seconds()
+            return max(0, round(total_seconds / 86400))
         return 0
 
     @property
@@ -120,13 +148,17 @@ class CacheRecord:
     def size_mb(self) -> float:
         return format_bytes_to_mb(self.size_in_bytes)
 
-    @property
-    def is_stale(self) -> bool:
-        """Flags cache entries unaccessed for 30+ days."""
+    def is_stale_for(self, stale_days: int = 30) -> bool:
+        """Flags cache entries unaccessed for at least ``stale_days`` days."""
         if not self.last_accessed_at:
             return False
         now = datetime.now(timezone.utc)
-        return (now - self.last_accessed_at).days >= 30
+        return (now - self.last_accessed_at).total_seconds() >= max(1, stale_days) * 86400
+
+    @property
+    def is_stale(self) -> bool:
+        """Flags cache entries unaccessed for 30+ days."""
+        return self.is_stale_for(30)
 
 
 @dataclass
@@ -148,6 +180,39 @@ class PackageRecord:
 
 
 @dataclass
+class BillingUsageRecord:
+    """Single usage or summary line item from GitHub's Enhanced Billing Platform API."""
+
+    org: str
+    scope: str
+    period: str
+    product: str
+    sku: str
+    quantity: float
+    unit_type: str
+    gross_amount: float = 0.0
+    discount_amount: float = 0.0
+    net_amount: float = 0.0
+
+
+@dataclass
+class OrgBillingSummary:
+    """Aggregated billing and compute spend for one organization."""
+
+    org: str
+    period: str = ""
+    actions_compute_minutes: float = 0.0
+    actions_storage_gb_hours: float = 0.0
+    git_lfs_gb_hours: float = 0.0
+    packages_gb_hours: float = 0.0
+    gross_amount_usd: float = 0.0
+    discount_amount_usd: float = 0.0
+    net_amount_usd: float = 0.0
+    repo_lfs_gb_hours: Dict[str, float] = field(default_factory=dict)
+    items: List[BillingUsageRecord] = field(default_factory=list)
+
+
+@dataclass
 class RepoStorageProfile:
     """Aggregated FinOps storage profile for a single repository."""
 
@@ -158,11 +223,19 @@ class RepoStorageProfile:
     artifacts: List[ArtifactRecord] = field(default_factory=list)
     caches: List[CacheRecord] = field(default_factory=list)
     packages: List[PackageRecord] = field(default_factory=list)
+    lfs_bytes: int = 0
+    lfs_files: List[Tuple[str, int]] = field(default_factory=list)
+    lfs_gb_hours: float = 0.0
+    repo_retention_days: Optional[int] = None
     errors: List[str] = field(default_factory=list)
 
     @property
     def disk_size_mb(self) -> float:
-        return round(self.disk_size_kb / 1024, 2)
+        return format_kb_to_mb(self.disk_size_kb)
+
+    @property
+    def lfs_mb(self) -> float:
+        return format_bytes_to_mb(self.lfs_bytes)
 
     @property
     def active_artifacts(self) -> List[ArtifactRecord]:
@@ -201,15 +274,35 @@ class RepoStorageProfile:
         return format_bytes_to_mb(self.package_bytes)
 
     @property
+    def total_storage_bytes(self) -> int:
+        return (
+            self.disk_size_kb * 1024
+            + self.active_artifact_bytes
+            + self.cache_bytes
+            + self.package_bytes
+            + self.lfs_bytes
+        )
+
+    @property
     def total_storage_mb(self) -> float:
-        return round(self.disk_size_mb + self.active_artifact_mb + self.cache_mb + self.package_mb, 2)
+        return format_bytes_to_mb(self.total_storage_bytes)
 
     @property
     def optimization_status(self) -> str:
         """Categorize storage posture into Optimized, Moderate Waste, or High Waste."""
-        if self.default_90_day_count > 10 or self.active_artifact_mb > 500 or self.cache_mb > 1000:
+        if (
+            self.default_90_day_count > 10
+            or self.active_artifact_mb > 500
+            or self.cache_mb > 1000
+            or self.lfs_mb > 500
+        ):
             return "High Waste"
-        if self.default_90_day_count > 0 or self.active_artifact_mb > 100 or self.cache_mb > 300:
+        if (
+            self.default_90_day_count > 0
+            or self.active_artifact_mb > 100
+            or self.cache_mb > 300
+            or self.lfs_mb >= 50
+        ):
             return "Moderate Waste"
         return "Optimized"
 
@@ -224,6 +317,10 @@ class RepoStorageProfile:
         if stale_caches:
             stale_mb = format_bytes_to_mb(sum(c.size_in_bytes for c in stale_caches))
             recs.append(f"Purge {len(stale_caches)} stale Actions caches (Frees ~{stale_mb} MB)")
+        if self.lfs_mb >= 50:
+            recs.append(f"Audit {len(self.lfs_files) or 'tracked'} Git LFS objects ({self.lfs_mb} MB) and purge obsolete binary blobs")
+        if self.repo_retention_days is not None and self.repo_retention_days >= 85 and self.active_artifacts:
+            recs.append(f"Lower repository Actions artifact retention policy from {self.repo_retention_days} days to <=30 days")
         if not recs:
             if self.total_storage_mb > 2000:
                 recs.append("Monitor repository git-lfs and history depth.")
@@ -240,5 +337,8 @@ class FinOpsConfig:
     timeout_seconds: int = 30
     max_retries: int = 5
     include_archived: bool = False
+    stale_cache_days: int = 30
+    retention_threshold_days: int = 85
+    large_repo_mb: float = 2000.0
     output_dir: str = "./repo360-output"
     file_prefix: str = "repo360_finops"

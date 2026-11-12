@@ -320,3 +320,218 @@ def test_finops_hardened_packages_pagination_and_reconciliation(tmp_path: Path):
     assert exec_kpis["Package & Container Storage (MB)"] == 35.0
     assert exec_kpis["Total Storage Footprint (MB)"] == 45.0
     assert exec_kpis["Collection / Permission Gaps"] == 1
+
+
+def test_finops_retention_rounding_precision_lfs_and_billing(tmp_path: Path):
+    """Verify off-by-one retention rounding, sub-0.01 MB precision, package type disambiguation, LFS, and billing."""
+    import base64
+    from src.finops.collector import (
+        build_billing_rows,
+        collect_finops_data,
+        collect_org_billing,
+        collect_org_lfs_usage,
+    )
+    from src.finops.models import format_kb_to_mb
+
+    created = datetime(2026, 11, 12, 8, 44, 11, tzinfo=timezone.utc)
+    expires_60 = datetime(2027, 1, 11, 8, 44, 10, tzinfo=timezone.utc)
+    art_60 = ArtifactRecord(id=1, name="audit-report", size_in_bytes=103814, created_at=created, expires_at=expires_60)
+    assert art_60.retention_days == 60
+    assert art_60.is_default_90_day is False
+
+    expires_90 = datetime(2027, 2, 10, 8, 44, 10, tzinfo=timezone.utc)
+    art_90 = ArtifactRecord(id=2, name="default-art", size_in_bytes=1024, created_at=created, expires_at=expires_90)
+    assert art_90.retention_days == 90
+    assert art_90.is_default_90_day is True
+
+    assert format_kb_to_mb(2) == 0.002
+    assert format_kb_to_mb(0) == 0.0
+
+    # Disambiguate identical package names across packageType
+    pkg_client = MagicMock()
+    pkg_client.graphql.return_value = {
+        "data": {
+            "organization": {
+                "packages": {
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    "nodes": [
+                        {
+                            "id": "p-npm",
+                            "name": "shared-lib",
+                            "packageType": "NPM",
+                            "repository": {"name": "repo-a"},
+                            "versions": {
+                                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                                "nodes": [{"id": "v1", "files": {"pageInfo": {"hasNextPage": False}, "nodes": [{"size": 1000}]}}],
+                            },
+                        },
+                        {
+                            "id": "p-cont",
+                            "name": "shared-lib",
+                            "packageType": "CONTAINER",
+                            "repository": {"name": "repo-b"},
+                            "versions": {
+                                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                                "nodes": [{"id": "v2", "files": {"pageInfo": {"hasNextPage": False}, "nodes": [{"size": 5000000}]}}],
+                            },
+                        },
+                    ],
+                }
+            }
+        }
+    }
+
+    def _pkg_pag(org, ep, params=None):
+        pt = (params or {}).get("package_type")
+        if pt == "npm":
+            return [{"id": 10, "name": "shared-lib", "package_type": "npm", "version_count": 1}]
+        if pt == "container":
+            return [{"id": 11, "name": "shared-lib", "package_type": "container", "version_count": 1}]
+        return []
+
+    pkg_client.paginate.side_effect = _pkg_pag
+    pkgs = collect_org_packages(pkg_client, "org")
+    by_type = {p.package_type: p for p in pkgs}
+    assert by_type["npm"].size_in_bytes == 1000
+    assert by_type["container"].size_in_bytes == 5000000
+
+    # Git LFS and Billing end-to-end collection
+    live_client = MagicMock()
+    pointer_b64 = base64.b64encode(
+        b"version https://git-lfs.github.com/spec/v1\noid sha256:abc\nsize 120338944\n"
+    ).decode("ascii")
+
+    def _gql_router(org, query, variables=None):
+        if "repositories(" in query:
+            return {
+                "data": {
+                    "organization": {
+                        "repositories": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [
+                                {"name": "Opsera", "object": {"text": "*.avi filter=lfs diff=lfs merge=lfs -text\n"}},
+                                {"name": "Repo-Audit", "object": None},
+                            ],
+                        }
+                    }
+                }
+            }
+        return {"data": {"organization": {"packages": {"pageInfo": {"hasNextPage": False}, "nodes": []}}}}
+
+    def _get_router(org, path, params=None):
+        if path.endswith("/artifact-and-log-retention") and "/repos/" in path:
+            return {"days": 90, "maximum_allowed_days": 90}
+        if path.endswith("/artifact-and-log-retention"):
+            return {"days": 90}
+        if path.endswith("/git/trees/HEAD"):
+            return {"tree": [{"type": "blob", "path": "demo.avi", "size": 130}]}
+        if path.endswith("/contents/demo.avi"):
+            return {"content": pointer_b64}
+        if path.endswith("/settings/billing/usage/summary"):
+            return {
+                "timePeriod": {"year": 2026, "month": 11},
+                "usageItems": [
+                    {
+                        "product": "Actions",
+                        "sku": "actions_linux",
+                        "grossQuantity": 34.0,
+                        "grossAmount": 0.204,
+                        "discountAmount": 0.204,
+                        "netAmount": 0.0,
+                        "unitType": "minutes",
+                    },
+                    {
+                        "product": "Git LFS",
+                        "sku": "git_lfs_storage",
+                        "grossQuantity": 30.82,
+                        "grossAmount": 0.0029,
+                        "discountAmount": 0.0029,
+                        "netAmount": 0.0,
+                        "unitType": "gigabyte-hours",
+                    },
+                ],
+            }
+        if path.endswith("/settings/billing/usage"):
+            return {
+                "usageItems": [
+                    {
+                        "product": "git_lfs",
+                        "sku": "Git LFS storage",
+                        "quantity": 840.82,
+                        "grossAmount": 0.0791,
+                        "discountAmount": 0.0791,
+                        "netAmount": 0.0,
+                        "unitType": "GigabyteHours",
+                        "repositoryName": "Opsera",
+                    }
+                ]
+            }
+        return {}
+
+    def _pag_env(org, path, envelope_key, params=None):
+        if envelope_key == "repository_cache_usages":
+            return []
+        if envelope_key == "artifacts" and "Repo-Audit" in path:
+            return [
+                {
+                    "id": 13928192358,
+                    "name": "repo360-audit-reports",
+                    "size_in_bytes": 690176,
+                    "created_at": "2026-11-12T08:44:11Z",
+                    "expires_at": "2027-01-11T08:44:10Z",
+                    "expired": False,
+                    "workflow_run": {"id": 43184975601},
+                }
+            ]
+        return []
+
+    live_client.graphql.side_effect = _gql_router
+    live_client.get.side_effect = _get_router
+    live_client.paginate_enveloped.side_effect = _pag_env
+    live_client.paginate.return_value = []
+
+    billing_out = {}
+    profiles, org_pkgs = collect_finops_data(
+        live_client,
+        ["DefaultOrg24"],
+        [("DefaultOrg24", "Opsera"), ("DefaultOrg24", "Repo-Audit")],
+        FinOpsConfig(output_dir=str(tmp_path)),
+        {
+            ("defaultorg24", "opsera"): {"size": 20, "private": True},
+            ("defaultorg24", "repo-audit"): {"size": 2, "private": True},
+        },
+        billing_out=billing_out,
+    )
+    repo_rows, org_rows, art_rows, cp_rows = build_finops_rows(profiles, org_pkgs, ["DefaultOrg24"])
+    bill_rows = build_billing_rows(billing_out)
+
+    opsera_row = next(r for r in repo_rows if r[1] == "Opsera")
+    audit_row = next(r for r in repo_rows if r[1] == "Repo-Audit")
+    assert opsera_row[10] == 114.78
+    assert opsera_row[11] == "Moderate Waste"
+    assert audit_row[3] == 0.002
+    assert art_rows[0][7] == 60
+    assert art_rows[0][11] == "90 Days"
+
+    out_xlsx = tmp_path / "finops_prod.xlsx"
+    write_finops_workbook(
+        out_xlsx,
+        FinOpsConfig(output_dir=str(tmp_path)),
+        datetime.now(timezone.utc),
+        repo_rows,
+        org_rows,
+        art_rows,
+        cp_rows,
+        [],
+        billing_rows=bill_rows,
+        org_billing=billing_out,
+    )
+    wb = load_workbook(out_xlsx)
+    assert "Billing & Compute Usage" in wb.sheetnames
+    prod_kpis = {
+        row[0].value: row[1].value
+        for row in wb["Executive Summary"].iter_rows()
+        if len(row) > 1 and row[0].value is not None
+    }
+    assert prod_kpis["Git LFS Storage Tracked (MB)"] == 114.76
+    assert prod_kpis["Actions Compute Minutes (Current Period)"] == 34.0
