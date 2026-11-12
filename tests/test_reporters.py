@@ -33,7 +33,6 @@ def test_excel_reporter_generation(mock_results: list) -> None:
         saved_path = reporter.generate(mock_results, temp_path, executive_summary)
         assert os.path.exists(saved_path)
 
-        # Inspect generated workbook
         wb = openpyxl.load_workbook(saved_path)
         expected_sheets = {
             "Executive_Summary",
@@ -45,15 +44,12 @@ def test_excel_reporter_generation(mock_results: list) -> None:
         }
         assert expected_sheets.issubset(set(wb.sheetnames))
 
-        # 1. Verify Executive Summary
         ws_summary = wb["Executive_Summary"]
         assert ws_summary["B2"].value == "Repo360 Platform Governance & Intelligence Summary"
-        # Check that AI KPI row exists
         metric_labels = [ws_summary.cell(row=r, column=2).value for r in range(5, 15)]
         assert "Audit Execution Timestamp" in metric_labels
         assert "AI-Tailored Remediations Synthesized" in metric_labels
 
-        # 2. Verify Consolidated Fleet Playbook Sheet
         ws_playbook = wb["Fleet_Playbook"]
         playbook_headers = [cell.value for cell in ws_playbook[1]]
         assert "Category" in playbook_headers
@@ -63,7 +59,6 @@ def test_excel_reporter_generation(mock_results: list) -> None:
         assert "Canonical Recommended Configuration / Code" in playbook_headers
         assert ws_playbook.max_row >= 2
 
-        # 3. Verify Dedicated AI Recommendations Sheet
         ws_ai = wb["AI_Recommendations"]
         ai_headers = [cell.value for cell in ws_ai[1]]
         assert "Repository" in ai_headers
@@ -74,13 +69,10 @@ def test_excel_reporter_generation(mock_results: list) -> None:
         assert "Target Configuration File" in ai_headers
         assert "CLI Remediation Command" not in ai_headers
 
-        # Check that rows were populated
         assert ws_ai.max_row >= 2
-        # Verify AI data row
         row2_values = [cell.value for cell in ws_ai[2]]
         assert any("payment-gateway" in str(v) for v in row2_values)
 
-        # 3. Verify Findings Sheets do not clutter with Recommendation Source or Remediation Code (After)
         ws_contrib = wb["Contributor_Findings"]
         contrib_headers = [cell.value for cell in ws_contrib[1]]
         assert "Recommendation Source" not in contrib_headers
@@ -117,7 +109,6 @@ def test_formula_injection_defense() -> None:
         repo_name="@malicious_repo",
     )
 
-    # Test Excel
     with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as f:
         xlsx_path = f.name
     try:
@@ -139,7 +130,6 @@ def test_local_timestamp_dd_mm_yyyy_format() -> None:
     from src.reporters.base_reporter import BaseReporter
 
     ts = BaseReporter.get_local_timestamp()
-    # Expect: DD-MM-YYYY HH:MM:SS TZ (e.g. 04-11-2026 19:10:00 IST)
     match = re.match(r"^(\d{2})-(\d{2})-(\d{4})\s+\d{2}:\d{2}:\d{2}(?:\s+[A-Za-z0-9_-]+)?$", ts)
     assert match is not None, f"Timestamp '{ts}' does not match DD-MM-YYYY pattern."
     day, month, year = int(match.group(1)), int(match.group(2)), int(match.group(3))
@@ -253,16 +243,14 @@ def test_excel_deduplication_and_clean_rendering() -> None:
         ExcelReporter().generate(results, temp_path)
         wb = openpyxl.load_workbook(temp_path)
 
-        # 1. Fleet_Playbook keeps canonical baseline snippet & clean tech stack
         ws_fleet = wb["Fleet_Playbook"]
         assert ws_fleet.max_row == 2
         assert ws_fleet["D2"].value == "C# / .NET Core, Python / FastAPI"
         assert ws_fleet["H2"].value == canonical_cfg
         assert ws_fleet.auto_filter.ref == "A1:I2"
 
-        # 2. AI_Recommendations splits distinct stack snippets while deduplicating repetitive explanation/URL
         ws_ai = wb["AI_Recommendations"]
-        assert ws_ai.max_row == 5  # Header + 2 distinct stack rows + blank + AI Safety Notice
+        assert ws_ai.max_row == 5
         assert ws_ai["F2"].value == "C# / .NET Core, Python / FastAPI"
         assert ws_ai["F3"].value == "Python"
         assert ws_ai["G2"].value == "gemini-3.5-flash-lite"
@@ -274,7 +262,6 @@ def test_excel_deduplication_and_clean_rendering() -> None:
         assert ws_ai["K3"].value == "-"
         assert ws_ai["L3"].value == "-"
 
-        # 3. Repo_Admin_Findings: first FAIL shows full explanation/URL, second shows "-", PASS shows clean "-"
         ws_repo = wb["Repo_Admin_Findings"]
         assert ws_repo.auto_filter.ref == "A1:K4"
         assert "(Refer to Fleet Playbook" not in str(ws_repo["J2"].value)
@@ -288,7 +275,6 @@ def test_excel_deduplication_and_clean_rendering() -> None:
         assert ws_repo["J4"].value == "-"
         assert ws_repo["K4"].value == "-"
 
-        # 4. Contributor_Findings: SKIPPED shows concise "-" in remediation/doc columns
         ws_contrib = wb["Contributor_Findings"]
         assert ws_contrib["H2"].value == "No workflow YAML files to inspect."
         assert ws_contrib["I2"].value == "-"

@@ -227,7 +227,7 @@ class RepoInspector:
             else:
                 raise
         if not data or not isinstance(data, dict):
-            # Repository is empty or default branch ref doesn't exist
+            # Empty repo or missing default branch ref
             empty_set = set()
             with self._cache_lock:
                 self._repo_tree_cache[key] = empty_set
@@ -241,8 +241,6 @@ class RepoInspector:
         with self._cache_lock:
             self._repo_tree_cache[key] = tree_set
         return tree_set
-
-    # --- Organization-Level Collectors ---
 
     def get_org_info(self, org: str) -> Optional[Dict[str, Any]]:
         """Fetch general organization metadata."""
@@ -425,7 +423,6 @@ class RepoInspector:
         if total_count and len(all_repos) >= total_count:
             return all_repos
 
-        # Parallelize pages 2..last_page when total_count is known
         if total_count and total_count > len(all_repos):
             last_page = min(max_pages, math.ceil(total_count / per_page))
             remaining_pages = list(range(2, last_page + 1))
@@ -452,7 +449,6 @@ class RepoInspector:
                 all_repos.extend(batch)
             return all_repos
 
-        # Sequential fallback if total_count was omitted cleanly
         page = 2
         while page <= max_pages:
             data = self.client.get(
@@ -472,8 +468,6 @@ class RepoInspector:
             page += 1
 
         return all_repos
-
-    # --- Repository-Level Collectors ---
 
     def get_repo_metadata(self, org: str, repo: str) -> Optional[Dict[str, Any]]:
         """Fetch repository details with thread-safe caching."""
@@ -853,13 +847,11 @@ class RepoInspector:
             ("CMakeLists.txt", "C / C++"),
         ]
 
-        # Use primary language from repo metadata if available
         repo_meta = self.get_repo_metadata(org, repo) or {}
         primary_lang = repo_meta.get("language")
         if primary_lang:
             languages.append(primary_lang)
 
-        # Single API call or tree cache to list root directory contents
         tree_key = (org, repo, ref)
         root_files: Set[str] = set()
         has_tree_cache = False
@@ -893,7 +885,6 @@ class RepoInspector:
                 if lang not in languages:
                     languages.append(lang)
 
-        # Quick peek at package.json or requirements.txt for key frameworks
         if "package.json" in manifests:
             pkg_content = self.get_file_content(org, repo, "package.json", ref=ref)
             if pkg_content:
@@ -911,7 +902,7 @@ class RepoInspector:
                 if kw in req_content.lower():
                     frameworks.append(kw.capitalize())
 
-        # Deduplicate languages and prefer specific ecosystem labels over bare parent tokens (e.g. 'C# / .NET Core' over 'C#')
+        # Prefer specific labels (e.g. 'C# / .NET Core') over bare parent names ('C#')
         specific_prefixes = {
             lang.split(" / ", 1)[0].strip().casefold()
             for lang in languages

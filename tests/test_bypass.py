@@ -124,16 +124,16 @@ def test_build_bypass_rows():
 
     assert len(org_rows) == 1
     assert org_rows[0][0] == "fintech-org"
-    assert org_rows[0][2] == 1  # Push bypasses
-    assert org_rows[0][3] == 1  # Ruleset bypasses
-    assert org_rows[0][4] == 2  # Total incidents
-    assert org_rows[0][5] == 1  # Unique actors
+    assert org_rows[0][2] == 1
+    assert org_rows[0][3] == 1
+    assert org_rows[0][4] == 2
+    assert org_rows[0][5] == 1
 
     assert len(actor_rows) == 1
     assert actor_rows[0][1] == "dev-ops-user"
-    assert actor_rows[0][2] == 1  # Push count
-    assert actor_rows[0][3] == 1  # Ruleset count
-    assert actor_rows[0][4] == 2  # Total
+    assert actor_rows[0][2] == 1
+    assert actor_rows[0][3] == 1
+    assert actor_rows[0][4] == 2
 
 
 def test_write_bypass_workbook(tmp_path: Path):
@@ -176,7 +176,6 @@ def test_bypass_hardened_accuracy_and_403_handling(tmp_path: Path):
     now = datetime.now(timezone.utc)
     ts_str = now.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    # 1. Resolved alert WITHOUT push_protection_bypassed=True must NOT count as a bypass
     mock_client = MagicMock()
     mock_client.paginate.return_value = [
         {
@@ -204,7 +203,6 @@ def test_bypass_hardened_accuracy_and_403_handling(tmp_path: Path):
     assert recs[0].actor == "BypassActor"
     assert recs[0].ai_risk_assessment == "High Risk"
 
-    # 2. HTTP 403 Forbidden recorded into profile.errors cleanly
     err_resp = requests.Response()
     err_resp.status_code = 403
     blocked_client = MagicMock()
@@ -214,7 +212,6 @@ def test_bypass_hardened_accuracy_and_403_handling(tmp_path: Path):
     )
     assert len(blocked_profile.errors) >= 1
 
-    # 3. Same repo name in two orgs counts as 2 repositories with bypasses; partial org shows Unknown (Partial)
     p1 = RepoBypassProfile(org="org-a", repo="api", push_bypasses=recs)
     p2 = RepoBypassProfile(
         org="org-b",
@@ -254,7 +251,6 @@ def test_bypass_hardened_accuracy_and_403_handling(tmp_path: Path):
     }
     assert exec_text["Repositories with Bypasses"] == 2
 
-    # Zero-incident with failures reports Partial Coverage instead of Satisfactory
     zero_file = tmp_path / "bypass_partial.xlsx"
     write_bypass_workbook(
         path=zero_file,

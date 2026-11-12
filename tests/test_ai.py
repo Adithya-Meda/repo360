@@ -128,7 +128,6 @@ def test_enrich_remediation_skips_passing_or_unsupported() -> None:
     """Verify enrichment does nothing for PASS checks or checks outside AI scope."""
     engine = AIEngine(api_key="valid-mock-key", enabled=True)
 
-    # 1. PASS status check
     passing_result = CheckResult(
         check_id="copilot_instructions",
         check_name="GitHub Copilot Instructions",
@@ -145,7 +144,6 @@ def test_enrich_remediation_skips_passing_or_unsupported() -> None:
     engine.enrich_remediation(passing_result, {"languages": ["Python"]})
     assert "ai_enriched" not in passing_result.extra_details
 
-    # 2. Check not targeted for AI file generation
     org_result = CheckResult(
         check_id="organization_rulesets",
         check_name="Organization-wide Rulesets",
@@ -337,7 +335,6 @@ def test_enrich_remediation_uses_cache(mock_client_cls: MagicMock) -> None:
     engine.enrich_remediation(result1, stack)
     engine.enrich_remediation(result2, stack)
 
-    # generate_content should have only been invoked ONCE due to caching
     assert mock_client.models.generate_content.call_count == 1
     assert result1.remediation_snippet_after == result2.remediation_snippet_after
     assert "# Cached Snippet" in result2.remediation_snippet_after
@@ -347,17 +344,14 @@ def test_analyze_push_protection_bypass_deterministic() -> None:
     """Verify deterministic fallback rules for push protection bypass risk assessment."""
     engine = AIEngine(enabled=False)
 
-    # Empty comment -> Critical Risk
     risk, adv = engine.analyze_push_protection_bypass("GitHub Personal Access Token", "")
     assert risk == "Critical Risk"
     assert "zero justification" in adv
 
-    # Urgent / bypass indicators -> High Risk
     risk, adv = engine.analyze_push_protection_bypass("AWS Access Key", "urgent prod hotfix")
     assert risk == "High Risk"
     assert "High-risk bypass justification" in adv
 
-    # Test / mock indicators -> Low Risk
     risk, adv = engine.analyze_push_protection_bypass("Stripe API Key", "unit test fixture mock")
     assert risk == "Low Risk"
     assert "test/fixture" in adv
@@ -379,7 +373,6 @@ def test_diagnose_dora_flow_deterministic() -> None:
     """Verify deterministic rules for DORA delivery bottleneck diagnosis."""
     engine = AIEngine(enabled=False)
 
-    # High CFR -> test automation recommendation
     diag = engine.diagnose_dora_flow(
         repo="org/repo",
         df_weekly=5.0,
@@ -415,7 +408,6 @@ def test_generate_runner_fleet_advisory_deterministic() -> None:
     """Verify deterministic runner fleet sizing recommendations."""
     engine = AIEngine(enabled=False)
 
-    # SLA breaches -> ARC autoscaling
     adv = engine.generate_runner_fleet_advisory(
         total_runners=10,
         availability_pct=80.0,
@@ -449,11 +441,9 @@ def test_init_ai_engine_overrides() -> None:
     """Verify init_ai_engine correctly processes --no-ai and --require-ai flags."""
     from src.ai import init_ai_engine
 
-    # no_ai=True should yield disabled engine
     eng = init_ai_engine(no_ai=True)
     assert eng.enabled is False
 
-    # require_ai=True when no key or disabled should raise RuntimeError
     try:
         init_ai_engine(require_ai=True, no_ai=True)
         assert False, "Should have raised RuntimeError"
@@ -485,11 +475,9 @@ def test_ai_circuit_breaker_on_rate_limit(mock_client_cls: MagicMock) -> None:
         explanation="Create .github/copilot-instructions.md",
     )
 
-    # First call encounters 429
     engine.enrich_remediation(result, {"languages": ["Python"]})
     assert engine.is_circuit_active() is True
 
-    # Subsequent call within cooldown should short-circuit with 0 API calls
     mock_client.models.generate_content.reset_mock()
     engine.enrich_remediation(result, {"languages": ["Python"]})
     assert mock_client.models.generate_content.call_count == 0
@@ -497,7 +485,6 @@ def test_ai_circuit_breaker_on_rate_limit(mock_client_cls: MagicMock) -> None:
 
 def test_diagnose_dora_flow_grounding_markdown_strip_and_no_op_awareness(monkeypatch) -> None:
     """Verify DORA AI advisor grounds no-op/stalled signals, strips Markdown, and blocks hallucinations."""
-    # 1. Deterministic offline rules differentiate pure same-SHA no-op rebuilds & stalled deploys
     offline = AIEngine(enabled=False)
     noop_diag = offline.diagnose_dora_flow(
         repo="org/pages-site",
@@ -535,7 +522,6 @@ def test_diagnose_dora_flow_grounding_markdown_strip_and_no_op_awareness(monkeyp
     assert "3 duplicate retry" in stalled_diag
     assert "14 stalled IN_PROGRESS" in stalled_diag
 
-    # 2. Online mode strips Markdown formatting and includes grounded metrics in prompt
     online = AIEngine(api_key="mock-key", provider="openai", enabled=True)
     captured_prompts = []
 
@@ -562,7 +548,6 @@ def test_diagnose_dora_flow_grounding_markdown_strip_and_no_op_awareness(monkeyp
     assert "GitHub Releases" in captured_prompts[0]
     assert "Unique Code-Change Deploys: 3, No-Op Same-SHA Rebuilds: 2" in captured_prompts[0]
 
-    # 3. Contradictory LLM hallucination claiming missing pipelines on active repos falls back safely
     monkeypatch.setattr(
         online,
         "_generate_text",
@@ -584,11 +569,6 @@ def test_diagnose_dora_flow_grounding_markdown_strip_and_no_op_awareness(monkeyp
     )
     assert "absence of automated deployment pipelines" not in grounded
     assert "same-SHA rebuilds" in grounded
-
-
-
-
-
 
 
 def test_gemini_rate_limit_fails_over_to_fallback_model_without_circuit_trip(monkeypatch):
@@ -791,20 +771,17 @@ def test_init_ai_engine_enable_ai_flag_and_fallback(mock_client_cls: MagicMock) 
         "llm_enabled": True,
     }
 
-    # 1. Default / '--require-ai no' disables AI without touching GenAI SDK
     disabled_eng = init_ai_engine(enable_ai=False, creds=creds_with_key)
     assert disabled_eng.enabled is False
     assert disabled_eng.disabled_by_cli is True
     assert not disabled_eng.is_available()
     assert mock_client_cls.call_count == 0
 
-    # 2. '--require-ai yes' without API key falls back deterministically without raising
     no_key_creds = {**creds_with_key, "llm_api_key": ""}
     fallback_no_key = init_ai_engine(enable_ai=True, creds=no_key_creds)
     assert fallback_no_key.enabled is False
     assert not fallback_no_key.is_available()
 
-    # 3. '--require-ai yes' with failing connection falls back deterministically without raising
     mock_client = MagicMock()
     mock_client.models.generate_content.side_effect = Exception("connection refused")
     mock_client_cls.return_value = mock_client
@@ -812,7 +789,6 @@ def test_init_ai_engine_enable_ai_flag_and_fallback(mock_client_cls: MagicMock) 
     assert fallback_offline.enabled is False
     assert not fallback_offline.is_available()
 
-    # 4. '--require-ai yes' with working connection initializes ONLINE engine
     mock_client.models.generate_content.side_effect = None
     mock_client.models.generate_content.return_value = MagicMock(text="pong")
     online_eng = init_ai_engine(enable_ai=True, creds=creds_with_key)
@@ -922,7 +898,6 @@ def test_is_ai_live_and_run_concurrent_ai_circuit_short_circuit():
     assert is_ai_live(engine) is False
     assert _resolve_ai_pool_size(engine, 8) == 1
 
-    # Should run cleanly in deterministic path without ThreadPoolExecutor overhead
     with ThreadPoolExecutor(max_workers=1) as _unused:
         out = run_concurrent_ai(["x", "y"], lambda s: f"det:{s}", ai_engine=engine, max_workers=8)
     assert out == ["det:x", "det:y"]

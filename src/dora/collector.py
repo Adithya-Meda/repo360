@@ -705,13 +705,13 @@ def _enrich_lead_times_from_commits(
         curr_ref = ev.commit_sha or (ev.event_id if ev.event_type == "Release" and ev.event_id != "untagged" else None)
         prev_success_ref = prev_success_by_stream.get(stream_key)
 
-        # Identical SHA/tag redeploy or rebuild without code change has no new change lead time
+        # Skip redeploy/rebuild of the same SHA or tag (no new code change)
         if prev_success_ref and curr_ref and prev_success_ref == curr_ref:
             ev.lead_time_hours = None
             ev.lead_time_source = "no_code_change"
             continue
 
-        # 1. Primary: Compare commit range (prev_success_ref...curr_ref) for true batch commit lead time
+        # Batch commit lead time across prev_success_ref...curr_ref
         resolved_hours: Optional[float] = None
         method = ""
         single_commit_batch = False
@@ -758,9 +758,7 @@ def _enrich_lead_times_from_commits(
                     resolved_hours = round(float(statistics.median(deltas)), 2)
                     method = "commit_to_deploy"
 
-        # 2. Secondary: Associated Pull Request creation -> deployment completion
-        # Also evaluate single-commit compare batches (Squash & Merge) so PR development/review
-        # cycle time is captured instead of only post-merge CI runtime.
+        # Fall back to PR creation -> deploy (includes single-commit squash merges)
         if resolved_hours is None or (
             single_commit_batch and (hints.get("pr_created_ts") is not None or bool(ev.commit_sha))
         ):
@@ -775,7 +773,7 @@ def _enrich_lead_times_from_commits(
                         resolved_hours = pr_hours
                         method = "pr_to_deploy"
 
-        # 3. Tertiary: Single commit timestamp -> deployment completion (initial baseline only)
+        # Fall back to single commit timestamp -> deploy for initial baseline
         if resolved_hours is None:
             commit_ts = hints.get("commit_ts")
             if commit_ts is not None:
@@ -911,7 +909,7 @@ def _apply_native_incident_and_rework_signals(
     metrics.rollback_hotfix_prs = len(rework_prs)
     metrics.incident_issues_count = len(incident_issues)
 
-    # Match only against completed deployments; index failure timestamps already captured
+    # Match against completed deployments and index recorded failures
     completed = [d for d in deployments if d.status in ("SUCCESS", "FAILURE")]
     failure_times: List[datetime] = [d.created_at for d in completed if d.status == "FAILURE"]
     sha_to_deploy: Dict[str, DeploymentRecord] = {
@@ -929,7 +927,7 @@ def _apply_native_incident_and_rework_signals(
         matched_deploy = sha_to_deploy.get(m_sha) if m_sha else None
 
         if matched_deploy is None:
-            # Find nearest completed deployment shortly after PR merge (e.g. within 24h)
+            # Match nearest completed deploy within 24h after PR merge
             candidates = [
                 d for d in completed
                 if timedelta(hours=-1) <= (d.created_at - merged_at) <= timedelta(hours=24)
@@ -942,7 +940,7 @@ def _apply_native_incident_and_rework_signals(
         else:
             metrics.unlinked_rework_prs += 1
 
-        # If a hotfix/revert PR followed a SUCCESS deploy with no prior FAILURE recorded, add to CFR
+        # Count hotfix/revert PRs after a successful deploy if no failure was already recorded
         prior_success = any(d.status == "SUCCESS" and d.created_at <= merged_at for d in deployments)
         if prior_success and not _has_nearby_failure(merged_at, hours_back=48.0, hours_forward=2.0):
             metrics.unlinked_prod_incidents += 1
@@ -1146,7 +1144,6 @@ def profile_repo_dora(
         if d.status == "IN_PROGRESS" and (end - d.created_at).total_seconds() > 86400.0
     )
 
-    # Enrich commit/PR-to-deployment lead times & native GitHub incident/rework signals ONLY for active repos
     if metrics.deployments:
         _enrich_lead_times_from_commits(
             client,
@@ -1388,7 +1385,7 @@ def build_dora_rows(
                 inc.environment,
             ])
 
-    # Organization aggregations — compute DF using median active-repo cadence so repo count never inflates DORA tier
+    # Use median active-repo cadence so inactive repos don't dilute org deploy frequency
     for org in orgs:
         p_list = org_map.get(org, [])
         active_repos = [m for m in p_list if m.total_deploys > 0]

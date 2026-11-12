@@ -69,7 +69,6 @@ def test_run_uninstall_cli_removes_related_dirs_and_preserves_reports(tmp_path: 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("REPO360_CONFIG_DIR", str(tmp_path / ".repo360"))
 
-    # Create config + read-only secret key
     cfg_dir = Path(resolve_user_config_dir())
     (cfg_dir / "secrets").mkdir(parents=True)
     (cfg_dir / "config.json").write_text('{"github": {"app_id": 1}}', encoding="utf-8")
@@ -77,13 +76,11 @@ def test_run_uninstall_cli_removes_related_dirs_and_preserves_reports(tmp_path: 
     pem_path.write_text("secret-key", encoding="utf-8")
     os.chmod(pem_path, stat.S_IREAD)
 
-    # Create protected reports directory and workbook
     reports_dir = tmp_path / "repo360-output"
     reports_dir.mkdir()
     workbook = reports_dir / "governance_report.xlsx"
     workbook.write_text("keep-me", encoding="utf-8")
 
-    # Create isolated mock pipx venv, shim, and stale upgrade binary
     mock_venv = tmp_path / "pipx" / "venvs" / "repo360"
     (mock_venv / "Scripts").mkdir(parents=True)
     (mock_venv / "Scripts" / "python.exe").write_text("exe", encoding="utf-8")
@@ -135,16 +132,13 @@ def test_run_uninstall_cli_dry_run_and_keep_config_and_abort(tmp_path: Path, mon
         patch("src.uninstall.shutil.which", return_value=None),
         patch("src.uninstall._requires_deferred_windows_cleanup", return_value=False),
     ):
-        # 1. --dry-run preserves config
         assert run_uninstall_cli(["--dry-run"]) == 0
         assert cfg_dir.exists()
 
-        # 2. Answering 'n' cancels cleanly
         with patch("builtins.input", return_value="n"):
             assert run_uninstall_cli([]) == 1
         assert cfg_dir.exists()
 
-        # 3. --keep-config + --yes keeps config while invoking package uninstall
         with patch("src.uninstall.subprocess.run", return_value=MagicMock(returncode=0)) as mock_run:
             assert run_uninstall_cli(["--yes", "--keep-config"]) == 0
             assert mock_run.called

@@ -41,7 +41,6 @@ def test_jwt_generation(test_rsa_key_pem: str) -> None:
     token = auth.generate_jwt(expiration_seconds=300)
     assert isinstance(token, str)
 
-    # Decode without verifying signature to check payload
     decoded = jwt.decode(token, options={"verify_signature": False})
     assert decoded["iss"] == "99999"
     assert decoded["exp"] > time.time()
@@ -64,15 +63,13 @@ def test_token_caching(mock_post: MagicMock, test_rsa_key_pem: str) -> None:
         private_key=test_rsa_key_pem,
     )
 
-    # First call triggers API request
     token1 = auth.get_installation_token()
     assert token1 == "ghs_mock_token_1234567890"
     assert mock_post.call_count == 1
 
-    # Second call uses cache
     token2 = auth.get_installation_token()
     assert token2 == "ghs_mock_token_1234567890"
-    assert mock_post.call_count == 1  # No second HTTP call
+    assert mock_post.call_count == 1
 
     headers = auth.get_auth_headers()
     assert headers["Authorization"] == "Bearer ghs_mock_token_1234567890"
@@ -159,22 +156,18 @@ def test_multi_org_token_resolution_and_caching(
 
     auth = GitHubAppAuth(app_id=123, private_key=test_rsa_key_pem)
 
-    # 1. Fetch token for DefaultOrg24
     token_org1 = auth.get_installation_token(org="DefaultOrg24")
     assert token_org1 == "ghs_token_defaultorg24"
     assert mock_post.call_count == 1
 
-    # 2. Fetch token for PaymentsCore (case-insensitive check)
     token_org2 = auth.get_installation_token(org="paymentscore")
     assert token_org2 == "ghs_token_paymentscore"
     assert mock_post.call_count == 2
 
-    # 3. Re-fetching DefaultOrg24 should use per-org cache without another POST
     cached_org1 = auth.get_installation_token(org="defaultorg24")
     assert cached_org1 == "ghs_token_defaultorg24"
     assert mock_post.call_count == 2
 
-    # 4. Auth headers for PaymentsCore should reflect PaymentsCore token
     headers_org2 = auth.get_auth_headers(org="PaymentsCore")
     assert headers_org2["Authorization"] == "Bearer ghs_token_paymentscore"
     assert mock_post.call_count == 2

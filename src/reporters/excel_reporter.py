@@ -140,20 +140,16 @@ class ExcelReporter(BaseReporter):
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
         wb = Workbook()
 
-        # 1. Summary Sheet with Organization Breakdown
         ws_summary = wb.active
         ws_summary.title = "Executive_Summary"
         self._build_summary_sheet(ws_summary, results, executive_summary, model_name=model_name)
 
-        # 2. Consolidated Fleet Playbook (Aggregates identical remediations across the fleet)
         ws_playbook = wb.create_sheet(title="Fleet_Playbook")
         self._build_fleet_playbook_sheet(ws_playbook, results)
 
-        # 3. Dedicated AI Recommendations Sheet (Consolidated per pattern)
         ws_ai = wb.create_sheet(title="AI_Recommendations")
         self._build_ai_recommendations_sheet(ws_ai, results)
 
-        # 4. Org Admin Sheet
         ws_org = wb.create_sheet(title="Org_Admin_Findings")
         self._build_findings_sheet(
             ws_org,
@@ -161,7 +157,6 @@ class ExcelReporter(BaseReporter):
             is_org=True,
         )
 
-        # 5. Repo Admin Sheet
         ws_repo = wb.create_sheet(title="Repo_Admin_Findings")
         self._build_findings_sheet(
             ws_repo,
@@ -169,7 +164,6 @@ class ExcelReporter(BaseReporter):
             is_org=False,
         )
 
-        # 6. Contributor Sheet
         ws_contrib = wb.create_sheet(title="Contributor_Findings")
         self._build_findings_sheet(
             ws_contrib,
@@ -206,7 +200,6 @@ class ExcelReporter(BaseReporter):
         else:
             compliance_str = "N/A (All Skipped)"
 
-        # Section 1: Fleet-Wide Metrics (Columns B-C)
         metrics = [
             ("Audit Execution Timestamp", self.get_local_timestamp()),
             ("Total Findings Evaluated", total),
@@ -238,7 +231,6 @@ class ExcelReporter(BaseReporter):
                 c2.fill = self.fill_ai_badge
                 c2.font = self.font_ai_badge
 
-        # Section 2: Organization Governance & Compliance Breakdown (Columns E-M)
         org_metrics = self.build_organization_metrics(results)
         org_headers = [
             "Organization Name",
@@ -283,26 +275,26 @@ class ExcelReporter(BaseReporter):
                 cell.border = self.border_cell
                 cell.alignment = Alignment(horizontal="center", vertical="center")
 
-                if col_idx == 5:  # Org Name
+                if col_idx == 5:
                     cell.alignment = Alignment(horizontal="left", vertical="center")
                     cell.font = self.font_bold
-                elif col_idx == 8:  # Controls Present (PASS)
+                elif col_idx == 8:
                     cell.fill = self.fill_pass
                     cell.font = self.font_bold
-                elif col_idx == 9 and org_info["failed"] > 0:  # Controls Missing (FAIL)
+                elif col_idx == 9 and org_info["failed"] > 0:
                     cell.fill = self.fill_fail
                     cell.font = self.font_bold
-                elif col_idx == 10 and org_info["warned"] > 0:  # Review Items (WARN)
+                elif col_idx == 10 and org_info["warned"] > 0:
                     cell.fill = self.fill_warn
                     cell.font = self.font_bold
-                elif col_idx == 12:  # Compliance score
+                elif col_idx == 12:
                     if org_info["status"] == "NOT EVALUATED":
                         cell.fill = self.fill_warn
                     else:
                         score_val = org_info["compliance_score"]
                         cell.fill = self.fill_pass if score_val >= 80 else (self.fill_warn if score_val >= 50 else self.fill_fail)
                     cell.font = self.font_bold
-                elif col_idx == 13:  # Status
+                elif col_idx == 13:
                     if org_info["status"] == "COMPLIANT":
                         cell.fill = self.fill_pass
                     elif org_info["status"] in ("REVIEW NEEDED", "NOT EVALUATED"):
@@ -313,7 +305,6 @@ class ExcelReporter(BaseReporter):
 
         org_end_row = max(13, org_start_row + len(org_metrics))
 
-        # Section 3: Executive AI / Policy Narrative
         is_det_summary = model_name == "Deterministic Policy Engine"
         if executive_summary:
             if is_det_summary:
@@ -449,12 +440,12 @@ class ExcelReporter(BaseReporter):
                 if use_zebra and col_idx != 3:
                     cell.fill = self.fill_zebra
 
-                if col_idx == 3:  # Severity column
+                if col_idx == 3:
                     self._apply_severity_style(cell, c["severity"])
-                elif col_idx == 6:  # Affected Repos Count
+                elif col_idx == 6:
                     cell.alignment = Alignment(horizontal="center", vertical="top")
                     cell.font = self.font_bold
-                elif col_idx == 8:  # Code block
+                elif col_idx == 8:
                     cell.font = self.font_code
 
         col_widths = self._auto_adjust_columns(
@@ -530,8 +521,7 @@ class ExcelReporter(BaseReporter):
             self._auto_adjust_columns(ws)
             return
 
-        # Consolidate by (check_id, normalized snippet, is_ai) so identical remediations merge cleanly
-        # while distinct stack-specific AI snippets remain distinct from deterministic fallback rows.
+        # Key by (check_id, snippet, is_ai) so stack-specific AI rows stay separate from baseline rows
         grouped_ai: Dict[tuple[str, str, bool], Dict[str, Any]] = {}
         for f in ai_findings:
             raw_code = f.remediation_snippet_after or f.recommended_state or ""
@@ -637,11 +627,11 @@ class ExcelReporter(BaseReporter):
                 if use_zebra and col_idx not in (4, 5, 8):
                     cell.fill = self.fill_zebra
 
-                if col_idx == 4:  # Severity
+                if col_idx == 4:
                     self._apply_severity_style(cell, f.severity)
-                elif col_idx == 5:  # Status
+                elif col_idx == 5:
                     self._apply_status_style(cell, f.status)
-                elif col_idx == 8:  # Recommendation Source badge
+                elif col_idx == 8:
                     if row_is_ai:
                         cell.fill = self.fill_ai_badge
                         cell.font = self.font_ai_badge
@@ -649,7 +639,7 @@ class ExcelReporter(BaseReporter):
                         cell.fill = self.fill_warn
                         cell.font = self.font_bold
                     cell.alignment = Alignment(horizontal="center", vertical="top")
-                elif col_idx == 10:  # Code block
+                elif col_idx == 10:
                     cell.font = self.font_code
                 elif val == "-":
                     cell.font = self.font_muted
@@ -793,9 +783,9 @@ class ExcelReporter(BaseReporter):
                 if use_zebra and col_idx not in (5, 6):
                     cell.fill = self.fill_zebra
 
-                if col_idx == 5:  # Status column
+                if col_idx == 5:
                     self._apply_status_style(cell, f.status)
-                elif col_idx == 6:  # Severity column
+                elif col_idx == 6:
                     if f.status in (CheckStatus.WARN, CheckStatus.FAIL):
                         self._apply_severity_style(cell, f.severity)
                     else:

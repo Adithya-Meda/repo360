@@ -171,20 +171,17 @@ def test_log_repo_banner_advances_smoothly():
     with patch.object(logger, "info", side_effect=lambda msg, *args: logged_messages.append(msg % args if args else msg)):
         t = RepoTarget(org_name="org", repo_name="repo", target_personas={"all"})
 
-        # 1. Start of 700 repo audit
         _log_repo_banner(1, 700, t)
         first_banner = ansi_re.sub("", logged_messages[1])
         assert "0.1%" in first_banner
         assert "[.-------------------]" in first_banner
 
-        # 2. Advance to 5% (35 repos)
         logged_messages.clear()
         _log_repo_banner(35, 700, t)
         mid_banner = ansi_re.sub("", logged_messages[1])
         assert "5.0%" in mid_banner
         assert "[=.------------------]" in mid_banner
 
-        # 3. Completion at 100%
         logged_messages.clear()
         _log_repo_banner(700, 700, t)
         final_banner = ansi_re.sub("", logged_messages[1])
@@ -199,11 +196,9 @@ def test_repo_inspector_seed_repo_metadata():
     mock_client = MagicMock()
     inspector = RepoInspector(client=mock_client)
 
-    # Seed metadata
     dummy_meta = {"name": "cached-repo", "language": "Go", "default_branch": "main"}
     inspector.seed_repo_metadata("my-org", "cached-repo", dummy_meta)
 
-    # Fetch should return seeded data without calling mock_client
     res = inspector.get_repo_metadata("my-org", "cached-repo")
     assert res == dummy_meta
     assert mock_client.get.call_count == 0
@@ -226,7 +221,6 @@ def test_client_rate_limit_adaptive_delay_healthy():
 
     with patch("time.sleep") as mock_sleep:
         client._handle_rate_limit(mock_resp)
-        # Should NOT sleep when quota is healthy
         assert mock_sleep.call_count == 0
 
 
@@ -420,7 +414,7 @@ def test_subcommand_clis_support_require_ai_yes_no_default_no(
     monkeypatch.setattr("src.ai.init_ai_engine", _fake_init_ai_engine)
 
     rc = runner(cli_args)
-    assert rc == 1  # Expected exit when no installations are discovered
+    assert rc == 1
     assert captured["enable_ai"] is expected_enable_ai
 
 
@@ -569,11 +563,9 @@ def test_subcommand_clis_pass_workers_flag_to_config(monkeypatch, tmp_path) -> N
         monkeypatch.setattr(cli_mod, "ResilientGitHubClient", lambda **kw: MagicMock())
         monkeypatch.setattr(cli_mod, "discover_app_organizations", lambda **kw: [])
         monkeypatch.setattr("src.ai.init_ai_engine", lambda **kw: MagicMock(enabled=False, is_available=lambda: False))
-        # Ensure '--workers 4' parses cleanly and proceeds into org discovery (exit 1 when 0 orgs).
         rc = runner([*extra, "--workers", "4", "--output-dir", str(tmp_path)])
         assert rc == 1
 
-    # Confirm negative/zero and upper-bound lookback-days validation on lookback-enabled commands
     for module_path, fn_name, _ in cases:
         if "finops" in module_path:
             continue

@@ -81,7 +81,6 @@ def write_dora_workbook(
     since_ist, end_ist = since.astimezone(IST), end.astimezone(IST)
     duration_str = f"{execution_duration:.1f}s" if execution_duration else "N/A"
 
-    # Sheet 1: Executive Summary
     summary = wb.active
     summary.title = "Executive Summary"
     summary["A1"] = "Repo360 DORA & Engineering Delivery Flow Metrics"
@@ -241,7 +240,6 @@ def write_dora_workbook(
     autofit(summary, skip_rows=2)
     summary.sheet_view.showGridLines = False
 
-    # Sheet 2: Repository DORA Scorecard
     repo_ws = wb.create_sheet("Repository DORA Scorecard")
     if repo_rows:
         last_repo = write_table(repo_ws, 1, DORA_REPO_HEADERS, repo_rows)
@@ -253,7 +251,6 @@ def write_dora_workbook(
     else:
         write_empty_table(repo_ws, 1, DORA_REPO_HEADERS, "No repositories found on target organizations.")
 
-    # Sheet 3: Deployment Ledger
     dep_ws = wb.create_sheet("Deployment & Release Ledger")
     if deployment_rows:
         last_dep = write_table(dep_ws, 1, DORA_DEPLOYMENT_HEADERS, deployment_rows)
@@ -269,7 +266,6 @@ def write_dora_workbook(
             "No deployment or release events recorded within the lookback window.",
         )
 
-    # Sheet 4: Recovery Ledger
     rec_ws = wb.create_sheet("Recovery & MTTR Ledger")
     if recovery_rows:
         last_rec = write_table(rec_ws, 1, DORA_RECOVERY_HEADERS, recovery_rows)

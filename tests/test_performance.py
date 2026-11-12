@@ -51,14 +51,12 @@ def test_empty_and_dormant_repo_guards():
     assert is_empty_repo({}) is False
     assert is_empty_repo(None) is False
 
-    # Dormant when both pushed_at and updated_at precede lookback window
     assert is_dormant_repo(
         {"size": 100, "pushed_at": "2026-09-01T00:00:00Z", "updated_at": "2026-09-15T00:00:00Z"},
         since,
         parse,
     ) is True
 
-    # Not dormant if updated_at is inside window (e.g. PR/issue/release update)
     assert is_dormant_repo(
         {"size": 100, "pushed_at": "2026-09-01T00:00:00Z", "updated_at": "2026-10-15T00:00:00Z"},
         since,
@@ -72,7 +70,6 @@ def test_resilient_client_wire_speed_when_healthy():
     client = ResilientGitHubClient(auth=auth)
     assert client.inter_request_delay_seconds == 0.0
 
-    # Healthy quota org vs low-quota org
     client._org_remaining["healthy-org"] = 4800
     client._org_remaining["low-org"] = 200
 
@@ -81,7 +78,6 @@ def test_resilient_client_wire_speed_when_healthy():
         client._coordinate_rate_limit("healthy-org")
         assert mock_sleep.call_count == 0
 
-        # First call reserves the slot; second consecutive call triggers adaptive pacing.
         client._coordinate_rate_limit("low-org")
         client._coordinate_rate_limit("low-org")
         assert mock_sleep.call_count == 1
@@ -102,7 +98,6 @@ def test_repo_inspector_empty_repo_skips_http_and_multi_page_parallel():
         assert prot is None
         assert mock_get.call_count == 0
 
-    # Multi-page installation listing (total_count=3, per_page=2 -> page 1 + page 2)
     page1 = {"total_count": 3, "repositories": [{"name": "r1"}, {"name": "r2"}]}
     page2 = {"total_count": 3, "repositories": [{"name": "r3"}]}
     with patch.object(client, "get", side_effect=[page1, page2]) as mock_get:
@@ -150,7 +145,6 @@ def test_dora_graphql_eliminates_n_plus_one_and_skips_dormant():
     assert mock_client.get.call_count == 0
     assert mock_client.paginate.call_count == 0
 
-    # Dormant repo skips all API calls
     dormant_client = MagicMock()
     m = profile_repo_dora(
         dormant_client,
@@ -204,7 +198,7 @@ def test_bypass_permission_and_batch_ai_optimization():
     since = now - timedelta(days=30)
 
     mock_auth = MagicMock()
-    mock_auth.get_installation_permissions.return_value = {"contents": "read"}  # lacks secret_scanning_alerts
+    mock_auth.get_installation_permissions.return_value = {"contents": "read"}
     mock_client = MagicMock()
     mock_client.auth = mock_auth
     mock_client.paginate.return_value = []
@@ -230,7 +224,6 @@ def test_bypass_permission_and_batch_ai_optimization():
     )
 
     assert len(profiles) == 2
-    # Empty repo skipped completely; active repo only checked rulesets (secret_scanning_alerts skipped due to missing perm)
     called_endpoints = [call.args[1] for call in mock_client.paginate.call_args_list]
     assert all("/secret-scanning/alerts" not in ep for ep in called_endpoints)
     assert any("/repos/org1/active-repo/rulesets/rule-suites" in ep for ep in called_endpoints)
@@ -306,9 +299,8 @@ def test_repo_inspector_prefetch_audit_context():
     with patch.object(client, "get", side_effect=fake_get) as mock_get:
         inspector.prefetch_repo_audit_context("org", "repo", "main")
         first_calls = mock_get.call_count
-        assert first_calls == 8  # CODEOWNERS + requirements.txt + 2 workflows + rulesets + branch_rules + protection + environments
+        assert first_calls == 8
 
-        # Subsequent reads hit warm in-memory caches (0 extra HTTP calls)
         assert inspector.get_file_content("org", "repo", ".github/CODEOWNERS", "main") is not None
         assert inspector.get_file_content("org", "repo", ".github/workflows/ci.yml", "main") is not None
         assert inspector.get_repo_rulesets("org", "repo") == [{"name": "default", "enforcement": "active"}]

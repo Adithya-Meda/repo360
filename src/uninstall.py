@@ -150,7 +150,6 @@ def _is_protected_path(candidate: Path) -> bool:
     if resolved in protected_exact:
         return True
 
-    # Never remove a directory containing ./repo360-output
     reports_dir = cwd_resolved / PROTECTED_REPORT_DIR_NAME
     if reports_dir == resolved or reports_dir.is_relative_to(resolved):
         return True
@@ -420,7 +419,6 @@ def execute_uninstall(plan: Dict[str, Any], dry_run: bool = False, keep_config: 
 
     exit_code = 0
 
-    # 1. Remove configuration & secrets directory synchronously (~/.repo360)
     config_dir: Path = plan["config_dir"]
     if not keep_config:
         if config_dir.exists():
@@ -433,10 +431,8 @@ def execute_uninstall(plan: Dict[str, Any], dry_run: bool = False, keep_config: 
         else:
             print(f"[INFO] Configuration directory not found (skipping): {config_dir}")
 
-    # 2. Clean any stale staged binaries in Scripts/ before uninstalling
     _cleanup_stale_staged_binaries(plan["scripts_dir"])
 
-    # 3. Uninstall Python package & isolated pipx virtual environment
     if plan.get("deferred_windows"):
         ok, info = _spawn_windows_deferred_uninstall(plan)
         if ok:
@@ -478,7 +474,6 @@ def execute_uninstall(plan: Dict[str, Any], dry_run: bool = False, keep_config: 
             except OSError as exc:
                 print(f"\033[93m[WARN]\033[0m Could not remove CLI executable {bin_shim}: {exc}")
 
-    # 4. Reconfirm reports preservation and remind about remote GitHub App
     reports_dir = Path.cwd() / PROTECTED_REPORT_DIR_NAME
     if reports_dir.exists():
         print(f"\033[92m[KEEP]\033[0m Preserved reports directory untouched: {reports_dir}")

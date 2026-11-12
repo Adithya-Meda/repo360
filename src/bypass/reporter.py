@@ -56,7 +56,6 @@ def write_bypass_workbook(
     since_ist, end_ist = since.astimezone(IST), end.astimezone(IST)
     duration_str = f"{execution_duration:.1f}s" if execution_duration else "N/A"
 
-    # Sheet 1: Executive Summary
     summary = wb.active
     summary.title = "Executive Summary"
     summary["A1"] = "Repo360 Consolidated Push Protection & Ruleset Bypass Ledger"
@@ -116,7 +115,6 @@ def write_bypass_workbook(
         last_gap = write_table(gap_ws, 1, ("Target Scope", "API / Permission Gap Detail"), gap_rows)
         finalize_sheet(gap_ws, 1, last_gap, 2, "B2")
 
-    # Sheet 2: Push Protection Bypasses
     push_ws = wb.create_sheet("Push Protection Bypasses")
     if push_rows:
         last_push = write_table(push_ws, 1, BYPASS_PUSH_PROTECTION_HEADERS, push_rows)
@@ -143,7 +141,6 @@ def write_bypass_workbook(
             "No secret scanning push protection bypasses detected within the lookback window.",
         )
 
-    # Sheet 3: Ruleset Bypasses
     rule_ws = wb.create_sheet("Ruleset Bypasses")
     if ruleset_rows:
         last_rule = write_table(rule_ws, 1, BYPASS_RULESET_HEADERS, ruleset_rows)
@@ -156,7 +153,6 @@ def write_bypass_workbook(
             "No branch ruleset bypasses detected within the lookback window.",
         )
 
-    # Sheet 4: Actor Accountability Ledger
     actor_ws = wb.create_sheet("Actor Accountability Ledger")
     if actor_rows:
         last_act = write_table(actor_ws, 1, BYPASS_ACTOR_HEADERS, actor_rows)

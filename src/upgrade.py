@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import hashlib
 import importlib
 import importlib.util
@@ -20,12 +21,15 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 import requests
 
+from . import __version__ as PACKAGE_VERSION
 from .common.interrupts import run_interruptible_subprocess
 from .credentials import get_credentials_path, get_secrets_dir
 
 logger = logging.getLogger("repo360.upgrade")
 
 DEFAULT_REPO_URL = "https://github.com/Adithya-Meda/repo360.git"
+_VALID_GIT_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
+_SEMVER_TAG_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
 
 
 def find_pipx_executable() -> Optional[str]:
@@ -135,7 +139,7 @@ def _detect_pipx_backend() -> str:
 
 
 def _build_target_spec(repo_url: str, target_ref: Optional[str] = None) -> str:
-    """Build a PEP 508 VCS target specifier optionally pinned to an exact commit SHA."""
+    """Build a PEP 508 VCS target specifier optionally pinned to a release tag or commit SHA."""
     raw = (repo_url or DEFAULT_REPO_URL).strip()
     if raw.lower().startswith("file://") or Path(raw).exists():
         return raw
@@ -155,11 +159,9 @@ def detect_installer() -> Tuple[str, List[str]]:
     pipx_bin = find_pipx_executable()
 
     if "pipx" in prefix and pipx_bin:
-        # Use 'pipx runpip' to safely upgrade in-place without tearing down the venv,
-        # preventing Windows OS Error 32 (file lock on running python.exe)
+        # Upgrade in place via 'pipx runpip' to avoid Windows file locks on python.exe
         return "pipx", [pipx_bin, "runpip", _detect_pipx_venv_name(), "install", "--upgrade"]
 
-    # Fallback to python -m pip using the current active interpreter
     return "pip", [sys.executable, "-m", "pip", "install", "--upgrade"]
 
 
@@ -185,20 +187,19 @@ def get_upgrade_commands(
         pip_flags = ["--upgrade", "--force-reinstall", "--no-cache-dir"] if force else ["--upgrade"]
         commands.append(("pip", [sys.executable, "-m", "pip", "install", *pip_flags, target_spec]))
         if force:
-            # Windows fallback: avoid failing on locked C extensions (e.g. cryptography)
+            # Skip dependencies on retry so locked C extensions like cryptography don't block upgrade
             commands.append(
                 ("pip-isolated", [sys.executable, "-m", "pip", "install", "--force-reinstall", "--no-deps", "--no-cache-dir", target_spec])
             )
         return commands
 
-    # 1. In uv-tool: native uv tool install updates both venv, receipt, and exposed entrypoints
     if _is_uv_tool_install() and uv_bin and installer_override != "pipx":
         uv_tool_flags = ["--refresh-package", "repo360"]
         if force:
             uv_tool_flags.extend(["--force", "--reinstall-package", "repo360"])
         commands.append(("uv-tool", [uv_bin, "tool", "install", *uv_tool_flags, target_spec]))
 
-    # 2. In pipx: in-place upgrade via 'pipx runpip' avoids OS Error 32 on Windows and venv rebuilds
+    # Upgrade in place via 'pipx runpip' to avoid Windows venv rebuild locks
     if ("pipx" in prefix or installer_override == "pipx") and pipx_bin:
         venv_name = _detect_pipx_venv_name()
         backend = _detect_pipx_backend()
@@ -216,7 +217,7 @@ def get_upgrade_commands(
                 ("pipx-isolated", [pipx_bin, "runpip", venv_name, "install", "--force-reinstall", "--no-deps", "--no-cache-dir", target_spec])
             )
 
-    # 3. Direct uv pip install fallback (works seamlessly even inside pip-less uv/pipx venvs)
+    # Direct uv pip handles pip-less uv/pipx venvs
     if uv_bin:
         uv_flags = (
             ["--refresh-package", "repo360", "--reinstall-package", "repo360"]
@@ -225,7 +226,6 @@ def get_upgrade_commands(
         )
         commands.append(("uv", [uv_bin, "pip", "install", "--python", sys.executable, *uv_flags, target_spec]))
 
-    # 4. Universal Python interpreter pip fallback (only if pip exists or no other installer matched)
     if _pip_available_for_python() or not commands:
         pip_flags = ["--upgrade", "--force-reinstall", "--no-cache-dir"] if force else ["--upgrade"]
         commands.append(("pip", [sys.executable, "-m", "pip", "install", *pip_flags, target_spec]))
@@ -315,34 +315,216 @@ def _fetch_commit_summary(
     return None
 
 
-def get_remote_commit_sha(repo_url: str = DEFAULT_REPO_URL) -> Optional[str]:
-    """Fetch the latest commit SHA for the default branch from git ls-remote or GitHub API.
+@dataclass(frozen=True)
+class ReleaseTarget:
+    """Resolved release tag metadata for upgrade/install operations."""
 
-    Returns:
-        Full commit SHA string if retrieved successfully, or None.
-    """
-    # 1. Primary: Use 'git ls-remote' - protocol-level query with zero REST API rate limit
+    tag: Optional[str] = None
+    commit: Optional[str] = None
+    source: str = ""
+
+
+def normalize_release_tag(raw_tag: str) -> str:
+    """Validate and normalize a release tag/ref string against git ref and CLI injection rules."""
+    tag = (raw_tag or "").strip()
+    if (
+        not tag
+        or tag.startswith("-")
+        or ".." in tag
+        or "@{" in tag
+        or "//" in tag
+        or tag.endswith(("/", ".", ".lock"))
+        or not _VALID_GIT_REF_RE.match(tag)
+    ):
+        raise ValueError(
+            f"Invalid release tag '{raw_tag}'. Expected a valid tag name such as 'v1.0.0'."
+        )
+    return tag
+
+
+def _parse_semver_tag(tag_name: str) -> Optional[Tuple[int, int, int]]:
+    """Parse a stable SemVer tag (e.g. 'v1.2.3' or '1.2.3') into a comparable tuple."""
+    match = _SEMVER_TAG_RE.match((tag_name or "").strip())
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2)), int(match.group(3))
+
+
+def _list_remote_tags(
+    repo_url: str = DEFAULT_REPO_URL,
+    ref_patterns: Sequence[str] = ("refs/tags/*",),
+) -> Optional[Dict[str, str]]:
+    """Query remote tags via 'git ls-remote', dereferencing annotated tags to commit SHAs."""
+    clean_url = (repo_url or "").strip()
+    if not clean_url or clean_url.startswith("-"):
+        return None
     try:
         res = run_interruptible_subprocess(
-            ["git", "ls-remote", repo_url, "HEAD"],
+            ["git", "ls-remote", "--tags", "--", clean_url, *ref_patterns],
             capture_output=True,
             text=True,
             check=False,
             timeout=8,
         )
-        if res.returncode == 0 and res.stdout.strip():
-            first_line = res.stdout.strip().splitlines()[0]
-            sha = first_line.split()[0]
-            if len(sha) >= 7:
-                return sha
     except Exception:
-        pass
+        return None
 
-    # 2. Secondary: Fallback to GitHub REST API with optional auth headers
-    summary = _fetch_commit_summary(repo_url, "HEAD", timeout=5.0)
+    if res.returncode != 0:
+        return None
+
+    raw_tags: Dict[str, str] = {}
+    peeled_tags: Dict[str, str] = {}
+    for line in (res.stdout or "").splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) != 2:
+            continue
+        sha, ref = parts[0].strip(), parts[1].strip()
+        if not sha or not ref.startswith("refs/tags/"):
+            continue
+        if ref.endswith("^{}"):
+            tag_name = ref[len("refs/tags/"):-3]
+            if tag_name:
+                peeled_tags[tag_name] = sha
+        else:
+            tag_name = ref[len("refs/tags/"):]
+            if tag_name:
+                raw_tags[tag_name] = sha
+
+    merged_keys = list(raw_tags.keys()) + [k for k in peeled_tags if k not in raw_tags]
+    return {tag: peeled_tags.get(tag, raw_tags.get(tag, "")) for tag in merged_keys}
+
+
+def _resolve_latest_github_release_tag(
+    repo_url: str = DEFAULT_REPO_URL,
+    timeout: float = 5.0,
+) -> Tuple[Optional[str], Optional[int]]:
+    """Fetch the latest non-draft, non-prerelease tag_name from GitHub Releases API."""
+    parsed = _parse_github_owner_repo(repo_url)
+    if not parsed:
+        return None, None
+    owner, repo_name = parsed
+    api_url = f"https://api.github.com/repos/{owner}/{repo_name}/releases/latest"
+    try:
+        resp = requests.get(api_url, headers=_build_github_api_headers(), timeout=timeout)
+    except Exception:
+        return None, None
+
+    if resp.status_code != 200:
+        return None, resp.status_code
+
+    try:
+        data = resp.json() or {}
+    except Exception:
+        return None, resp.status_code
+
+    if data.get("draft") or data.get("prerelease"):
+        return None, resp.status_code
+
+    raw_tag = str(data.get("tag_name") or "").strip()
+    if not raw_tag:
+        return None, resp.status_code
+    try:
+        return normalize_release_tag(raw_tag), 200
+    except ValueError:
+        return None, resp.status_code
+
+
+def _check_github_release_tag(
+    repo_url: str,
+    tag_name: str,
+    timeout: float = 5.0,
+) -> Tuple[bool, Optional[int]]:
+    """Check whether a specific release tag exists via GitHub Releases API."""
+    parsed = _parse_github_owner_repo(repo_url)
+    if not parsed:
+        return False, None
+    owner, repo_name = parsed
+    encoded = urllib.parse.quote(tag_name, safe="")
+    api_url = f"https://api.github.com/repos/{owner}/{repo_name}/releases/tags/{encoded}"
+    try:
+        resp = requests.get(api_url, headers=_build_github_api_headers(), timeout=timeout)
+        return resp.status_code == 200, resp.status_code
+    except Exception:
+        return False, None
+
+
+def _resolve_tag_commit_sha(repo_url: str, tag_name: str) -> Optional[str]:
+    """Resolve the underlying commit SHA for a release tag via git ls-remote or GitHub API."""
+    tag_map = _list_remote_tags(
+        repo_url,
+        ref_patterns=(f"refs/tags/{tag_name}", f"refs/tags/{tag_name}^{{}}"),
+    )
+    if tag_map and tag_map.get(tag_name):
+        return tag_map[tag_name]
+
+    summary = _fetch_commit_summary(repo_url, tag_name, timeout=5.0)
     if summary and summary.get("sha"):
         return summary["sha"]
     return None
+
+
+def resolve_release_target(
+    repo_url: str = DEFAULT_REPO_URL,
+    requested_tag: Optional[str] = None,
+) -> ReleaseTarget:
+    """Resolve the target GitHub Release (latest stable release or an explicit '--tag')."""
+    if requested_tag:
+        clean_tag = normalize_release_tag(requested_tag)
+        candidates = [clean_tag]
+        if not clean_tag.startswith("v") and _parse_semver_tag(clean_tag):
+            candidates.append(f"v{clean_tag}")
+
+        patterns: List[str] = []
+        for cand in candidates:
+            patterns.extend((f"refs/tags/{cand}", f"refs/tags/{cand}^{{}}"))
+
+        tag_map = _list_remote_tags(repo_url, ref_patterns=patterns)
+        if tag_map is not None:
+            for cand in candidates:
+                if cand in tag_map:
+                    return ReleaseTarget(tag=cand, commit=tag_map[cand] or None, source="git-tag")
+            return ReleaseTarget(tag=None, commit=None, source="tag-not-found")
+
+        # Fall back to GitHub Releases API when git CLI is unavailable
+        saw_not_found = False
+        for cand in candidates:
+            exists, status_code = _check_github_release_tag(repo_url, cand)
+            if exists:
+                summary = _fetch_commit_summary(repo_url, cand, timeout=5.0)
+                return ReleaseTarget(
+                    tag=cand,
+                    commit=summary.get("sha") if summary else None,
+                    source="github-release",
+                )
+            if status_code == 404:
+                saw_not_found = True
+
+        return ReleaseTarget(
+            tag=None,
+            commit=None,
+            source="tag-not-found" if saw_not_found else "error",
+        )
+
+    latest_tag, _ = _resolve_latest_github_release_tag(repo_url)
+    if latest_tag:
+        commit_sha = _resolve_tag_commit_sha(repo_url, latest_tag)
+        return ReleaseTarget(tag=latest_tag, commit=commit_sha, source="github-release")
+
+    # Fall back to highest SemVer tag via git ls-remote when Releases API is unavailable
+    all_tags = _list_remote_tags(repo_url)
+    if all_tags is None:
+        return ReleaseTarget(tag=None, commit=None, source="error")
+
+    semver_candidates = [
+        (parsed_ver, tag_name, sha)
+        for tag_name, sha in all_tags.items()
+        if (parsed_ver := _parse_semver_tag(tag_name)) is not None
+    ]
+    if not semver_candidates:
+        return ReleaseTarget(tag=None, commit=None, source="no-releases")
+
+    _, best_tag, best_sha = max(semver_candidates, key=lambda item: item[0])
+    return ReleaseTarget(tag=best_tag, commit=best_sha or None, source="semver-tag")
 
 
 class UpgradeResult(int):
@@ -383,7 +565,7 @@ def _parse_file_url(file_url: str) -> Optional[Path]:
         return None
     parsed = urllib.parse.urlparse(file_url)
     path_str = urllib.request.url2pathname(parsed.path)
-    # Strip extra leading slash on Windows drive paths (e.g. '/C:/...' -> 'C:/...')
+    # Strip leading slash on Windows drive paths (e.g. '/C:/...' -> 'C:/...')
     if sys.platform == "win32" and len(path_str) >= 3 and path_str[0] in ("/", "\\") and path_str[2] == ":":
         path_str = path_str[1:]
     return Path(path_str)
@@ -496,7 +678,7 @@ def _compare_installed_tree_to_source(
 
 def get_installation_details() -> Dict[str, Any]:
     """Collect installed package version, commit SHA, commit metadata, origin source, and path."""
-    version = "1.0.0"
+    version: Optional[str] = None
     commit_sha: Optional[str] = None
     commit_source = "unknown"
     commit_subject = ""
@@ -515,7 +697,7 @@ def get_installation_details() -> Dict[str, Any]:
 
         importlib.invalidate_caches()
         dist = meta.distribution("repo360")
-        version = dist.version or version
+        version = (dist.version or "").strip() or None
         installer_text = (dist.read_text("INSTALLER") or "").strip()
         if installer_text:
             installer = installer_text.lower()
@@ -560,15 +742,10 @@ def get_installation_details() -> Dict[str, Any]:
     except Exception:
         pass
 
-    if not version or version == "1.0.0":
-        try:
-            from . import __version__
+    if not version:
+        version = PACKAGE_VERSION
 
-            version = __version__
-        except Exception:
-            version = "1.0.0"
-
-    # Fall back to package root .git checkout only (never an unrelated CWD repo).
+    # Only check the package root git checkout, never an unrelated CWD repo
     if not commit_sha and not is_stale_snapshot:
         pkg_root = pkg_dir.parent
         if (pkg_root / ".git").exists():
@@ -615,7 +792,6 @@ def is_output_already_up_to_date(stdout: str, stderr: str) -> bool:
     """Inspect installer stdout/stderr to determine if the package was already up-to-date."""
     combined = f"{stdout}\n{stderr}".lower()
 
-    # Explicit indications that new files or packages were installed (pip, pipx, and uv)
     install_markers = [
         "successfully installed repo360",
         "installing collected packages: repo360",
@@ -628,7 +804,6 @@ def is_output_already_up_to_date(stdout: str, stderr: str) -> bool:
     if re.search(r"\binstalled\s+\d+\s+package", combined) and "repo360" in combined:
         return False
 
-    # Explicit indications that requirements were already satisfied
     satisfied_markers = [
         "requirement already satisfied: repo360",
         "requirement already satisfied",
@@ -696,14 +871,13 @@ def _prepare_windows_binaries(scripts_dirs: Union[Path, Sequence[Path]]) -> List
         if not scripts_dir.is_dir():
             continue
 
-        # Clean up stale .old files from prior runs
         for old_file in scripts_dir.glob("*.exe.old_*"):
             try:
                 old_file.unlink(missing_ok=True)
             except OSError:
                 pass
 
-        # Rename repo360* entrypoints to avoid OS error 5 / 32 during wheel extraction
+        # Rename repo360* entrypoints to avoid Windows file locks during wheel extraction
         exe_candidates = [scripts_dir / "repo360.exe", *scripts_dir.glob("repo360-*.exe")]
         for exe_file in exe_candidates:
             if not exe_file.is_file():
@@ -766,7 +940,6 @@ def _invalidate_package_bytecache() -> None:
             except OSError:
                 pass
 
-    # Notify the import system that the filesystem has changed.
     try:
         importlib.invalidate_caches()
     except Exception:
@@ -822,8 +995,7 @@ def execute_upgrade(candidates: List[Tuple[str, List[str]]], dry_run: bool = Fal
 
     _restore_windows_binaries(renamed, success=success)
 
-    # Invalidate stale .pyc bytecache so the next process invocation loads the
-    # freshly installed source rather than cached bytecode from the old version.
+    # Clear .pyc bytecode so the next run loads the updated package
     if success and not already_up_to_date:
         _invalidate_package_bytecache()
     else:
@@ -834,8 +1006,7 @@ def execute_upgrade(candidates: List[Tuple[str, List[str]]], dry_run: bool = Fal
 
     post_version, post_commit = get_local_version_info()
 
-    # If the installer output didn't explicitly match, verify if commit hash
-    # remained unchanged without any new repo360 packages being installed
+    # Check commit hash if installer output doesn't show whether anything changed
     if success and not already_up_to_date:
         combined_output = f"{stdout_str}\n{stderr_str}".lower()
         has_new_install = any(
@@ -884,7 +1055,8 @@ def verify_local_state() -> None:
 
 def format_version_output(details: Dict[str, Any]) -> str:
     """Format a minimal standard CLI version string (e.g. 'repo360 1.0.0 (79098e8)')."""
-    raw_ver = str(details.get("version") or "1.0.0").strip().lstrip("v") or "1.0.0"
+    fallback_ver = PACKAGE_VERSION.lstrip("v") or "1.0.0"
+    raw_ver = str(details.get("version") or fallback_ver).strip().lstrip("v") or fallback_ver
     if details.get("is_stale_snapshot"):
         return f"repo360 {raw_ver} (stale)"
     commit_sha = str(details.get("commit") or "").strip()
@@ -908,27 +1080,75 @@ def run_upgrade_cli(argv: Optional[List[str]] = None) -> int:
     """CLI orchestrator for 'repo360 upgrade' subcommand."""
     parser = argparse.ArgumentParser(
         prog="repo360 upgrade",
-        description="Upgrade Repo360 to the latest version.",
+        description="Upgrade Repo360 to the latest release or install a specific release tag.",
     )
-    parser.parse_args(argv)
+    parser.add_argument(
+        "--tag",
+        metavar="TAG",
+        default="",
+        help="Specific release tag to install or switch to (e.g. 'v1.0.0'; default: latest release).",
+    )
+    args = parser.parse_args(argv)
 
-    local_ver, local_sha = get_local_version_info()
-    remote_sha = get_remote_commit_sha(DEFAULT_REPO_URL)
+    requested_tag = (args.tag or "").strip()
+    if requested_tag:
+        try:
+            requested_tag = normalize_release_tag(requested_tag)
+        except ValueError as exc:
+            parser.error(str(exc))
 
-    if local_sha and remote_sha and _commits_match(local_sha, remote_sha):
+    local_details = get_installation_details()
+    local_ver = str(local_details.get("version") or PACKAGE_VERSION)
+    local_sha = local_details.get("commit")
+    local_dirty = bool(local_details.get("is_dirty"))
+    is_stale = bool(local_details.get("is_stale_snapshot"))
+
+    target = resolve_release_target(DEFAULT_REPO_URL, requested_tag=requested_tag or None)
+    if not target.tag:
+        if requested_tag:
+            print(f"Release tag '{requested_tag}' was not found on {DEFAULT_REPO_URL}.")
+        elif target.source == "no-releases":
+            print(
+                f"No published releases found for {DEFAULT_REPO_URL}. "
+                "Create a release tag (e.g. v1.0.0) or run 'repo360 upgrade --tag <tag>'."
+            )
+        else:
+            print(
+                f"Unable to resolve release information from {DEFAULT_REPO_URL}. "
+                "Check network connectivity and try again."
+            )
+        return 1
+
+    if (
+        not is_stale
+        and not local_dirty
+        and local_sha
+        and target.commit
+        and _commits_match(local_sha, target.commit)
+    ):
         ver_display = local_ver.lstrip("v")
-        print(f"Repo360 {ver_display} ({remote_sha[:7]}) is already up to date.")
+        if requested_tag:
+            print(f"Repo360 {ver_display} ({target.commit[:7]}) is already at {target.tag}.")
+        else:
+            print(f"Repo360 {ver_display} ({target.commit[:7]}) is already up to date.")
         return 0
 
-    # Package version stays fixed across commits between tagged releases, so reinstall
-    # whenever local commit differs, is stale, or remote commit could not be pre-verified.
-    force = bool(local_sha is None or not remote_sha or not _commits_match(local_sha, remote_sha))
+    force = bool(
+        is_stale
+        or local_dirty
+        or local_sha is None
+        or not target.commit
+        or not _commits_match(local_sha, target.commit)
+    )
     candidates = get_upgrade_commands(
         DEFAULT_REPO_URL,
         force=force,
-        target_ref=remote_sha,
+        target_ref=target.tag,
     )
-    print("Upgrading Repo360...")
+    if requested_tag:
+        print(f"Installing Repo360 {target.tag}...")
+    else:
+        print(f"Upgrading Repo360 to {target.tag}...")
 
     res = execute_upgrade(candidates)
     exit_code = int(res)
@@ -936,17 +1156,20 @@ def run_upgrade_cli(argv: Optional[List[str]] = None) -> int:
         display_ver = (getattr(res, "version", "") or local_ver).lstrip("v")
         post_commit = getattr(res, "commit", None)
         commit_suffix = f" ({post_commit[:7]})" if post_commit else ""
-        if not remote_sha:
-            remote_sha = get_remote_commit_sha(DEFAULT_REPO_URL)
 
         if getattr(res, "already_up_to_date", False):
-            print(f"Repo360 {display_ver}{commit_suffix} is already up to date.")
+            if requested_tag:
+                print(f"Repo360 {display_ver}{commit_suffix} is already at {target.tag}.")
+            else:
+                print(f"Repo360 {display_ver}{commit_suffix} is already up to date.")
+        elif requested_tag:
+            print(f"Repo360 {display_ver}{commit_suffix} installed ({target.tag}).")
         else:
             print(f"Repo360 upgraded to {display_ver}{commit_suffix}.")
 
-        if remote_sha and post_commit and not _commits_match(post_commit, remote_sha):
+        if target.commit and post_commit and not _commits_match(post_commit, target.commit):
             print(
-                f"Warning: Installed commit ({post_commit[:7]}) differs from remote HEAD ({remote_sha[:7]})."
+                f"Warning: Installed commit ({post_commit[:7]}) differs from release {target.tag} ({target.commit[:7]})."
             )
     else:
         print(f"Upgrade failed with exit code {exit_code}.")

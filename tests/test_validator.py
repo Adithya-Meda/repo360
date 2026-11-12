@@ -15,7 +15,6 @@ def test_substitute_env_vars() -> None:
     assert '"org": "my-test-org"' in result
     assert '"port": "8080"' in result
 
-    # Test nested fallback resolution
     nested_text = '{"api_key": "${LLM_API_KEY:-${GEMINI_API_KEY:-}}"}'
     os.environ.pop("LLM_API_KEY", None)
     os.environ.pop("GEMINI_API_KEY", None)
@@ -35,7 +34,6 @@ def test_update_env_file() -> None:
         temp_env = f.name
 
     try:
-        # 1. Append a new key
         ok = ConfigValidator.update_env_file("REPO360_APP_INSTALLATION_ID", "998877", temp_env)
         assert ok is True
         with open(temp_env, "r", encoding="utf-8") as f:
@@ -43,7 +41,6 @@ def test_update_env_file() -> None:
         assert "EXISTING_VAR=123" in content
         assert "REPO360_APP_INSTALLATION_ID=998877" in content
 
-        # 2. Update existing key
         ok2 = ConfigValidator.update_env_file("REPO360_APP_INSTALLATION_ID", "112233", temp_env)
         assert ok2 is True
         with open(temp_env, "r", encoding="utf-8") as f:

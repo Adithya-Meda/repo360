@@ -28,7 +28,6 @@ class CodeownersCheck(BaseCheck):
         default_branch: str,
         thresholds: Dict[str, Any],
     ) -> CheckResult:
-        # Check standard locations: .github/CODEOWNERS, root CODEOWNERS, docs/CODEOWNERS
         content = (
             inspector.get_file_content(org, repo, ".github/CODEOWNERS", default_branch)
             or inspector.get_file_content(org, repo, "CODEOWNERS", default_branch)
@@ -36,7 +35,6 @@ class CodeownersCheck(BaseCheck):
         )
 
         if content and content.strip():
-            # Check if a real non-comment default wildcard rule with owner handle exists
             has_wildcard = False
             for line in content.splitlines():
                 stripped = line.split("#", 1)[0].strip()
@@ -137,7 +135,6 @@ class BranchRulesetsCheck(BaseCheck):
         active_rulesets = [r for r in rulesets_list if isinstance(r, dict) and r.get("enforcement") == "active"]
         evaluate_rulesets = [r for r in rulesets_list if isinstance(r, dict) and r.get("enforcement") == "evaluate"]
 
-        # Gather detailed rules from active repo rulesets if effective branch rules list was unavailable
         inline_rules: List[Dict[str, Any]] = []
         if active_rulesets and not branch_rules:
             details_fn = getattr(inspector, "get_repo_ruleset_details", None)
@@ -193,7 +190,6 @@ class BranchRulesetsCheck(BaseCheck):
                 documentation_url=doc_url,
             )
 
-        # Evaluate actual approval count across active rulesets (/rules/branches) and classic protection
         current_approvals = 0
         has_linear_history = False
         has_signed_commits = False

@@ -40,7 +40,6 @@ def write_runners_workbook(
     path.parent.mkdir(parents=True, exist_ok=True)
     wb = Workbook()
 
-    # Sheet 1: Executive Summary
     summary = wb.active
     summary.title = "Executive Summary"
     summary["A1"] = "Repo360 Actions Self-Hosted Runners Performance & Fleet Report"
@@ -195,12 +194,10 @@ def write_runners_workbook(
     autofit(summary, skip_rows=2)
     summary.sheet_view.showGridLines = False
 
-    # Sheet 2: Org Runner Summary
     org_ws = wb.create_sheet("Org Runner Summary")
     last_org = write_table(org_ws, 1, ORG_RUNNER_HEADERS, org_runner_rows)
     finalize_sheet(org_ws, 1, last_org, len(ORG_RUNNER_HEADERS), "B2")
 
-    # Sheet 3: Self-Hosted Runners Detail
     runner_ws = wb.create_sheet("Runner Fleet Detail")
     if runner_rows:
         last_runner = write_table(runner_ws, 1, RUNNER_HEADERS, runner_rows)

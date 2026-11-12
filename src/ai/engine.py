@@ -23,7 +23,6 @@ import time
 import warnings
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-# Suppress noisy internal warnings from third-party client
 warnings.filterwarnings("ignore", category=SyntaxWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -62,7 +61,6 @@ class AIEngine:
         ),
     }
 
-    # Backward compatibility alias for Gemini callers
     FALLBACK_MODELS = FALLBACK_MODELS_BY_PROVIDER["gemini"]
 
     SUPPORTED_REMEDIATION_CHECKS: frozenset[str] = frozenset({
@@ -98,7 +96,6 @@ class AIEngine:
         if self.api_key.startswith("${") and self.api_key.endswith("}"):
             self.api_key = ""
 
-        # Auto-infer provider if model name strongly indicates it
         prov = (provider or "").strip().lower()
         model_lower = (model_name or "").lower()
         if not prov or prov == "auto":
@@ -110,7 +107,6 @@ class AIEngine:
                 prov = "gemini"
         self.provider = prov
 
-        # Default model per provider if unspecified
         if not model_name:
             if self.provider in ("openai", "azure"):
                 self.model_name = "gpt-4o"
@@ -576,7 +572,7 @@ class AIEngine:
                     cooldown_s = retry_after_s if retry_after_s is not None else 60.0
                     self._mark_model_rate_limited(model, cooldown_s)
                     break
-                # "not_found" or non-rate-limit error -> move to next candidate model
+                # Non-rate-limit errors try the next candidate model
                 break
 
         if saw_rate_limit:
@@ -837,7 +833,6 @@ class AIEngine:
         warned = sum(1 for r in results if r.status == CheckStatus.WARN)
         failed = sum(1 for r in results if r.status == CheckStatus.FAIL)
 
-        # Extract top failure categories and check names
         failed_checks = [f"- [{r.category}] {r.repo_name}: {r.check_name} ({r.current_state})" for r in results if r.status == CheckStatus.FAIL][:12]
         warned_checks = [f"- [{r.category}] {r.repo_name}: {r.check_name}" for r in results if r.status == CheckStatus.WARN][:8]
 
@@ -887,7 +882,7 @@ Keep it factual, authoritative, professional, and actionable. Do not use filler 
 
         cache_key = f"{result.check_id}:{languages}:{frameworks}:{manifests}"
 
-        # Fast-path thread-safe cache lookup & singleflight deduplication
+        # Wait for any in-flight request with the same cache key
         with self._cache_lock:
             while cache_key in self._in_flight_keys:
                 self._cache_cond.wait(timeout=10.0)

@@ -103,22 +103,18 @@ def test_interrupt_controller_watchdog_and_double_ctrl_c() -> None:
     register_closable(closable_session)
     register_closable(closable_server)
 
-    # First Ctrl+C sets shutdown, closes tracked resources, and triggers watchdog within ~0.2s
     ctrl.trigger(signum=2, from_os_thread=False)
     assert SHUTDOWN_EVENT.is_set()
     time.sleep(0.08)
     assert closable_session.close.called
     assert closable_server.server_close.called
 
-    # Duplicate trigger within debounce (<150ms) does not double-exit
     ctrl.trigger(signum=2, from_os_thread=False)
     assert exit_calls == []
 
-    # Watchdog expires cleanly after 0.2s
     time.sleep(0.3)
     assert exit_calls == [130]
 
-    # Genuine second Ctrl+C (>=150ms after first) force-exits synchronously without waiting
     ctrl.reset()
     exit_calls.clear()
     ctrl.trigger(signum=2, from_os_thread=False)
@@ -136,13 +132,12 @@ def test_handle_python_signal_consumes_expected_os_interrupt() -> None:
             ctrl.trigger(signum=2, from_os_thread=True)
             mock_interrupt_main.assert_called_once()
 
-        # Simulate CPython delivering the queued SIGINT past the 0.15s debounce window.
+        # Deliver queued SIGINT past the 0.15s debounce window
         time.sleep(0.18)
         with pytest.raises(KeyboardInterrupt):
             ctrl.handle_python_signal(2, None)
         assert exit_calls == []
 
-        # A genuine second Ctrl+C signal after consuming the expected interrupt force-exits.
         with pytest.raises(KeyboardInterrupt):
             ctrl.handle_python_signal(2, None)
         assert exit_calls == [130]
@@ -182,7 +177,6 @@ def test_interruptible_input_returns_value_and_aborts_cleanly_on_shutdown() -> N
     with patch("builtins.input", return_value="https://ghe.example.com"):
         assert interruptible_input("Domain: ") == "https://ghe.example.com"
 
-    # Simulated blocking console read aborted by SHUTDOWN_EVENT must raise KeyboardInterrupt quickly.
     release_read = threading.Event()
 
     def _blocked_input(_prompt: str = "") -> str:
@@ -201,7 +195,6 @@ def test_interruptible_input_returns_value_and_aborts_cleanly_on_shutdown() -> N
         release_read.set()
     assert (time.monotonic() - start) < 0.5
 
-    # Genuine EOF without shutdown returns eof_default when configured, or raises EOFError otherwise.
     reset_shutdown()
     with patch("builtins.input", side_effect=EOFError):
         assert interruptible_input("Domain: ", eof_default="") == ""
@@ -218,18 +211,15 @@ def test_interrupt_controller_is_silent_and_suppresses_duplicate_teardown_signal
         with patch("src.common.interrupts._thread.interrupt_main"):
             ctrl.trigger(signum=2, from_os_thread=True)
 
-        # Manual shutdown conversion (e.g. interruptible_input) makes pending OS SIGINT a silent no-op.
         ctrl.note_manual_interrupt()
         ctrl.handle_python_signal(2, None)
         assert exit_calls == []
 
-        # A genuine second Ctrl+C (>= 0.15s later) still triggers immediate force-exit silently.
         time.sleep(0.18)
         with pytest.raises(KeyboardInterrupt):
             ctrl.handle_python_signal(2, None)
         assert exit_calls == [130]
 
-        # Watchdog timeout exit must also emit zero terminal text.
         ctrl.reset()
         exit_calls.clear()
         ctrl.grace_seconds = 0.08

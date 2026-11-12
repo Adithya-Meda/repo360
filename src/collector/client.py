@@ -57,8 +57,6 @@ class Repo360Client:
         self.rate_limit_limit: Optional[int] = None
         self._org_rate_limit: Dict[str, int] = {}
         self._lock = threading.Lock()
-
-        # Configure session with standard retry strategy for transient connection resets
         self.session = requests.Session()
         retries = Retry(
             total=3,
@@ -120,7 +118,6 @@ class Repo360Client:
             res = self.rate_limit_reset
             lim = self.rate_limit_limit
 
-        # Primary rate limit management
         if rem is not None:
             if rem <= 5:
                 now = int(time.time())
@@ -142,8 +139,7 @@ class Repo360Client:
                     max(0, (res or int(time.time())) - int(time.time())),
                 )
 
-        # Adaptive micro-delay: execute at full wire speed when rate limit quota is healthy;
-        # throttle gracefully only when remaining quota is low or approaching reset
+        # Throttle slightly only when remaining quota gets low
         if self.adaptive_delay_ms > 0 and not is_shutting_down():
             if rem is not None and rem < 500:
                 interruptible_sleep((self.adaptive_delay_ms * 2) / 1000.0, sleep_fn=time.sleep)
@@ -211,13 +207,11 @@ class Repo360Client:
                 )
                 self._handle_rate_limit(response, org=target_org)
 
-                # 404 / 409 (Empty repo) / 410 handling
                 if response.status_code in (404, 409, 410):
                     if allow_404:
                         return None
                     response.raise_for_status()
 
-                # Handle Secondary Rate Limit or 429
                 if response.status_code == 429 or (
                     response.status_code == 403
                     and ("secondary rate limit" in response.text.lower() or "abuse" in response.text.lower())
@@ -242,13 +236,12 @@ class Repo360Client:
                     self._sleep_with_heartbeat(backoff)
                     continue
 
-                # Standard 403 Forbidden (Permissions or feature not enabled on plan) - do NOT retry
+                # Standard 403 permission/plan errors should not be retried
                 if response.status_code == 403:
                     if allow_403:
                         return None
                     response.raise_for_status()
 
-                # Handle Expired Token (401)
                 if response.status_code == 401 and attempt < self.max_retries:
                     logger.info("GitHub installation token expired. Refreshing token and retrying...")
                     self.auth.get_installation_token(
@@ -258,7 +251,6 @@ class Repo360Client:
                     )
                     continue
 
-                # Handle Server Errors (500, 502, 503, 504)
                 if response.status_code in (500, 502, 503, 504):
                     if attempt < self.max_retries:
                         backoff = int(self.backoff_factor * (2 ** attempt))
@@ -270,7 +262,7 @@ class Repo360Client:
                 return response.json()
 
             except requests.exceptions.HTTPError as http_err:
-                # Deterministic HTTP client errors (400, 401, 403, 404, 409, 410, 422) should not be retried as network errors
+                # Do not retry deterministic 4xx client responses
                 if response is not None and response.status_code in (400, 401, 403, 404, 409, 410, 422):
                     if response.status_code == 403 and allow_403:
                         return None

@@ -131,7 +131,7 @@ def collect_org_packages(
     packages: List[PackageRecord] = []
     seen_names: Set[str] = set()
 
-    # 1. Paginate packages AND multi-version files via GraphQL to capture complete storage footprint
+    # Paginate packages and version files via GraphQL for total storage size
     gql_query = """
     query($org: String!, $cursor: String) {
       organization(login: $org) {
@@ -278,7 +278,6 @@ def collect_org_packages(
             pass
         return []
 
-    # Execute GraphQL enrichment and all REST package-type queries concurrently
     from ..common.interrupts import wait_future
     pool = ThreadPoolExecutor(max_workers=len(PACKAGE_TYPES) + 1, thread_name_prefix="finops-pkgs")
     try:
@@ -295,7 +294,6 @@ def collect_org_packages(
     if errors_out is not None and rest_errors:
         errors_out.extend(sorted(set(rest_errors)))
 
-    # Assemble package records deterministically
     for pkg_type, items in raw_by_type:
         for item in items:
             pkg_id = item.get("id")
@@ -375,7 +373,6 @@ def collect_finops_data(
     profiles: List[RepoStorageProfile] = []
     org_packages: Dict[str, List[PackageRecord]] = {}
 
-    # 1. Collect organization-level packages concurrently across organizations
     if orgs:
         def _collect_org_with_errors(org_name: str) -> Tuple[str, List[PackageRecord], List[str]]:
             errs: List[str] = []
@@ -395,7 +392,6 @@ def collect_finops_data(
                 for err_msg in errs:
                     failures_out.append((o, err_msg))
 
-    # Index packages by (org.lower(), repo.lower()) for O(1) lookup per repo
     pkg_index: Dict[Tuple[str, str], List[PackageRecord]] = {}
     for o, pkgs in org_packages.items():
         o_key = o.lower()
@@ -403,7 +399,6 @@ def collect_finops_data(
             if pkg.repo_name:
                 pkg_index.setdefault((o_key, pkg.repo_name.lower()), []).append(pkg)
 
-    # 2. Collect repository storage and artifact profiles in parallel
     if targets:
         workers = resolve_worker_count(cfg.max_workers, len(targets), max_cap=32)
         executor = ThreadPoolExecutor(max_workers=workers)
@@ -482,13 +477,11 @@ def build_finops_rows(
         for (idx, _, _), rec_val in zip(ai_items, ai_recs):
             rec_by_idx[idx] = rec_val
 
-    # Map orgs to profiles
     org_profiles: Dict[str, List[RepoStorageProfile]] = {org: [] for org in orgs}
     for idx, p in enumerate(profiles):
         org_profiles.setdefault(p.org, []).append(p)
         rec = rec_by_idx.get(idx, p.recommendation)
 
-        # Repo row
         repo_rows.append([
             p.org,
             p.repo,
@@ -505,7 +498,6 @@ def build_finops_rows(
             rec,
         ])
 
-        # Artifact detail rows
         for art in p.artifacts:
             created_ist = fmt_timestamp(art.created_at)
             expires_ist = fmt_timestamp(art.expires_at)
@@ -526,7 +518,6 @@ def build_finops_rows(
                 run_id_val,
             ])
 
-        # Cache rows
         for cache in p.caches:
             created_ist = fmt_timestamp(cache.created_at)
             accessed_ist = fmt_timestamp(cache.last_accessed_at)
@@ -542,7 +533,6 @@ def build_finops_rows(
                 detail,
             ])
 
-    # Package rows
     for org, pkgs in org_packages.items():
         for pkg in pkgs:
             created_ist = fmt_timestamp(pkg.created_at)
@@ -560,7 +550,7 @@ def build_finops_rows(
                 f"{pkg.version_count} versions",
             ])
 
-    # Organization aggregation rows — sum raw bytes before MB conversion to prevent rounding drift
+    # Sum raw bytes before MB conversion to avoid rounding drift
     for org in orgs:
         p_list = org_profiles.get(org, [])
         pkgs = org_packages.get(org, [])

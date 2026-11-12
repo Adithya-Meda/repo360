@@ -241,7 +241,6 @@ def write_activity_workbook(
     path.parent.mkdir(parents=True, exist_ok=True)
     wb = Workbook()
 
-    # Sheet 1: Executive Summary
     summary = wb.active
     summary.title = "Executive Summary"
     summary["A1"] = "Repo360 Contributor & Platform Activity Intelligence"
@@ -320,17 +319,14 @@ def write_activity_workbook(
     autofit(summary, skip_rows=2)
     summary.sheet_view.showGridLines = False
 
-    # Sheet 2: User Activity
     users_ws = wb.create_sheet("User Activity")
     last = write_table(users_ws, 1, USER_HEADERS, user_rows, status_col=STATUS_IDX, bar_col=TOTAL_IDX)
     finalize_sheet(users_ws, 1, last, len(USER_HEADERS), "C2")
 
-    # Sheet 3: Repository Detail
     repo_ws = wb.create_sheet("Repository Detail")
     last_repo = write_table(repo_ws, 1, REPO_HEADERS, repo_rows, bar_col=REPO_HEADERS.index("Total Activities"))
     finalize_sheet(repo_ws, 1, last_repo, len(REPO_HEADERS), "D2")
 
-    # Executive Management Sheets
     if management_tables:
         for title, (headers, rows) in management_tables.items():
             sheet = wb.create_sheet(title)

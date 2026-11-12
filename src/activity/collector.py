@@ -51,7 +51,6 @@ def resolve_activity_targets(
     failures: List[Tuple[str, str]] = []
     metadata_cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
-    # Expand wildcards concurrently across organizations
     def _expand_org(original_org: str) -> Tuple[List[Tuple[str, str]], Dict[Tuple[str, str], Dict[str, Any]], Optional[Tuple[str, str]]]:
         org_targets: List[Tuple[str, str]] = []
         org_meta: Dict[Tuple[str, str], Dict[str, Any]] = {}
@@ -84,7 +83,6 @@ def resolve_activity_targets(
         if fail_item:
             failures.append(fail_item)
 
-    # Fetch specific repos concurrently
     def _fetch_specific(pair: Tuple[str, str]) -> Tuple[Optional[Tuple[str, str]], Optional[Dict[str, Any]], Optional[Tuple[str, str]]]:
         org, repo = pair
         try:
@@ -295,7 +293,6 @@ def collect_repo_events(
         if since <= when <= end and login:
             activity[login].add(metric, when)
 
-    # 1. Commits
     pushed_at_str = report.metadata.get("pushed_at") if report and report.metadata else None
     pushed_at = parse_ts(pushed_at_str) if pushed_at_str else None
     if not (pushed_at and pushed_at < collected_since):
@@ -312,7 +309,6 @@ def collect_repo_events(
             if report:
                 report.errors.append(_format_error("Commits", exc))
 
-    # 2. Pull Requests
     has_prs = report is None or report.metadata.get("has_pull_requests", True)
     prs_accessible = True
     if has_prs:
@@ -362,7 +358,6 @@ def collect_repo_events(
                 if report:
                     report.errors.append(_format_error("Pulls", exc))
 
-    # 3. Issues & Comments
     has_issues = report.metadata.get("has_issues", True) if report and report.metadata else True
     issues_accessible = True
     if has_issues:
@@ -407,7 +402,6 @@ def collect_repository(
     report = RepositoryReport()
     base = f"/repos/{org}/{repo}"
 
-    # 1. Metadata
     if cached_metadata is not None:
         report.metadata = cached_metadata
     else:
@@ -417,7 +411,6 @@ def collect_repository(
             report.errors.append(f"Metadata: {exc}")
             return report
 
-    # 2. Activity scan
     size = report.metadata.get("size", 1)
     pushed_at = parse_ts(report.metadata["pushed_at"]) if report.metadata.get("pushed_at") else None
     updated_at = parse_ts(report.metadata["updated_at"]) if report.metadata.get("updated_at") else None
@@ -436,7 +429,6 @@ def collect_repository(
         except Exception as exc:
             report.errors.append(f"Activity: {exc}")
 
-    # 4. Branch protection (classic branch protection + repository/org rulesets)
     branch = report.metadata.get("default_branch")
     if size == 0 or report.metadata.get("archived"):
         report.protected = "No"
@@ -460,7 +452,6 @@ def collect_repository(
         except Exception as exc:
             report.errors.append(f"Branch protection: {exc}")
 
-    # 5. CODEOWNERS check
     if not branch or size == 0:
         report.codeowners = "No"
     else:
@@ -822,7 +813,6 @@ def build_management_tables(
     )
     tables["Repository Inventory"] = (REPO_INVENTORY_HEADERS, inventory)
 
-    # Top Active Repositories (Ranked top 10 per org)
     top_rows: List[list] = []
     inv_repo_idx = REPO_INVENTORY_HEADERS.index("Repository")
     inv_tot_idx = tot_idx
@@ -852,7 +842,6 @@ def build_management_tables(
             ])
     tables["Top Active Repositories"] = (TOP_REPOS_HEADERS, top_rows)
 
-    # Management KPIs
     kpis: List[list] = []
     org_status_norm = {k.casefold(): v for k, v in (organization_status or {}).items()}
     members_norm = {k.casefold(): {login.lower() for login in v} for k, v in members.items()}
@@ -893,7 +882,6 @@ def build_management_tables(
         def add(category: str, metric: str, value: Any, definition: str) -> None:
             kpis.append([org, category, metric, value, definition])
 
-        # User Adoption
         add(
             "User Adoption",
             "Current onboarded org members",
@@ -919,7 +907,6 @@ def build_management_tables(
             "Distinct people with tracked activity during the last 30 days, including non-members.",
         )
 
-        # Repository Landscape
         add(
             "Repository Landscape",
             "Repositories hosted (selected scope)",
@@ -951,7 +938,6 @@ def build_management_tables(
                 f"Selected repositories currently set to {visibility} visibility.",
             )
 
-        # Developer Activity
         add(
             "Developer Activity",
             "Repositories active in last 7 days",
@@ -983,7 +969,6 @@ def build_management_tables(
             "The sheet lists this organization's ten repositories with the most tracked events in the report period. It is an activity count, not a productivity score.",
         )
 
-        # Collaboration
         add(
             "Collaboration",
             "Pull requests created",
@@ -1021,7 +1006,6 @@ def build_management_tables(
             "Number of PRs used to calculate the average first-review time.",
         )
 
-        # Security & Governance
         for attribute, title in (("protected", "Repositories with branch protection"), ("codeowners", "Repositories with CODEOWNERS")):
             add(
                 "Security & Governance",
@@ -1037,7 +1021,6 @@ def build_management_tables(
                 "Repositories where GitHub did not provide enough information to confirm this check. They are not counted as having no protection/file.",
             )
 
-        # Coverage
         add(
             "Coverage",
             "Activity scans completed",

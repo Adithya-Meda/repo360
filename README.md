@@ -43,7 +43,7 @@ Platform governance, compliance, engineering intelligence, and infrastructure me
 | Command | Description |
 | :--- | :--- |
 | `setup` | Configure GitHub App credentials via auto-browser setup or manual config (`--mode auto|manual`), and store keys under `~/.repo360/`. |
-| `upgrade` | Upgrade Repo360 to the latest version. |
+| `upgrade` | Upgrade Repo360 to the latest published release, or install a specific tag with `--tag TAG`. |
 | `health` | Check GitHub App authentication, organization installations, and AI engine status. |
 | `version` | Show the installed Repo360 version. |
 | `uninstall` | Remove the package, virtual environment, and config while preserving generated reports. |
@@ -118,9 +118,16 @@ repo360 health
 
 All reports are written to `./repo360-output/`.
 
-#### 4. Upgrade
+#### 4. Upgrade or Switch Versions
 ```bash
+# Upgrade to the latest published release
 repo360 upgrade
+
+# Install or switch to a specific release tag (upgrades or downgrades)
+repo360 upgrade --tag v1.0.0
+
+# Run a different release tag once without changing your installed version
+pipx run --spec git+https://github.com/Adithya-Meda/repo360.git@v1.0.0 repo360 --help
 ```
 Stored credentials and GitHub App private keys in `~/.repo360/` are automatically preserved across upgrades.
 
@@ -189,7 +196,7 @@ jobs:
 
     steps:
       - name: "Run Repo360 Action"
-        uses: Adithya-Meda/repo360@main
+        uses: Adithya-Meda/repo360@main # Pin to a release tag in production (e.g. @v1.0.0)
         with:
           app_id: ${{ vars.REPO360_APP_ID }} # GitHub App ID for authentication
           private_key: ${{ secrets.REPO360_APP_PRIVATE_KEY }} # Private key for token exchange

@@ -18,7 +18,7 @@ from ..auth.github_app_auth import GitHubAppAuth
 from .interrupts import interruptible_sleep, is_shutting_down, register_closable
 
 logger = logging.getLogger("repo360.client")
-EMPTY_RESOURCE_STATUSES = frozenset({409, 410})  # Empty repository or disabled feature
+EMPTY_RESOURCE_STATUSES = frozenset({409, 410})
 
 
 class ResilientGitHubClient:
@@ -44,8 +44,6 @@ class ResilientGitHubClient:
 
         self._local = threading.local()
         self._rate_limit_lock = threading.Lock()
-
-        # Coordinated throttling state
         self._global_pause_until: float = 0.0
         self._org_pause_until: Dict[str, float] = {}
         self._org_remaining: Dict[str, int] = {}
@@ -89,11 +87,9 @@ class ResilientGitHubClient:
                 now = time.time()
                 pause_wait = 0.0
 
-                # 1. Global pause (secondary abuse rate limits, 429)
                 if self._global_pause_until > now:
                     pause_wait = max(pause_wait, self._global_pause_until - now)
 
-                # 2. Org-specific pause (primary installation rate limits)
                 if org_key:
                     rst = self._org_reset.get(org_key)
                     if rst is not None and now >= rst:
@@ -128,7 +124,6 @@ class ResilientGitHubClient:
                 if pause_wait > 0.0:
                     pass
                 else:
-                    # 3. Per-organization adaptive pacing (full speed when quota is healthy >= 1000)
                     scope_key = org_key or "__global__"
                     if self.inter_request_delay_seconds > 0.0:
                         delay = self.inter_request_delay_seconds
@@ -200,7 +195,6 @@ class ResilientGitHubClient:
                 timeout=self.timeout_seconds,
             )
 
-            # Record rate limit headers
             rem = resp.headers.get("X-RateLimit-Remaining")
             rst = resp.headers.get("X-RateLimit-Reset")
             with self._rate_limit_lock:
@@ -210,7 +204,6 @@ class ResilientGitHubClient:
                     if rst is not None and rst.isdigit():
                         self._org_reset[org_key] = float(rst)
 
-            # Check for rate-limiting
             wait = self._rate_limit_wait(resp)
             if wait is None:
                 return resp

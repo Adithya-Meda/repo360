@@ -42,13 +42,11 @@ def test_client_get_404_allowed(mock_client: Repo360Client) -> None:
 @patch("time.sleep")
 def test_client_secondary_rate_limit_retry(mock_sleep: MagicMock, mock_client: Repo360Client) -> None:
     """Verify that secondary rate limits (403/429) automatically back off and retry."""
-    # First attempt: 403 secondary rate limit with Retry-After: 1
     resp_rate_limited = MagicMock()
     resp_rate_limited.status_code = 403
     resp_rate_limited.text = "You have exceeded a secondary rate limit. Please wait."
     resp_rate_limited.headers = {"retry-after": "1"}
 
-    # Second attempt: 200 OK
     resp_success = MagicMock()
     resp_success.status_code = 200
     resp_success.headers = {"x-ratelimit-remaining": "4500"}
@@ -208,7 +206,6 @@ def test_repo_inspector_tree_cache_missing_file_zero_http_calls(mock_client: Rep
         assert "README.md" in tree
         assert ".github/copilot-instructions.md" in tree
 
-    # All checks should evaluate against in-memory tree cache with 0 API calls to client.get
     with patch.object(mock_client, "get") as mock_get:
         assert inspector.check_file_exists("org", "repo", ".github/copilot-instructions.md") is True
         assert inspector.check_file_exists("org", "repo", "CODEOWNERS") is False
@@ -216,7 +213,6 @@ def test_repo_inspector_tree_cache_missing_file_zero_http_calls(mock_client: Rep
         assert inspector.get_file_content("org", "repo", ".github/dependabot.yml") is None
         assert mock_get.call_count == 0
 
-    # Discovering workflows should also read from tree cache with 0 API calls
     with patch.object(mock_client, "get") as mock_get:
         wfs = inspector.list_workflows("org", "repo", "main")
         assert len(wfs) == 1

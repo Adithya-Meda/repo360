@@ -124,7 +124,6 @@ def load_user_credentials() -> Dict[str, Any]:
 
 def find_private_key(candidate_path: Optional[str] = None) -> Optional[str]:
     """Search for a valid private key in specified path, user secrets dir, or local secrets/."""
-    # 1. Direct path check
     if candidate_path:
         expanded = os.path.expanduser(candidate_path)
         if os.path.isfile(expanded):
@@ -132,7 +131,6 @@ def find_private_key(candidate_path: Optional[str] = None) -> Optional[str]:
         if candidate_path.startswith("-----BEGIN"):
             return candidate_path
 
-    # 2. Check ~/.repo360/secrets/
     user_secrets = get_secrets_dir()
     if os.path.isdir(user_secrets):
         keys = [
@@ -143,7 +141,6 @@ def find_private_key(candidate_path: Optional[str] = None) -> Optional[str]:
         if keys:
             return keys[0]
 
-    # 3. Check local ./secrets/
     local_secrets = os.path.join(os.getcwd(), "secrets")
     if os.path.isdir(local_secrets):
         keys = [
@@ -169,12 +166,10 @@ def resolve_runtime_credentials() -> Dict[str, Any]:
     user_gh = user_cfg.get("github", {})
     user_llm = user_cfg.get("llm", {})
 
-    # GitHub App ID
     app_id = (os.getenv("REPO360_APP_ID") or user_gh.get("app_id") or "")
     if app_id:
         app_id = str(app_id).strip()
 
-    # Installation ID
     installation_id = (
         os.getenv("REPO360_APP_INSTALLATION_ID")
         or user_gh.get("installation_id")
@@ -183,14 +178,12 @@ def resolve_runtime_credentials() -> Dict[str, Any]:
     if installation_id:
         installation_id = str(installation_id).strip()
 
-    # API Base URL
     api_base_url = (
         os.getenv("REPO360_API_BASE_URL")
         or user_gh.get("api_base_url")
         or "https://api.github.com"
     ).rstrip("/")
 
-    # Private Key
     raw_key = os.getenv("REPO360_APP_PRIVATE_KEY") or ""
     key_path = (
         os.getenv("REPO360_APP_PRIVATE_KEY_PATH")
@@ -206,7 +199,6 @@ def resolve_runtime_credentials() -> Dict[str, Any]:
         if found:
             resolved_key = found
 
-    # LLM Settings
     llm_provider = (
         os.getenv("AI_PROVIDER")
         or os.getenv("LLM_PROVIDER")
@@ -214,7 +206,6 @@ def resolve_runtime_credentials() -> Dict[str, Any]:
         or "gemini"
     ).lower().strip()
 
-    # Auto-detect provider from model name if set
     env_model = (
         os.getenv("AI_MODEL")
         or os.getenv("LLM_MODEL")
@@ -230,7 +221,6 @@ def resolve_runtime_credentials() -> Dict[str, Any]:
         elif m_lower.startswith("gemini-"):
             llm_provider = "gemini"
 
-    # Default model per provider
     default_models = {
         "gemini": "gemini-3.5-flash",
         "openai": "gpt-4o",
@@ -238,7 +228,6 @@ def resolve_runtime_credentials() -> Dict[str, Any]:
     }
     llm_model = env_model or default_models.get(llm_provider, "gemini-3.5-flash")
 
-    # Unified single API key resolution (supports AI_API_KEY, LLM_API_KEY, or provider-specific keys)
     llm_api_key = (
         os.getenv("AI_API_KEY")
         or os.getenv("LLM_API_KEY")

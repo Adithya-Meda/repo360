@@ -283,7 +283,7 @@ def compute_fleet_dora_summary(
         round(float(statistics.median(df_values)), 2) if df_values else None
     )
 
-    # Match org-level LTTC and MTTR statistical basis (event-level medians over completed outcomes)
+    # Event-level medians over completed outcomes (matches org LTTC/MTTR)
     pr_lttc_count = 0
     commit_lttc_count = 0
     if deployment_rows is not None:

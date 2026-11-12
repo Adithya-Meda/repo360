@@ -38,7 +38,6 @@ def collect_runners_and_metrics(
     seen_runners: Set[Tuple[str, str, int, str]] = set()
     seen_ephemeral_keys: Set[Tuple[str, str]] = set()
 
-    # 1. Discover Organization-Level Runners & Groups concurrently across organizations
     def _discover_org_runners(org: str) -> Tuple[List[RunnerInfo], Optional[Tuple[str, str]]]:
         org_runners: List[RunnerInfo] = []
         groups: Dict[int, str] = {}
@@ -115,7 +114,6 @@ def collect_runners_and_metrics(
         if org_fail:
             failures.append(org_fail)
 
-    # Filter targets to active repositories
     active_targets: List[Tuple[str, str]] = []
     for org, repo in targets:
         meta = metadata_cache.get((org.casefold(), repo.casefold())) if metadata_cache else None
@@ -123,7 +121,6 @@ def collect_runners_and_metrics(
             continue
         active_targets.append((org, repo))
 
-    # 2. Worker function to scan repository workflow runs and jobs
     def _scan_repo_runs(target: Tuple[str, str]) -> Tuple[
         List[RunnerInfo],
         Dict[Tuple[str, str], RunnerJobMetrics],
@@ -141,7 +138,6 @@ def collect_runners_and_metrics(
         loc_name_map: Dict[str, str] = dict(org_name_map.get(org_k, {}))
         repo_failures: List[Tuple[str, str]] = []
 
-        # Check repo-level runners
         try:
             for item in client.paginate_enveloped(org, f"/repos/{org}/{repo}/actions/runners", "runners"):
                 if isinstance(item, dict) and "id" in item:
@@ -178,7 +174,6 @@ def collect_runners_and_metrics(
             elif status_code != 404:
                 repo_failures.append((f"{org}/{repo} (Repo-level runners)", str(exc)))
 
-        # Check completed workflow runs
         try:
             runs_checked = 0
             truncated_runs = False
@@ -323,7 +318,6 @@ def collect_runners_and_metrics(
 
         return loc_runners, loc_runner_metrics, loc_org_metrics, repo_failures
 
-    # Run workflow runs collection across worker pool
     if not active_targets:
         return runners, runner_metrics, org_runner_metrics
 

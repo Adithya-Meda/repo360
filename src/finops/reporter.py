@@ -60,7 +60,6 @@ def write_finops_workbook(
     now_ist = now.astimezone(IST)
     duration_str = f"{execution_duration:.1f}s" if execution_duration else "N/A"
 
-    # Sheet 1: Executive Summary
     summary = wb.active
     summary.title = "Executive Summary"
     summary["A1"] = "Repo360 FinOps Storage & Workflow Artifact Profiler"
@@ -111,7 +110,6 @@ def write_finops_workbook(
     curr_row = section_title(summary, curr_row, "Organization Storage & Optimization Overview")
     curr_row = write_table(summary, curr_row, FINOPS_ORG_HEADERS, org_rows, bar_col=9) + 2
 
-    # High-impact candidates (repos with waste or top storage)
     waste_candidates = [r for r in repo_rows if len(r) > 11 and r[11] in ("High Waste", "Moderate Waste")]
     if waste_candidates:
         curr_row = section_title(summary, curr_row, "Priority Cost & Storage Optimization Candidates")
@@ -120,7 +118,6 @@ def write_finops_workbook(
     autofit(summary, skip_rows=2)
     summary.sheet_view.showGridLines = False
 
-    # Sheet 2: Storage by Repository
     repo_ws = wb.create_sheet("Storage by Repository")
     if repo_rows:
         last_repo = write_table(repo_ws, 1, FINOPS_REPO_HEADERS, repo_rows)
@@ -137,7 +134,6 @@ def write_finops_workbook(
     else:
         write_empty_table(repo_ws, 1, FINOPS_REPO_HEADERS, "No repositories found on target organizations.")
 
-    # Sheet 3: Artifact Inventory
     art_ws = wb.create_sheet("Artifact Inventory")
     if artifact_rows:
         last_art = write_table(art_ws, 1, FINOPS_ARTIFACT_HEADERS, artifact_rows)
@@ -150,7 +146,6 @@ def write_finops_workbook(
             "No workflow artifacts found on target repositories.",
         )
 
-    # Sheet 4: Cache & Package Inventory
     cache_ws = wb.create_sheet("Cache & Package Inventory")
     if cache_package_rows:
         last_cp = write_table(cache_ws, 1, FINOPS_CACHE_PACKAGE_HEADERS, cache_package_rows)

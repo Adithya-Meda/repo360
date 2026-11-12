@@ -132,7 +132,7 @@ def get_manifest(
     GitHub's manifest validator requires `redirect_url` to be a clean callback URL
     without query parameters; CSRF `state` must be passed via the form action query string.
     """
-    _ = state_nonce  # Retained for backwards compatibility with callers; state is sent on form action.
+    _ = state_nonce  # State is embedded in form action URL; param kept for compatibility.
     clean_domain = _normalize_github_domain(github_domain)
     clean_redirect = _validate_callback_url(redirect_url or CALLBACK_URL)
     return {
@@ -224,7 +224,7 @@ class ManifestCallbackHandler(http.server.BaseHTTPRequestHandler):
 
         if parsed_url.path in ("", "/"):
             clean_domain = _normalize_github_domain(self.github_domain)
-            # Auto-assign unique name using target_org to avoid global GitHub App name collisions
+            # Scope default name to target_org to avoid global GitHub App collisions
             clean_org = _normalize_org_name(self.target_org)
             default_name = _build_default_app_name(clean_org)
             active_name = self.app_name or default_name
@@ -355,7 +355,6 @@ class ManifestCallbackHandler(http.server.BaseHTTPRequestHandler):
             return
 
         elif parsed_url.path == "/callback":
-            # GitHub redirected back with ?code=...&state=...
             query_params = urllib.parse.parse_qs(parsed_url.query)
             state = query_params.get("state", [""])[0]
             code = query_params.get("code", [""])[0]
@@ -385,7 +384,6 @@ class ManifestCallbackHandler(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(b"Security Error: Invalid or expired state nonce.")
                 return
 
-            # Exchange code for app credentials
             conversion_endpoint = f"{self.api_domain}/app-manifests/{code}/conversions"
             headers = {
                 "Accept": "application/vnd.github+json",
@@ -563,7 +561,6 @@ def run_wizard(
     server, bound_port = _bind_callback_server(LOOPBACK_HOST, PORT)
     active_callback_url = f"http://{LOOPBACK_HOST}:{bound_port}/callback"
     ManifestCallbackHandler.callback_url = active_callback_url
-    # Fail fast before opening browser if configuration would produce an invalid manifest URL.
     get_manifest(github_domain, app_name=chosen_name, redirect_url=active_callback_url)
     launch_url = f"http://{LOOPBACK_HOST}:{bound_port}/?s={ManifestCallbackHandler.session_nonce[:8]}"
 
@@ -581,7 +578,7 @@ def run_wizard(
     print("Starting local listener and opening your browser...")
     print("(If an older http://localhost:8989 tab is open in your browser, close it.)")
 
-    # Wait for the single callback request (short timeout + shutdown flag ensures prompt Ctrl+C)
+    # Poll with a short timeout so Ctrl+C interrupts wait promptly
     register_closable(server)
     try:
         if open_browser:
@@ -604,9 +601,7 @@ def run_wizard(
     pem_key = result.get("pem", "")
     install_url = f"{github_domain}/organizations/{clean_org}/settings/apps/{app_slug}/installations"
 
-    # 1. Automatically save private key to ~/.repo360/secrets/
     key_path = save_private_key(pem_key, app_slug=app_slug)
-    # Also save a copy to ./secrets/ if local workspace exists
     try:
         local_secrets = os.path.join(os.getcwd(), "secrets")
         if os.path.isdir(local_secrets) or os.path.isfile(".env"):
@@ -622,7 +617,6 @@ def run_wizard(
     print(f"  Private Key:      Saved to {key_path}")
     print("-" * 65)
 
-    # 2. App Installation & Auto-fetch Installation ID
     print("\n" + "=" * 65)
     print("  STEP 2: INSTALL APP ON YOUR ORGANIZATION")
     print("=" * 65)
@@ -686,10 +680,8 @@ def run_wizard(
         if manual_in.isdigit():
             installation_id = int(manual_in)
 
-    # 3. Interactive AI Remediation Provider Selection
     llm_provider, llm_model, llm_api_key, llm_enabled = _prompt_ai_configuration()
 
-    # 4. Persist credentials securely
     cfg_path = save_user_credentials(
         app_id=app_id,
         private_key_path=key_path,

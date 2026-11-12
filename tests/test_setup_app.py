@@ -10,10 +10,8 @@ def test_resolve_api_base_url_domains() -> None:
     """Test REST API base URL resolution across GitHub.com, ghe.com, and GHES."""
     assert resolve_api_base_url("https://github.com") == "https://api.github.com"
     assert resolve_api_base_url("github.com") == "https://api.github.com"
-    # ghe.com data residency
     assert resolve_api_base_url("https://octocorp.ghe.com") == "https://api.octocorp.ghe.com"
     assert resolve_api_base_url("octocorp.ghe.com") == "https://api.octocorp.ghe.com"
-    # GHES on-premises
     assert resolve_api_base_url("https://ghe.internal.net") == "https://ghe.internal.net/api/v3"
     assert resolve_api_base_url("ghe.internal.net") == "https://ghe.internal.net/api/v3"
 
@@ -97,12 +95,10 @@ def test_manifest_callback_handler_validates_state_and_exchanges_code() -> None:
     ManifestCallbackHandler.session_nonce = "expected_nonce"
     ManifestCallbackHandler.conversion_result = None
 
-    # Mismatched state must return 403
     handler.path = "/callback?code=temp_code&state=wrong_nonce"
     handler.do_GET()
     handler.send_response.assert_called_with(403)
 
-    # Matching state exchanges code via POST /app-manifests/{code}/conversions
     handler.path = "/callback?code=temp_code&state=expected_nonce"
     mock_resp = MagicMock()
     mock_resp.json.return_value = {"id": 12345, "slug": "repo360-test-org", "pem": "PEM"}
@@ -128,7 +124,7 @@ def test_setup_app_main_keyboard_interrupt(capsys) -> None:
     assert captured.out == ""
     assert captured.err == ""
 
-    # Simulate Windows Ctrl+C on the interactive Enter GitHub Domain prompt (ReadConsoleW -> EOFError)
+    # Windows ReadConsoleW raises EOFError on Ctrl+C
     responses = iter(["1", "my-org"])
 
     def _mock_domain_ctrlc(prompt: str = "") -> str:
@@ -226,7 +222,6 @@ def test_setup_main_interactive_mode_routing_and_cli_flags(monkeypatch) -> None:
     """Verify setup routes between auto wizard and manual flow via prompt or --mode flag."""
     from src.setup_app import main as setup_main
 
-    # 1. Interactive choice '1' (after invalid 'x') triggers auto wizard
     auto_inputs = iter(["x", "1", "my-org", "https://ghe.internal"])
     monkeypatch.setattr("builtins.input", lambda _p="": next(auto_inputs))
     monkeypatch.setattr("sys.argv", ["repo360"])
@@ -239,7 +234,6 @@ def test_setup_main_interactive_mode_routing_and_cli_flags(monkeypatch) -> None:
             app_name="",
         )
 
-    # 2. Interactive choice '2' routes to manual setup without requiring org upfront
     manual_inputs = iter(["2"])
     monkeypatch.setattr("builtins.input", lambda _p="": next(manual_inputs))
     monkeypatch.setattr("sys.argv", ["repo360"])
@@ -248,7 +242,6 @@ def test_setup_main_interactive_mode_routing_and_cli_flags(monkeypatch) -> None:
         assert rc == 0
         mock_manual.assert_called_once_with(github_domain="", org_name="")
 
-    # 3. Explicit --mode auto skips mode prompt
     monkeypatch.setattr("sys.argv", ["repo360", "--mode", "auto", "--org", "acme"])
     with patch("src.setup_app.run_wizard") as mock_wizard:
         rc = setup_main()
@@ -259,7 +252,6 @@ def test_setup_main_interactive_mode_routing_and_cli_flags(monkeypatch) -> None:
             app_name="",
         )
 
-    # 4. Explicit --mode manual skips mode prompt and preserves --domain/--org
     monkeypatch.setattr("sys.argv", ["repo360", "--mode", "manual", "--org", "acme", "--domain", "https://octo.ghe.com"])
     with patch("src.setup_app.run_manual_setup", return_value=0) as mock_manual:
         rc = setup_main()
@@ -282,19 +274,18 @@ def test_run_manual_setup_interactive_entry_and_template_mode(tmp_path, monkeypa
     pem_file = tmp_path / "test-app.private-key.pem"
     pem_file.write_text("-----BEGIN RSA PRIVATE KEY-----\nTEST\n-----END RSA PRIVATE KEY-----\n", encoding="utf-8")
 
-    # Flow A: Option 1 (enter credentials interactively with validation retries + installation auto-discovery)
     inputs_a = iter([
-        "https://octocorp.ghe.com",  # GitHub Domain
-        "1",                         # Enter credentials now
-        "abc",                       # Invalid App ID -> retry
-        "987654",                    # Valid App ID
-        str(tmp_path / "missing.pem"),  # Missing PEM -> retry
-        str(bad_file),               # Invalid PEM contents -> retry
-        str(pem_file),               # Valid PEM file
-        "",                          # Blank Installation ID -> auto-discover
-        "2",                         # OpenAI
-        "sk-test-key",               # OPENAI_API_KEY
-        "gpt-4o-mini",               # Custom model
+        "https://octocorp.ghe.com",
+        "1",
+        "abc",
+        "987654",
+        str(tmp_path / "missing.pem"),
+        str(bad_file),
+        str(pem_file),
+        "",
+        "2",
+        "sk-test-key",
+        "gpt-4o-mini",
     ])
     monkeypatch.setattr("builtins.input", lambda _p="": next(inputs_a))
     with patch("src.setup_app.GitHubAppAuth") as mock_auth_cls:
@@ -319,23 +310,21 @@ def test_run_manual_setup_interactive_entry_and_template_mode(tmp_path, monkeypa
     assert "REPO360_APP_INSTALLATION_ID=555001" in env_text
     assert "OPENAI_API_KEY=sk-test-key" in env_text
 
-    # Flow B: Option 2 (template mode preserves existing config unless confirmed)
     inputs_preserve = iter([
-        "",   # Default domain https://github.com
-        "2",  # Template option
-        "n",  # Decline overwriting existing valid config
+        "",
+        "2",
+        "n",
     ])
     monkeypatch.setattr("builtins.input", lambda _p="": next(inputs_preserve))
     assert run_manual_setup() == 0
     preserved = json.loads((cfg_dir / "config.json").read_text(encoding="utf-8"))
     assert preserved["github"]["app_id"] == 987654
 
-    # Flow C: Option 2 with confirmed overwrite writes clean blank template
     inputs_template = iter([
-        "",   # Default domain https://github.com
-        "2",  # Template option
-        "y",  # Confirm overwrite
-        "4",  # Disable AI
+        "",
+        "2",
+        "y",
+        "4",
     ])
     monkeypatch.setattr("builtins.input", lambda _p="": next(inputs_template))
     assert run_manual_setup() == 0

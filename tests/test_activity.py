@@ -81,13 +81,13 @@ def test_build_rows_and_org_rows():
         org_team_complete={"acme-org": True},
     )
 
-    assert len(user_rows) == 2  # alice (active) + bob (inactive member)
+    assert len(user_rows) == 2
     alice_row = next(r for r in user_rows if r[1] == "alice")
     bob_row = next(r for r in user_rows if r[1] == "bob")
 
     assert alice_row[2] == "Low"
-    assert alice_row[4] == 1  # Total activities
-    assert alice_row[17] == "Yes"  # Member
+    assert alice_row[4] == 1
+    assert alice_row[17] == "Yes"
     assert alice_row[18] == "backend-team"
     assert len(alice_row) == 19
 
@@ -101,16 +101,15 @@ def test_build_rows_and_org_rows():
     org_rows = build_org_rows(user_rows, results)
     assert len(org_rows) == 1
     assert org_rows[0][0] == "acme-org"
-    assert org_rows[0][1] == 1  # 1 repo
-    assert org_rows[0][2] == 1  # 1 contributor
+    assert org_rows[0][1] == 1
+    assert org_rows[0][2] == 1
 
-    # Test with all_orgs including an empty/dormant org
     multi_org_rows = build_org_rows(user_rows, results, all_orgs=["acme-org", "dormant-org"])
     assert len(multi_org_rows) == 2
     assert multi_org_rows[0][0] == "acme-org"
     assert multi_org_rows[1][0] == "dormant-org"
-    assert multi_org_rows[1][1] == 0  # 0 repos
-    assert multi_org_rows[1][2] == 0  # 0 contributors
+    assert multi_org_rows[1][1] == 0
+    assert multi_org_rows[1][2] == 0
 
 
 def test_write_activity_workbook_and_csv(tmp_path):
@@ -152,7 +151,6 @@ def test_write_activity_workbook_and_csv(tmp_path):
     assert summary["B5"].value == "1.5s"
     assert summary["B5"].alignment.horizontal == "center"
 
-    # Verify Metric names ending in 's' (e.g. Commits, Active Users) stay left-aligned
     for r in range(5, 20):
         val = summary.cell(row=r, column=1).value
         if val in ("Commits", "Active Users", "Low Users", "PR Reviews", "Total Duration"):
@@ -261,26 +259,25 @@ def test_build_management_tables_and_sheets(tmp_path):
     inv_headers, inv_rows = tables["Repository Inventory"]
     assert inv_headers == REPO_INVENTORY_HEADERS
     assert len(inv_rows) == 2
-    # First row should be repo-active (3 total activities > 0)
     assert inv_rows[0][0] == "test-org"
     assert inv_rows[0][1] == "repo-active"
     assert inv_rows[0][2] == "private"
-    assert inv_rows[0][4] == "Yes"  # New in period (created 2026-08-01)
-    assert inv_rows[0][7] == "main"  # Protected branches
-    assert inv_rows[0][8] == "Yes"  # CODEOWNERS present
-    assert inv_rows[0][11] == 3  # Total activities
-    assert inv_rows[0][12] == 2  # Active contributors (alice, bob)
-    assert inv_rows[0][14] == 1  # PRs opened
-    assert inv_rows[0][20] == 80.0  # Merge rate 8/10
-    assert inv_rows[0][21] == 3.0  # Avg review hours (2.5 + 3.5)/2
+    assert inv_rows[0][4] == "Yes"
+    assert inv_rows[0][7] == "main"
+    assert inv_rows[0][8] == "Yes"
+    assert inv_rows[0][11] == 3
+    assert inv_rows[0][12] == 2
+    assert inv_rows[0][14] == 1
+    assert inv_rows[0][20] == 80.0
+    assert inv_rows[0][21] == 3.0
     assert inv_rows[0][23] == "Complete"
 
     top_headers, top_rows = tables["Top Active Repositories"]
     assert top_headers == TOP_REPOS_HEADERS
     assert len(top_rows) == 2
-    assert top_rows[0][1] == 1  # Rank 1
+    assert top_rows[0][1] == 1
     assert top_rows[0][2] == "repo-active"
-    assert top_rows[0][3] == 3  # Total activities
+    assert top_rows[0][3] == 3
 
     kpi_headers, kpi_rows = tables["Management KPIs"]
     assert kpi_headers == MGMT_KPI_HEADERS
@@ -292,7 +289,6 @@ def test_build_management_tables_and_sheets(tmp_path):
     assert "Security & Governance" in categories
     assert "Coverage" in categories
 
-    # Test writing to workbook
     cfg = ActivityConfig(output_dir=str(tmp_path))
     xlsx_path = tmp_path / "activity_with_management.xlsx"
     write_activity_workbook(
@@ -327,12 +323,11 @@ def test_activity_hardened_dormancy_partial_errors_reviews_and_normalization():
         fetch_team_access,
     )
 
-    # 1. IST month boundary for commit_months (2026-10-31 20:00 UTC == 2026-11-01 01:30 IST)
+    # 2026-10-31 20:00 UTC == 2026-11-01 01:30 IST
     boundary_act = Activity()
     boundary_act.add("commits", datetime(2026, 10, 31, 20, 0, tzinfo=timezone.utc))
     assert (2026, 11) in boundary_act.commit_months
 
-    # 2. Case-insensitive org & user login normalization across build_rows & build_org_rows
     end = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
     since_7d = end - timedelta(days=7)
     u_rows, r_rows = build_rows(
@@ -343,14 +338,13 @@ def test_activity_hardened_dormancy_partial_errors_reviews_and_normalization():
         teams_by_user={("acme-org", "ALICE"): {"Platform"}},
         org_team_complete={"acme-org": True},
     )
-    assert len(u_rows) == 2  # Alice merged with member 'alice', plus bob
+    assert len(u_rows) == 2
     alice_r = next(r for r in u_rows if r[1].lower() == "alice")
-    assert alice_r[17] == "Yes"  # Member matched case-insensitively
+    assert alice_r[17] == "Yes"
     assert alice_r[18] == "Platform"
     o_rows = build_org_rows(u_rows, {("Acme-Org", "svc"): {"Alice": boundary_act}}, all_orgs=["acme-org"])
     assert len(o_rows) == 1
 
-    # 3. Dormancy window uses collected_since (30d), plus ruleset detection & 403 -> activity_complete=False
     class _ForbiddenResp:
         status_code = 403
 
@@ -372,7 +366,7 @@ def test_activity_hardened_dormancy_partial_errors_reviews_and_normalization():
             if endpoint.endswith("/commits"):
                 return iter([{
                     "author": {"login": "alice"},
-                    "commit": {"author": {"date": "2026-10-05T10:00:00Z"}},  # 15 days ago (>7d since, <30d rolling!)
+                    "commit": {"author": {"date": "2026-10-05T10:00:00Z"}},  # 15 days ago (>7d since, <30d rolling)
                 }])
             if endpoint.endswith("/issues"):
                 raise _ForbiddenErr("issues forbidden")
@@ -441,15 +435,11 @@ def test_activity_hardened_dormancy_partial_errors_reviews_and_normalization():
         exclude_bots=True,
         cached_metadata=meta_15d,
     )
-    # 15d old commit must be captured into rolling 30d events despite 7d lookback
     assert any(ev[0] == "alice" and ev[1] == "commits" for ev in report.events)
-    # GraphQL paginated review #2 ('carol') via node(id)
     assert ("carol", "reviews", datetime(2026, 10, 18, 10, 0, tzinfo=timezone.utc)) in report.events
     assert any("revCursor" in call for call in client.gql_calls)
-    # Ruleset detected even without legacy branch protection
     assert report.protected == "Yes"
     assert "main (Ruleset)" in report.protected_branches
-    # 403 on issues -> activity_complete MUST be False & Coverage == 'Partial'
     assert report.activity_complete is False
     assert any("Issues: 403 Forbidden" in e for e in report.errors)
 
@@ -461,13 +451,12 @@ def test_activity_hardened_dormancy_partial_errors_reviews_and_normalization():
         organization_status={"acme-org": False},
     )
     inv_row = mgmt["Repository Inventory"][1][0]
-    assert inv_row[11] == "N/A"  # Total Activities N/A when incomplete
+    assert inv_row[11] == "N/A"
     assert inv_row[23] == "Partial"
     kpi_rows = mgmt["Management KPIs"][1]
     rolling_30 = next(r for r in kpi_rows if r[2] == "Rolling 30-day active users")
-    assert rolling_30[3] >= 3  # alice (15d commit + PR), bob (review), carol (paginated review)
+    assert rolling_30[3] >= 3
 
-    # 4. fetch_team_access marks incomplete when any team member call fails
     teams_by_user, team_complete = fetch_team_access(client, ["acme-org"], exclude_bots=True)
     assert team_complete["acme-org"] is False
     assert "sec" in teams_by_user[("acme-org", "alice")]

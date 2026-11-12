@@ -246,7 +246,7 @@ def run_interruptible_subprocess(
         note_manual_interrupt()
         raise KeyboardInterrupt
 
-    # Preserve full unit-test compatibility when tests monkeypatch subprocess.run
+    # Keep subprocess.run patchable by tests
     if subprocess.run is not _ORIG_SUBPROCESS_RUN:
         kwargs: dict[str, Any] = {
             "capture_output": capture_output,
@@ -268,7 +268,7 @@ def run_interruptible_subprocess(
         "text": text,
     }
     if text:
-        # Force UTF-8 replacement decoding on Windows so UTF-8 tool output never raises UnicodeDecodeError
+        # Decode child output as UTF-8 so Windows cp1252 defaults do not crash
         popen_kwargs["encoding"] = "utf-8"
         popen_kwargs["errors"] = "replace"
     if env is not None:
@@ -414,8 +414,7 @@ class InterruptController:
                 self._expect_python_signal = bool(from_os_thread)
 
         if already_triggered:
-            # Ignore dual OS/Python signal delivery within 150ms for the same keystroke;
-            # a genuine second Ctrl+C exits immediately.
+            # Ignore duplicate OS/Python signal for one keystroke; a second Ctrl+C exits immediately
             if elapsed_since_first >= _DOUBLE_SIGNAL_DEBOUNCE_SECONDS:
                 self.exit_fn(exit_code)
             return
@@ -495,7 +494,6 @@ class InterruptController:
                 if sig is not None:
                     signal.signal(sig, self.handle_python_signal)
         except (ValueError, OSError):
-            # signal.signal can only be called from the main interpreter thread
             pass
 
         self._install_windows_console_handler()

@@ -73,7 +73,6 @@ inputs:
     description: "Lookback window in days for user activity and runner metrics"
     required: false
     default: "90"
-  # Legacy backward-compatibility inputs
   gemini_api_key:
     description: "Legacy alias for ai_api_key"
     required: false

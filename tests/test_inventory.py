@@ -71,7 +71,6 @@ def test_discover_app_repositories_direct():
         {"name": f"{org}-repo-2", "archived": True, "fork": False},
     ]
 
-    # Without filter, exclude archived
     targets, meta = discover_app_repositories(
         auth=mock_auth,
         client=mock_client,
@@ -81,7 +80,6 @@ def test_discover_app_repositories_direct():
     assert ("fintech-core", "fintech-core-repo-1") in targets
     assert ("data-platform", "data-platform-repo-1") in targets
 
-    # With org filter
     targets_filtered, _ = discover_app_repositories(
         auth=mock_auth,
         client=mock_client,
@@ -103,14 +101,11 @@ def test_discover_app_organizations():
         {"id": 102, "account": {"login": "DefaultOrg24"}},
     ]
 
-    # Discover all
     orgs = discover_app_organizations(auth=mock_auth)
     assert orgs == ["defaultorg24", "testorg-10"] or orgs == ["DefaultOrg24", "TestOrg-10"]
 
-    # Filtered
     filtered = discover_app_organizations(auth=mock_auth, org_filter=["TestOrg-10"])
     assert filtered == ["TestOrg-10"]
 
-    # None found
     none_found = discover_app_organizations(auth=mock_auth, org_filter=["non-existent"])
     assert none_found == []

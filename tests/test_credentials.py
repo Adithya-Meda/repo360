@@ -81,7 +81,6 @@ def test_resolve_runtime_credentials_env_priority() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         os.environ["REPO360_CONFIG_DIR"] = temp_dir
         try:
-            # 1. Save baseline config
             save_user_credentials(
                 app_id=111111,
                 private_key_path="dummy.pem",
@@ -90,7 +89,6 @@ def test_resolve_runtime_credentials_env_priority() -> None:
                 llm_api_key="key-from-config",
             )
 
-            # 2. Override via environment variables
             os.environ["REPO360_APP_ID"] = "999999"
             os.environ["REPO360_APP_INSTALLATION_ID"] = "888888"
             os.environ["GEMINI_API_KEY"] = "key-from-env"
@@ -118,7 +116,6 @@ def test_resolve_runtime_credentials_unified_ai_key() -> None:
             assert creds["llm_provider"] == "openai"
             assert creds["llm_model"] == "gpt-4o"
 
-            # Auto-detect anthropic
             os.environ["AI_MODEL"] = "claude-3-5-sonnet-20241022"
             creds_claude = resolve_runtime_credentials()
             assert creds_claude["llm_provider"] == "anthropic"

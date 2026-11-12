@@ -61,7 +61,7 @@ class BaseReporter(ABC):
         """
         if isinstance(value, str):
             stripped = value.lstrip(" \t\r\n")
-            # A standalone hyphen is an inert placeholder, whereas "-expr" can invoke formulas.
+            # Standalone "-" is safe as a placeholder; "-expr" can trigger formulas
             if stripped == "-":
                 return value
             if stripped.startswith(("=", "+", "-", "@", "\t", "\r")):
@@ -148,7 +148,6 @@ class BaseReporter(ABC):
             ]
             ordered = sorted(filtered, key=str.casefold)
         elif tokens:
-            # Prefer a single canonical placeholder rather than combining both
             ordered = [tokens[0]]
         else:
             return fallback
@@ -195,7 +194,7 @@ class BaseReporter(ABC):
             baseline_code = r.extra_details.get("baseline_remediation")
             is_ai_item = cls.is_ai_result(r)
 
-            # Fleet_Playbook keeps the generic canonical baseline so repo-specific AI blocks aren't duplicated across tabs
+            # Use generic baseline here so repo-specific AI snippets stay on the AI tab
             canonical_candidate = baseline_code or (
                 r.remediation_snippet_after if not is_ai_item else ""
             )

@@ -108,7 +108,6 @@ def run_finops_cli(argv: Optional[List[str]] = None) -> int:
     ai_enabled = resolve_ai_cli_flag(args, parser)
     start_time = time.time()
 
-    # 1. Resolve Credentials
     creds = resolve_runtime_credentials()
     app_id = creds.get("app_id")
     private_key = creds.get("private_key")
@@ -119,7 +118,6 @@ def run_finops_cli(argv: Optional[List[str]] = None) -> int:
         print("Run 'repo360 setup' or configure REPO360_APP_ID and REPO360_APP_PRIVATE_KEY.\n")
         return 1
 
-    # Initialize AI Engine (Multi-provider: Gemini, OpenAI, Claude)
     ai_engine = init_ai_engine(enable_ai=ai_enabled, creds=creds, log=logger)
 
     cfg = FinOpsConfig(
@@ -138,7 +136,6 @@ def run_finops_cli(argv: Optional[List[str]] = None) -> int:
     now = datetime.now(timezone.utc)
     stamp = now.strftime("%Y%m%d_%H%M%S")
 
-    # 2. Resolve Repositories (Auto-discovery directly from GitHub App)
     org_filter = [o.strip() for o in args.org.split(",") if o.strip()] if args.org else None
     discovered_orgs = discover_app_organizations(auth=auth, org_filter=org_filter)
     if not discovered_orgs:
@@ -161,7 +158,6 @@ def run_finops_cli(argv: Optional[List[str]] = None) -> int:
         print("\033[91m[FAIL] No repositories or organizations discovered to analyze.\033[0m\n")
         return 1
 
-    # Proactively verify packages permissions
     for org_name in orgs:
         perms = auth.get_installation_permissions(org_name)
         if perms and perms.get("packages") not in ("read", "write"):

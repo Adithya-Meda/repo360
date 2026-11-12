@@ -24,38 +24,32 @@ from src.dora.reporter import write_dora_workbook
 
 
 def test_dora_tier_classifiers():
-    # Deployment Frequency
     assert get_df_tier(10.0) == "Elite"
     assert get_df_tier(3.0) == "High"
     assert get_df_tier(0.5) == "Medium"
     assert get_df_tier(0.1) == "Low"
 
-    # Lead Time for Changes
     assert get_lttc_tier(0.5) == "Elite"
     assert get_lttc_tier(48.0) == "High"
     assert get_lttc_tier(300.0) == "Medium"
     assert get_lttc_tier(800.0) == "Low"
     assert get_lttc_tier(None) == "N/A"
 
-    # Change Failure Rate (DORA 2023/2024: <=5% Elite, <=10% High, <=20% Medium, >20% Low)
     assert get_cfr_tier(2.0) == "Elite"
     assert get_cfr_tier(10.0) == "High"
     assert get_cfr_tier(15.0) == "Medium"
     assert get_cfr_tier(25.0) == "Low"
     assert get_cfr_tier(40.0) == "Low"
 
-    # MTTR
     assert get_mttr_tier(0.5) == "Elite"
     assert get_mttr_tier(12.0) == "High"
     assert get_mttr_tier(72.0) == "Medium"
     assert get_mttr_tier(200.0) == "Low"
     assert get_mttr_tier(None) == "N/A"
 
-    # Composite Tier & Guardrails
     assert compute_composite_tier(["Elite", "Elite", "High", "Elite"]) == "Elite"
     assert compute_composite_tier(["High", "High", "Medium", "High"]) == "High"
     assert compute_composite_tier(["Low", "Low", "Medium", "Low"]) == "Low"
-    # Low throughput or missing LTTC without Elite cadence must cap High/Elite at Medium
     assert compute_composite_tier(
         ["Low", "Elite", "Elite", "Elite"], df_tier="Low", lttc_tier="Elite"
     ) == "Medium"
@@ -109,7 +103,6 @@ def test_repo_dora_metrics_aggregation():
     now = datetime.now(timezone.utc)
     m = RepoDORAMetrics(org="fintech-org", repo="payment-gateway")
 
-    # Add 10 deployments: 9 success, 1 failure
     for i in range(9):
         m.deployments.append(
             DeploymentRecord(
@@ -149,7 +142,7 @@ def test_repo_dora_metrics_aggregation():
     assert m.successful_deploys == 9
     assert m.failed_deploys == 1
     assert m.change_failure_rate_pct == 10.0
-    assert m.deployment_frequency_per_week(70) == 0.9  # 9 successful deploys / 10 weeks
+    assert m.deployment_frequency_per_week(70) == 0.9
     assert m.median_lead_time_hours is not None
     assert m.median_mttr_hours == 48.0
 
@@ -184,13 +177,13 @@ def test_build_dora_rows():
     assert len(repo_rows) == 1
     assert repo_rows[0][0] == "fintech-org"
     assert repo_rows[0][1] == "auth-service"
-    assert repo_rows[0][3] == 1  # Total deploys
-    assert repo_rows[0][4] == 1  # Successful
+    assert repo_rows[0][3] == 1
+    assert repo_rows[0][4] == 1
 
     assert len(org_rows) == 1
     assert org_rows[0][0] == "fintech-org"
-    assert org_rows[0][2] == 1  # Active deploy repos
-    assert org_rows[0][4] == 1  # Total deploys
+    assert org_rows[0][2] == 1
+    assert org_rows[0][4] == 1
 
     assert len(deployment_rows) == 1
     assert deployment_rows[0][2] == "Release"
@@ -300,12 +293,11 @@ def test_inactive_repos_are_na_and_stability_guardrails():
     assert repo_rows[1][10] == "N/A"
     assert repo_rows[1][17] == "N/A"
 
-    # Org aggregation excludes inactive docs-only repo from active DF/tiers
-    assert org_rows[0][1] == 2  # Repositories Scanned
-    assert org_rows[0][2] == 1  # Active Deploy Repos
+    assert org_rows[0][1] == 2
+    assert org_rows[0][2] == 1
     assert org_rows[0][3] == "Elite"
-    assert org_rows[0][5] == 15.0  # Median active repo /week
-    assert org_rows[0][15] == 1  # Inactive Repos
+    assert org_rows[0][5] == 15.0
+    assert org_rows[0][15] == 1
 
 
 def test_workflow_filtering_ignores_ci_pr_and_non_prod_branches():
@@ -474,7 +466,7 @@ def test_profile_repo_dora_prod_env_filter_and_commit_compare_lead_time():
     assert all(d.environment == "production" for d in metrics.deployments)
     assert metrics.deployments[0].lead_time_hours == 4.0
     assert metrics.deployments[0].lead_time_source == "commit_timestamp"
-    assert metrics.deployments[1].lead_time_hours == 6.0  # median of 8.0h and 4.0h
+    assert metrics.deployments[1].lead_time_hours == 6.0
     assert metrics.deployments[1].lead_time_source == "commit_to_deploy"
     assert metrics.median_lead_time_hours == 5.0
     assert metrics.get_tiers(30)[2] == "Elite"
@@ -533,12 +525,11 @@ def test_stream_scoped_mttr_open_incidents_and_native_issue_pr_signals():
     assert len(resolved) == 1
     assert resolved[0].failed_event == "Deployment api-1"
     assert resolved[0].restored_event == "Deployment api-2"
-    assert resolved[0].mttr_hours == 4.0  # NOT 1.0h from Deploy Web stream
+    assert resolved[0].mttr_hours == 4.0
     assert len(open_incs) == 1
     assert open_incs[0].failed_event == "Deployment web-2"
     assert open_incs[0].mttr_hours is None
 
-    # Link rework PR & overlapping incident issue after web-1 SUCCESS without double-counting CFR
     metrics = RepoDORAMetrics(org="acme", repo="platform", deployments=events, incidents=incidents)
     rework_prs = [
         {"number": 44, "title": "hotfix: fix api session", "merge_commit_sha": "sha-api-2", "merged_at": now - timedelta(hours=7)},
@@ -552,7 +543,7 @@ def test_stream_scoped_mttr_open_incidents_and_native_issue_pr_signals():
         }
     ]
     _apply_native_incident_and_rework_signals(metrics, rework_prs, incident_issues)
-    # Failure on api-1 (T-10h) is already within 48h window of rework PR (T-7h) and issue (T-8h), so no double-count
+    # Failure on api-1 (T-10h) overlaps rework PR and issue within 48h window
     assert metrics.deployments[2].is_rework is True
     assert metrics.rework_deploys == 1
     assert metrics.unlinked_prod_incidents == 0
@@ -563,7 +554,6 @@ def test_stream_scoped_mttr_open_incidents_and_native_issue_pr_signals():
 def test_org_median_df_dedup_permission_gap_and_workbook(tmp_path: Path):
     now = datetime(2026, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
 
-    # Deduplicate Release & matching workflow run on tag within 30 minutes
     rel = DeploymentRecord(
         event_type="Release",
         event_id="v2.0.0",
@@ -586,7 +576,6 @@ def test_org_median_df_dedup_permission_gap_and_workbook(tmp_path: Path):
     assert len(deduped) == 1
     assert deduped[0].event_type == "Release"
 
-    # Permission gap 403 detection
     mock_client = MagicMock()
     mock_client.graphql.return_value = {}
     resp_403 = requests.Response()
@@ -597,7 +586,6 @@ def test_org_median_df_dedup_permission_gap_and_workbook(tmp_path: Path):
     assert deps == []
     assert dep_status.get("deployments_forbidden") is True
 
-    # Org-level median DF across active repos (14/wk & 2/wk -> median 8.0/wk), ignoring 0-deploy repo
     r_fast = RepoDORAMetrics(
         org="acme",
         repo="fast",
@@ -620,18 +608,18 @@ def test_org_median_df_dedup_permission_gap_and_workbook(tmp_path: Path):
     r_gap = RepoDORAMetrics(org="acme", repo="locked-repo", signal_mode="Permission Gap (deployments:read)", deployments_api_forbidden=True)
 
     repo_rows, org_rows, dep_rows, rec_rows = build_dora_rows([r_fast, r_slow, r_gap], ["acme"], window_days=7)
-    assert org_rows[0][2] == 2  # Active Deploy Repos
-    assert org_rows[0][4] == 16  # Total Deployments
-    assert org_rows[0][5] == 7.5  # Median of 14.0 (14 success/wk) and 1.0 (1 success/wk)
-    assert org_rows[0][15] == 1  # Inactive Repos
-    assert org_rows[0][16] == 1  # Open Incidents
+    assert org_rows[0][2] == 2
+    assert org_rows[0][4] == 16
+    assert org_rows[0][5] == 7.5
+    assert org_rows[0][15] == 1
+    assert org_rows[0][16] == 1
 
     fleet = compute_fleet_dora_summary(repo_rows, lookback_days=7)
     assert fleet["active_repos"] == 2
     assert fleet["inactive_repos"] == 1
     assert fleet["permission_gap_repos"] == 1
     assert fleet["open_incidents"] == 1
-    assert fleet["total_df_weekly"] == 15.0  # 15 successful deploys / 1 week (excludes failed s1)
+    assert fleet["total_df_weekly"] == 15.0
 
     out_file = tmp_path / "dora_compliance.xlsx"
     cfg = DORAConfig(output_dir=str(tmp_path), lookback_days=7)
@@ -700,8 +688,7 @@ def test_dora_excludes_in_progress_and_inactive_and_skips_failed_lttc():
     def _ts(dt: datetime) -> str:
         return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    # 1. GraphQL statuses history: superseded INACTIVE with earlier SUCCESS stays SUCCESS at original time;
-    # INACTIVE with no prior SUCCESS stays INACTIVE; empty statuses stays IN_PROGRESS.
+    # Superseded INACTIVE with prior SUCCESS stays SUCCESS; empty statuses stay IN_PROGRESS
     superseded_state, superseded_ts = _resolve_deployment_status(
         [
             {"state": "SUCCESS", "createdAt": _ts(now - timedelta(hours=10))},
@@ -720,8 +707,6 @@ def test_dora_excludes_in_progress_and_inactive_and_skips_failed_lttc():
     assert never_live_state == "INACTIVE"
     assert _resolve_deployment_status([])[0] == "IN_PROGRESS"
 
-    # 2. Failed retries on 70-day-old commits + rapid IN_PROGRESS bursts yield 0 successful deploys,
-    # 100% CFR, DF=0.0, LTTC=N/A (no 1600+h or false 0.04h Elite score), and overall Low tier.
     stale_commit = _ts(now - timedelta(days=70))
     fresh_commit = _ts(now - timedelta(minutes=2))
     nodes = [
@@ -771,7 +756,7 @@ def test_dora_excludes_in_progress_and_inactive_and_skips_failed_lttc():
     )
 
     assert metrics.in_progress_deploys == 4
-    assert metrics.total_deploys == 3  # Only completed outcomes (FAILURE)
+    assert metrics.total_deploys == 3
     assert metrics.successful_deploys == 0
     assert metrics.failed_deploys == 3
     assert metrics.deployment_frequency_per_week(90) == 0.0
@@ -792,8 +777,7 @@ def test_dora_pre_window_baseline_and_same_sha_redeploy():
     def _ts(dt: datetime) -> str:
         return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    # Oldest node is pre-window (< since) superseded INACTIVE with prior SUCCESS; provides baseline_refs!
-    # Node 1 deploys new sha-new1; Node 2 re-runs exact same sha-new1 48h later (no_code_change).
+    # Oldest pre-window node provides baseline_refs; Node 2 re-runs same sha-new1 48h later (no_code_change)
     nodes = [
         {
             "databaseId": 3,
@@ -862,12 +846,10 @@ def test_dora_pre_window_baseline_and_same_sha_redeploy():
     assert len(metrics.deployments) == 2
     assert metrics.deployments[0].lead_time_hours == 4.0
     assert metrics.deployments[0].lead_time_source == "commit_to_deploy"
-    # Second deploy reused sha-new1 -> no fake 48h/68h fallback
     assert metrics.deployments[1].lead_time_hours is None
     assert metrics.deployments[1].lead_time_source == "no_code_change"
     assert metrics.median_lead_time_hours == 4.0
 
-    # Compare returning zero commits / identical branch state also resolves to no_code_change
     zero_diff_client = MagicMock()
     zero_diff_client.get.return_value = {"status": "identical", "ahead_by": 0, "commits": []}
     ev_identical = DeploymentRecord("Release", "v1.0.3", "v1.0.3", "production", "SUCCESS", "main", now, commit_sha="v1.0.3")
@@ -915,10 +897,9 @@ def test_fleet_and_single_org_summaries_match_and_track_incomplete_deploys(tmp_p
         recovery_rows=rec_rows,
     )
 
-    # 1-org Fleet LTTC and MTTR match Org LTTC and MTTR identically (event-level medians)
     assert fleet["median_lttc_hours"] == org_rows[0][7] == 6.0
     assert fleet["median_mttr_hours"] == org_rows[0][11] == 2.0
-    assert fleet["total_deploys"] == 11  # 1 + (9 success + 1 failure); IN_PROGRESS excluded
+    assert fleet["total_deploys"] == 11
     assert fleet["total_successful"] == 10
     assert fleet["total_failed_deploys"] == 1
     assert fleet["incomplete_deploys"] == 1
@@ -943,7 +924,6 @@ def test_fleet_and_single_org_summaries_match_and_track_incomplete_deploys(tmp_p
 
 
 def test_composite_tier_enterprise_guardrails():
-    # High-performing delivery still caps at Medium if MTTR is Low (>168h)
     assert (
         compute_composite_tier(
             ["Elite", "Elite", "Elite", "Low"],
@@ -954,7 +934,6 @@ def test_composite_tier_enterprise_guardrails():
         )
         == "Medium"
     )
-    # Open unresolved incident without prior MTTR history caps at Medium
     assert (
         compute_composite_tier(
             ["Elite", "Elite", "Elite", "N/A"],
@@ -966,7 +945,6 @@ def test_composite_tier_enterprise_guardrails():
         )
         == "Medium"
     )
-    # Zero value-delivering code changes (all no-op rebuilds) caps at Medium
     assert (
         compute_composite_tier(
             ["Elite", "Elite", "Elite", "Elite"],
@@ -978,7 +956,6 @@ def test_composite_tier_enterprise_guardrails():
         )
         == "Medium"
     )
-    # Sparse 1-2 deployment sample over multi-week window caps at Medium
     assert (
         compute_composite_tier(
             ["Elite", "Elite", "Elite", "Elite"],
@@ -992,7 +969,6 @@ def test_composite_tier_enterprise_guardrails():
         )
         == "Medium"
     )
-    # Single-week window (<14 days) with 2 deploys is not penalized
     assert (
         compute_composite_tier(
             ["High", "Elite", "Elite", "Elite"],
@@ -1011,7 +987,6 @@ def test_composite_tier_enterprise_guardrails():
 def test_no_op_rebuilds_retry_collapse_and_stalled_deploys(tmp_path: Path):
     now = datetime(2026, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
 
-    # Repo A: 2 new-code SUCCESS + 8 no-op rebuilds + 3 consecutive same-SHA failures + 1 recovery SUCCESS
     deploys_a = [
         DeploymentRecord("Deployment", "c1", "prod", "production", "SUCCESS", "main", now - timedelta(days=20), lead_time_hours=4.0, commit_sha="sha-a1", lead_time_source="commit_to_deploy", completed_at=now - timedelta(days=20)),
         DeploymentRecord("Deployment", "c2", "prod", "production", "SUCCESS", "main", now - timedelta(days=15), lead_time_hours=6.0, commit_sha="sha-a2", lead_time_source="pr_to_deploy", completed_at=now - timedelta(days=15)),
@@ -1042,7 +1017,6 @@ def test_no_op_rebuilds_retry_collapse_and_stalled_deploys(tmp_path: Path):
     assert repo_a.deployment_frequency_per_week(90) == round(3 / (90.0 / 7.0), 2)
     assert repo_a.lttc_coverage_pct == 100.0
 
-    # Distinct SHAs failing consecutively must NOT be collapsed
     distinct_fail_repo = RepoDORAMetrics(
         org="acme",
         repo="distinct-fails",
@@ -1055,7 +1029,6 @@ def test_no_op_rebuilds_retry_collapse_and_stalled_deploys(tmp_path: Path):
     assert distinct_fail_repo.cfr_denominator == 2
     assert distinct_fail_repo.effective_failed_changes == 2
 
-    # Repo B: exclusively no-op rebuilds + 1 stalled deploy (>24h IN_PROGRESS)
     repo_b = RepoDORAMetrics(
         org="acme",
         repo="cron-only",
@@ -1069,7 +1042,7 @@ def test_no_op_rebuilds_retry_collapse_and_stalled_deploys(tmp_path: Path):
     )
     assert repo_b.code_change_deploys == 0
     assert repo_b.deployment_frequency_per_week(90) == 0.0
-    assert repo_b.get_tiers(90)[0] == "Medium"  # Zero real code changes cannot be Elite/High
+    assert repo_b.get_tiers(90)[0] == "Medium"
 
     repo_rows, org_rows, dep_rows, rec_rows = build_dora_rows([repo_a, repo_b], ["acme"], window_days=90)
     assert repo_rows[0][21] == 3
@@ -1078,14 +1051,14 @@ def test_no_op_rebuilds_retry_collapse_and_stalled_deploys(tmp_path: Path):
     assert repo_rows[0][25] == 1
     assert repo_rows[0][27] == 2
     assert "Only same-SHA/zero-diff rebuilds" in repo_rows[1][14]
-    assert dep_rows[-1][12] == "Pending"  # Completed / Updated (IST) column on IN_PROGRESS row
+    assert dep_rows[-1][12] == "Pending"
 
     fleet = compute_fleet_dora_summary(repo_rows, 90, deployment_rows=dep_rows, recovery_rows=rec_rows)
     assert fleet["code_change_deploys"] == 3
     assert fleet["no_op_deploys"] == 19
     assert fleet["collapsed_retries"] == 2
     assert fleet["stalled_deploys"] == 1
-    assert fleet["cfr_denominator"] == 23  # 25 total - 2 retries
+    assert fleet["cfr_denominator"] == 23
     assert fleet["effective_failed"] == 1
     assert fleet["cfr_overall"] == round((1 / 23) * 100, 2)
     assert fleet["pr_lttc_count"] == 1
@@ -1132,14 +1105,12 @@ def test_squash_merge_single_commit_pr_lead_time_and_url_quoting():
     def _fake_get(org, endpoint, params=None):
         seen_endpoints.append(endpoint)
         if endpoint == "/repos/acme/squash-app/compare/release%2Fv1.0...release%2Fv1.1":
-            # Single squashed commit merged 6 minutes before deploy
             return {
                 "commits": [
                     {"commit": {"author": {"date": _ts(now - timedelta(minutes=6))}, "message": "feat: big PR (#42)"}}
                 ]
             }
         if endpoint == "/repos/acme/squash-app/commits/release%2Fv1.1/pulls":
-            # Underlying PR was opened 18 hours before deploy
             return [{"created_at": _ts(now - timedelta(hours=18)), "title": "feat: big PR", "head": {"ref": "feat/big"}}]
         return []
 

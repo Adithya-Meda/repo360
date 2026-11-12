@@ -36,7 +36,7 @@ def test_artifact_record_properties():
     art_default = ArtifactRecord(
         id=1,
         name="build-artifacts",
-        size_in_bytes=104857600,  # 100 MB
+        size_in_bytes=104857600,
         created_at=now,
         expires_at=now + timedelta(days=90),
         expired=False,
@@ -49,7 +49,7 @@ def test_artifact_record_properties():
     art_custom = ArtifactRecord(
         id=2,
         name="test-reports",
-        size_in_bytes=10485760,  # 10 MB
+        size_in_bytes=10485760,
         created_at=now,
         expires_at=now + timedelta(days=7),
         expired=False,
@@ -64,7 +64,7 @@ def test_cache_record_stale():
     fresh_cache = CacheRecord(
         id=10,
         key="npm-cache-v1",
-        size_in_bytes=52428800,  # 50 MB
+        size_in_bytes=52428800,
         created_at=now - timedelta(days=5),
         last_accessed_at=now - timedelta(days=2),
     )
@@ -74,7 +74,7 @@ def test_cache_record_stale():
     stale_cache = CacheRecord(
         id=11,
         key="pip-cache-old",
-        size_in_bytes=104857600,  # 100 MB
+        size_in_bytes=104857600,
         created_at=now - timedelta(days=60),
         last_accessed_at=now - timedelta(days=40),
     )
@@ -87,15 +87,14 @@ def test_repo_storage_profile_optimizations():
         org="fintech-org",
         repo="payments-api",
         visibility="private",
-        disk_size_kb=512000,  # 500 MB
+        disk_size_kb=512000,
     )
-    # Add 12 90-day retention artifacts (exceeds threshold)
     for i in range(12):
         profile.artifacts.append(
             ArtifactRecord(
                 id=i,
                 name=f"artifact-{i}",
-                size_in_bytes=52428800,  # 50 MB
+                size_in_bytes=52428800,
                 created_at=now,
                 expires_at=now + timedelta(days=90),
                 expired=False,
@@ -105,7 +104,7 @@ def test_repo_storage_profile_optimizations():
         CacheRecord(
             id=101,
             key="maven-cache",
-            size_in_bytes=104857600,  # 100 MB
+            size_in_bytes=104857600,
             last_accessed_at=now - timedelta(days=45),
         )
     )
@@ -126,7 +125,7 @@ def test_build_finops_rows():
         org="fintech-org",
         repo="core-service",
         visibility="internal",
-        disk_size_kb=204800,  # 200 MB
+        disk_size_kb=204800,
     )
     profile.artifacts.append(
         ArtifactRecord(
@@ -158,15 +157,15 @@ def test_build_finops_rows():
     assert repo_rows[0][0] == "fintech-org"
     assert repo_rows[0][1] == "core-service"
     assert repo_rows[0][2] == "Internal"
-    assert repo_rows[0][3] == 200.0  # Disk MB
-    assert repo_rows[0][4] == 1  # Active Artifacts
-    assert repo_rows[0][5] == 50.0  # Artifact MB
+    assert repo_rows[0][3] == 200.0
+    assert repo_rows[0][4] == 1
+    assert repo_rows[0][5] == 50.0
 
     assert len(org_rows) == 1
     assert org_rows[0][0] == "fintech-org"
-    assert org_rows[0][1] == 1  # Scanned repos
-    assert org_rows[0][2] == 200.0  # Disk MB
-    assert org_rows[0][4] == 50.0  # Artifact MB
+    assert org_rows[0][1] == 1
+    assert org_rows[0][2] == 200.0
+    assert org_rows[0][4] == 50.0
 
     assert len(artifact_rows) == 1
     assert artifact_rows[0][0] == "fintech-org"
@@ -224,7 +223,6 @@ def test_finops_hardened_packages_pagination_and_reconciliation(tmp_path: Path):
     now = datetime.now(timezone.utc)
     ts_str = now.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    # 1. Paginated GraphQL across 2 pages and multi-version files
     client = MagicMock()
     page1 = {
         "data": {
@@ -283,9 +281,8 @@ def test_finops_hardened_packages_pagination_and_reconciliation(tmp_path: Path):
     pkgs = collect_org_packages(client, "acme")
     assert len(pkgs) == 2
     img_a = next(p for p in pkgs if p.name == "img-a")
-    assert img_a.size_mb == 15.0  # Both versions summed (10 MB + 5 MB)
+    assert img_a.size_mb == 15.0
 
-    # 2. HTTP 403 artifact error propagates cleanly into errors_out
     err_resp = requests.Response()
     err_resp.status_code = 403
     client.paginate_enveloped.side_effect = requests.HTTPError(response=err_resp)
@@ -293,14 +290,13 @@ def test_finops_hardened_packages_pagination_and_reconciliation(tmp_path: Path):
     assert collect_repo_artifacts(client, "acme", "svc-a", errors_out=errs) == []
     assert any("403 Forbidden" in e for e in errs)
 
-    # 3. Repo total_storage_mb includes package_mb, and unlinked org-base reconciles on Executive Summary
     p = RepoStorageProfile(org="acme", repo="svc-a", disk_size_kb=10240, packages=[img_a], errors=errs)
     assert p.package_mb == 15.0
-    assert p.total_storage_mb == 25.0  # 10 MB disk + 15 MB packages
+    assert p.total_storage_mb == 25.0
 
     repo_rows, org_rows, art_rows, cp_rows = build_finops_rows([p], {"acme": pkgs}, ["acme"])
-    assert org_rows[0][8] == 2  # Both linked + org-wide packages tracked
-    assert org_rows[0][9] == 45.0  # 10 MB disk + 35 MB packages
+    assert org_rows[0][8] == 2
+    assert org_rows[0][9] == 45.0
 
     out_file = tmp_path / "finops_hardened.xlsx"
     write_finops_workbook(

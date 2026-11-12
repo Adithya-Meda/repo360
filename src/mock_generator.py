@@ -12,7 +12,6 @@ def create_mock_results(targets: List[RepoTarget]) -> List[CheckResult]:
     """Generate representative mock audit findings for verification."""
     results: List[CheckResult] = []
 
-    # 1. Org Admin Findings
     results.append(
         CheckResult(
             check_id="rulesets_adoption",
@@ -50,7 +49,6 @@ def create_mock_results(targets: List[RepoTarget]) -> List[CheckResult]:
         )
     )
 
-    # 2. Repo Admin and Contributor Findings
     for target in targets:
         results.append(
             CheckResult(

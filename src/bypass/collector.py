@@ -36,7 +36,6 @@ def collect_repo_push_bypasses(
     records: List[PushProtectionBypassRecord] = []
     try:
         endpoint = f"/repos/{org}/{repo}/secret-scanning/alerts"
-        # Query both open and resolved alerts, but filter strictly for genuine push-protection overrides
         for alert in client.paginate(org, endpoint, {"state": "all"}):
             is_bypassed = bool(alert.get("push_protection_bypassed"))
             if not is_bypassed:
@@ -48,7 +47,6 @@ def collect_repo_push_bypasses(
             html_url = alert.get("html_url", "")
             comment = alert.get("resolution_comment") or "-"
 
-            # Resolve bypass actor and timestamp
             bypassed_by = alert.get("push_protection_bypassed_by") or {}
             resolved_by = alert.get("resolved_by") or {}
             actor = bypassed_by.get("login") or resolved_by.get("login") or "Unknown"
@@ -59,7 +57,6 @@ def collect_repo_push_bypasses(
             if ts and ts < since:
                 continue
 
-            # Assess risk using AI engine or resolution-aware deterministic policy defaults
             if not resolution or resolution in ("wont_fix", "revoked"):
                 risk = "High Risk"
             elif resolution in ("false_positive", "used_in_tests") and comment != "-":
@@ -264,7 +261,6 @@ def collect_bypass_data(
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
 
-    # Batch AI risk analysis concurrently after HTTP scraping completes
     if ai_engine is not None:
         all_push_records = [rec for p in profiles for rec in p.push_bypasses]
 
@@ -303,7 +299,6 @@ def build_bypass_rows(
     for p in profiles:
         org_profiles.setdefault(p.org, []).append(p)
 
-        # Push protection bypass rows
         for push in p.push_bypasses:
             ts_ist = fmt_timestamp(push.timestamp)
             override_flag = "Yes" if push.push_protection_bypassed else "Resolved Alert"
@@ -322,7 +317,6 @@ def build_bypass_rows(
                 push.html_url or "-",
             ])
 
-            # Actor accumulation (case-insensitive actor identity within org)
             acc = actor_stats[(p.org, push.actor.casefold())]
             acc.setdefault("display", push.actor)
             acc["push"] += 1
@@ -330,7 +324,6 @@ def build_bypass_rows(
             if push.timestamp:
                 acc["last_ts"] = max(acc["last_ts"], push.timestamp) if acc["last_ts"] else push.timestamp
 
-        # Ruleset bypass rows
         for rule in p.ruleset_bypasses:
             ts_ist = fmt_timestamp(rule.timestamp)
             ruleset_rows.append([
@@ -345,14 +338,12 @@ def build_bypass_rows(
                 ts_ist,
             ])
 
-            # Actor accumulation (case-insensitive actor identity within org)
             acc = actor_stats[(p.org, rule.actor.casefold())]
             acc.setdefault("display", rule.actor)
             acc["ruleset"] += 1
             if rule.timestamp:
                 acc["last_ts"] = max(acc["last_ts"], rule.timestamp) if acc["last_ts"] else rule.timestamp
 
-    # Actor rows
     for (org, _actor_key), stat in sorted(actor_stats.items(), key=lambda item: -(item[1]["push"] + item[1]["ruleset"])):
         top_sec = stat["secrets"].most_common(1)[0][0] if stat["secrets"] else "-"
         last_ist = fmt_timestamp(stat["last_ts"])
@@ -367,7 +358,6 @@ def build_bypass_rows(
             last_ist,
         ])
 
-    # Org rows
     for org in orgs:
         p_list = org_profiles.get(org, [])
         total_push = sum(len(p.push_bypasses) for p in p_list)

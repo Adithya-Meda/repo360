@@ -50,7 +50,6 @@ def test_main_mock_mode_execution() -> None:
 
         assert exit_code == 0
 
-        # Verify output files exist
         files = os.listdir(temp_dir)
         assert any(f.endswith(".xlsx") for f in files)
         assert not any(f.endswith(".csv") for f in files)
@@ -77,7 +76,6 @@ def test_main_zero_config_execution() -> None:
 
             assert exit_code == 0
 
-            # Verify output files generated using 100% built-in defaults
             files = os.listdir(output_dir)
             assert any(f.endswith(".xlsx") for f in files)
             assert not any(f.endswith(".csv") for f in files)
@@ -120,7 +118,6 @@ def test_multi_org_mock_mode_execution(capsys) -> None:
         assert "Repositories Audited :" in captured.out
         assert "4" in captured.out
 
-        # Verify output reports generated
         files = os.listdir(temp_dir)
         assert any(f.endswith(".xlsx") for f in files)
         assert not any(f.endswith(".csv") for f in files)
@@ -167,7 +164,6 @@ def test_multi_org_live_filtering() -> None:
                             with patch("src.main.run_audit", return_value=[]):
                                 exit_code = main()
                                 assert exit_code == 0
-                                # list_installation_repositories should be called for OrgAlpha (101) and OrgBeta (102), but not OrgGamma (103)
                                 assert mock_list_repos.call_count == 2
                                 call_args_ids = [c[1]["installation_id"] for c in mock_list_repos.call_args_list]
                                 assert 101 in call_args_ids

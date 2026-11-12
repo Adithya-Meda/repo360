@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import warnings
 
-# Suppress external SDK deprecation and syntax warnings on Python 3.12+ (e.g. google-genai invalid escape sequences)
+# Silence third-party SDK syntax/deprecation warnings (e.g. google-genai) on Python 3.12+
 warnings.filterwarnings("ignore", category=SyntaxWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -27,7 +27,7 @@ from .common.interrupts import (
     iter_completed,
 )
 
-# Arm fast Ctrl+C signal handlers and silent excepthook before importing heavy dependencies.
+# Arm Ctrl+C handlers and silent excepthook before importing heavy SDKs
 install_signal_handlers()
 
 from .ai import AIEngine, resolve_ai_cli_flag
@@ -71,12 +71,12 @@ class ColoredFormatter(logging.Formatter):
     }
 
     LEVEL_COLORS = {
-        logging.DEBUG: "\033[90m",                   # Gray
-        logging.INFO: "\033[96m",                    # Cyan [INFO]
-        LOG_LEVEL_PASS: "\033[92m\033[1m",           # Bold Green [PASS]
-        logging.WARNING: "\033[93m\033[1m",          # Bold Yellow [WARN]
-        logging.ERROR: "\033[91m\033[1m",            # Bold Red [FAIL]
-        logging.CRITICAL: "\033[95m\033[1m",         # Bold Magenta [CRIT]
+        logging.DEBUG: "\033[90m",
+        logging.INFO: "\033[96m",
+        LOG_LEVEL_PASS: "\033[92m\033[1m",
+        logging.WARNING: "\033[93m\033[1m",
+        logging.ERROR: "\033[91m\033[1m",
+        logging.CRITICAL: "\033[95m\033[1m",
     }
     RESET = "\033[0m"
     DIM = "\033[2m"
@@ -92,7 +92,6 @@ class ColoredFormatter(logging.Formatter):
 
 def setup_logger() -> logging.Logger:
     """Configure color-coded console logger and silence third-party SDK noise."""
-    # Silence third-party SDK internal deprecation notices (e.g. Google GenAI AFC warnings)
     logging.getLogger("google").setLevel(logging.ERROR)
     logging.getLogger("google.genai").setLevel(logging.ERROR)
     logging.getLogger("urllib3").setLevel(logging.WARNING)
@@ -166,13 +165,13 @@ def print_terminal_scorecard(
     skipped = sum(1 for r in results if r.status == CheckStatus.SKIPPED)
     effective = total - skipped
 
-    G = "\033[92m"  # Green
-    Y = "\033[93m"  # Yellow
-    R = "\033[91m"  # Red
-    C = "\033[96m"  # Cyan
-    B = "\033[1m"   # Bold
-    D = "\033[2m"   # Dim
-    X = "\033[0m"   # Reset
+    G = "\033[92m"
+    Y = "\033[93m"
+    R = "\033[91m"
+    C = "\033[96m"
+    B = "\033[1m"
+    D = "\033[2m"
+    X = "\033[0m"
 
     if effective > 0:
         health_score = (passed / effective) * 100
@@ -247,8 +246,7 @@ def _log_repo_banner(
         bar_fill = "=" * bar_length
         bar_empty = ""
     else:
-        # Dynamic leading-edge indicator: advances through sub-steps ('.', '-', '=', '>')
-        # so the bar shows continuous forward motion between full character increments
+        # Animate sub-character tip so long steps still show progress
         if fraction < 0.25:
             tip = "."
         elif fraction < 0.50:
@@ -268,12 +266,12 @@ def _log_repo_banner(
         if langs:
             stack_str = f" | Stack: {', '.join(langs[:3])}"
 
-    C = "\033[96m"   # Cyan
-    B = "\033[1m"    # Bold
-    Y = "\033[93m"   # Yellow
-    W = "\033[97m"   # Bright White
-    D = "\033[2m"    # Dim
-    X = "\033[0m"    # Reset
+    C = "\033[96m"
+    B = "\033[1m"
+    Y = "\033[93m"
+    W = "\033[97m"
+    D = "\033[2m"
+    X = "\033[0m"
 
     pad = len(str(total))
     if total >= 100:
@@ -319,7 +317,6 @@ def run_audit(
     enabled_checks = advisory_config.get("enabled_checks", {})
     thresholds = advisory_config.get("policy_thresholds", {})
 
-    # 1. Evaluate Organization-Level Checks (concurrently across orgs when > 1)
     unique_orgs = sorted(set(orgs or []) | {target.org_name for target in targets})
 
     def _audit_single_org(org: str) -> Tuple[str, List[CheckResult]]:
@@ -354,7 +351,6 @@ def run_audit(
     if not targets:
         return results
 
-    # 2. Evaluate Repository & Contributor Checks concurrently
     total_repos = len(targets)
     pool_workers = resolve_worker_count(max_workers, total_repos, max_cap=32)
 
@@ -363,7 +359,6 @@ def run_audit(
     completed_count = 0
     stop_event = threading.Event()
 
-    # Dedicated background AI worker pool for non-blocking asynchronous remediation
     ai_futures: List[concurrent.futures.Future] = []
     ai_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
     if is_ai_live(ai_engine):
@@ -381,7 +376,7 @@ def run_audit(
         pending_ai_items: List[Tuple[CheckResult, Dict[str, Any]]] = []
 
         try:
-            # Prefetch entire repository file tree in 1 API call to eliminate N+1 file existence checks
+            # Prefetch full repo tree in one call to avoid N+1 file lookups
             inspector.prefetch_repo_tree(target.org_name, target.repo_name, target.default_branch)
             if isinstance(inspector, RepoInspector) and not stop_event.is_set():
                 inspector.prefetch_repo_audit_context(
@@ -407,7 +402,6 @@ def run_audit(
         if stop_event.is_set():
             return []
 
-        # Evaluate Repo Admin Checks
         if "all" in target.target_personas or "repo_admin" in target.target_personas:
             for check_cls in ALL_REPO_CHECKS:
                 if stop_event.is_set():
@@ -439,7 +433,6 @@ def run_audit(
                             err,
                         )
 
-        # Evaluate Contributor & Freshers Checks
         if "all" in target.target_personas or "contributor" in target.target_personas:
             for check_cls in ALL_CONTRIBUTOR_CHECKS:
                 if stop_event.is_set():
@@ -481,7 +474,6 @@ def run_audit(
             for r in repo_res:
                 _log_finding(r)
 
-            # Asynchronously dispatch background AI remediation for eligible findings
             if ai_executor and not stop_event.is_set() and is_ai_live(ai_engine):
                 for res_item, stack_item in pending_ai_items:
                     fut = ai_executor.submit(ai_engine.enrich_remediation, res_item, stack_item)
@@ -513,8 +505,7 @@ def run_audit(
                 executor.shutdown(wait=False, cancel_futures=True)
                 raise
             finally:
-                # Cancel remaining futures only on interrupt; normal completion must
-                # leave stop_event clear so Step 3 awaits background AI enrichment.
+                # Keep stop_event clear on normal exit so pending AI futures still finish
                 executor.shutdown(wait=False, cancel_futures=True)
         else:
             for idx, target in enumerate(targets, start=1):
@@ -527,7 +518,6 @@ def run_audit(
             ai_executor.shutdown(wait=False, cancel_futures=True)
         raise
 
-    # 3. Synchronize background AI remediation tasks before report generation
     if ai_executor:
         try:
             if not stop_event.is_set():
@@ -564,7 +554,6 @@ def run_audit(
         finally:
             ai_executor.shutdown(wait=False, cancel_futures=True)
 
-    # Flatten in deterministic target order
     for idx in sorted(repo_results_by_idx.keys()):
         results.extend(repo_results_by_idx[idx])
 
@@ -588,7 +577,7 @@ Analytics & Intelligence Commands:
 
 Configuration & Lifecycle Commands:
   setup       Register the GitHub App and configure credentials
-  upgrade     Upgrade Repo360 to the latest version
+  upgrade     Upgrade Repo360 to the latest release (or switch tags via --tag)
   health      Check GitHub App authentication, organization installations, and AI engine status
   version     Show installed Repo360 version
   uninstall   Remove the package, virtual environment, and config while preserving reports
@@ -671,17 +660,14 @@ def main() -> int:
     install_signal_handlers()
 
     try:
-        # 1. Bare invocation: 'repo360' with no arguments displays help
         if len(sys.argv) <= 1:
             return _print_root_help()
 
         subcmd = sys.argv[1].lower()
 
-        # 2. Root help flags
         if subcmd in ("-h", "--help"):
             return _print_root_help()
 
-        # 3. Single canonical command per functionality
         if subcmd == "version":
             sys.argv.pop(1)
             from .upgrade import run_version_cli
@@ -735,7 +721,6 @@ def main() -> int:
             sys.argv.pop(1)
             return _run_interruptible_command(_run_health_cli)
 
-        # 4. Unknown subcommand or misplaced option
         print(f"Error: Unknown command '{sys.argv[1]}'. Run 'repo360 --help' for available commands.\n")
         return 1
     except KeyboardInterrupt:
@@ -780,15 +765,12 @@ def _run_cli() -> int:
     advisory_config = ConfigValidator.get_default_advisory_config()
     targets = []
 
-    # Determine output directory
     output_dir = args.output_dir or app_config.get("reporting", {}).get("output_directory", "./repo360-output")
     os.makedirs(output_dir, exist_ok=True)
 
-    # Load credentials with priority: Environment Variables > Local .env > User Config (~/.repo360/config.json)
     from .credentials import resolve_runtime_credentials
     creds = resolve_runtime_credentials()
 
-    # Initialize AI Engine (Multi-provider: Gemini, OpenAI, Anthropic)
     from .ai import init_ai_engine
     ai_engine = init_ai_engine(
         enable_ai=ai_enabled,
@@ -816,7 +798,6 @@ def _run_cli() -> int:
                 ])
         results = create_mock_results(targets)
 
-        # 1. Organization-Wide Governance findings
         D = "\033[2m"
         X = "\033[0m"
         unique_mock_orgs = sorted({target.org_name for target in targets})
@@ -828,7 +809,6 @@ def _run_cli() -> int:
                 if res.org_name == org and res.repo_name == "[Organization-Wide]":
                     _log_finding(res)
 
-        # 2. Repository findings with progress banner
         mock_stacks = [
             {"languages": ["Python", "Docker"]},
             {"languages": ["TypeScript", "Node.js"]},
@@ -841,7 +821,6 @@ def _run_cli() -> int:
                 if res.org_name == target.org_name and res.repo_name == target.repo_name:
                     _log_finding(res)
     else:
-        # Load credentials resolved across Environment / Local .env / User Config
         app_id = creds["app_id"]
         installation_id = creds["installation_id"]
         private_key = creds["private_key"]
@@ -867,7 +846,6 @@ def _run_cli() -> int:
                 api_base_url=api_base_url,
             )
 
-            # Discover all installations for the GitHub App
             all_installations = auth.discover_installations()
             if not all_installations:
                 logger.error(
@@ -881,7 +859,6 @@ def _run_cli() -> int:
                 )
                 return 1
 
-            # Filter installations if --org was specified
             requested_orgs_raw = getattr(args, "org", "").strip()
             if requested_orgs_raw:
                 filter_orgs = {o.strip().lower() for o in requested_orgs_raw.split(",") if o.strip()}
@@ -908,7 +885,6 @@ def _run_cli() -> int:
             else:
                 active_installations = all_installations
 
-            # Set active installation if not explicitly configured
             if not auth.installation_id and active_installations:
                 auth.set_installation_id(active_installations[0]["id"])
 
@@ -1012,7 +988,6 @@ def _run_cli() -> int:
             _print_failure_banner(f"Audit execution error: {err}")
             return 1
 
-    # Generate AI or deterministic Executive Briefing without misleading attribution
     executive_summary = ""
     active_model = ""
     if args.mock_mode:
@@ -1038,7 +1013,6 @@ def _run_cli() -> int:
             executive_summary = AIEngine.build_deterministic_executive_summary(results, org_scope_str)
             active_model = "Deterministic Policy Engine"
 
-    # Generate Reports
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     prefix = app_config.get("reporting", {}).get("report_prefix", "repo360_audit")
 
@@ -1047,7 +1021,6 @@ def _run_cli() -> int:
     logger.info("Generating Excel Report: %s", xlsx_path)
     ExcelReporter().generate(results, xlsx_path, executive_summary=executive_summary, model_name=active_model)
 
-    # Render Color-Coded Terminal Scorecard
     report_paths = {
         "xlsx": os.path.abspath(xlsx_path),
     }

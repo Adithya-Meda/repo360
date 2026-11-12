@@ -84,9 +84,9 @@ class GitHubAppAuth:
         self.installation_id = int(installation_id) if installation_id else None
         self.api_base_url = api_base_url.rstrip("/")
         self._private_key_pem = self._load_private_key(private_key)
-        self._token_cache: Dict[int, Tuple[str, float]] = {}  # installation_id -> (token, expires_at)
+        self._token_cache: Dict[int, Tuple[str, float]] = {}
         self._token_lock = threading.RLock()
-        self._org_to_installation: Dict[str, int] = {}  # org_name.lower() -> installation_id
+        self._org_to_installation: Dict[str, int] = {}
         self._installations_cache: Optional[List[Dict[str, Any]]] = None
         self._cached_token: Optional[str] = None
         self._token_expires_at: float = 0.0
@@ -147,7 +147,6 @@ class GitHubAppAuth:
                 logger.error("Failed to list GitHub App installations (page %d): %s", page, err)
                 break
 
-        # Map organization logins to installation IDs
         for inst in all_installations:
             login = inst.get("account", {}).get("login", "")
             inst_id = inst.get("id")
@@ -170,7 +169,6 @@ class GitHubAppAuth:
         if target_org in self._org_to_installation:
             return self._org_to_installation[target_org]
 
-        # Refresh installations cache if not found initially
         self.discover_installations(force_refresh=True)
         return self._org_to_installation.get(target_org)
 
@@ -211,7 +209,6 @@ class GitHubAppAuth:
         Returns:
             Validated PEM private key string.
         """
-        # If input points to an existing file, read it
         if os.path.isfile(key_input):
             try:
                 with open(key_input, "r", encoding="utf-8") as key_file:
@@ -221,14 +218,14 @@ class GitHubAppAuth:
         else:
             content = key_input.strip()
 
-        # Handle base64 encoded private keys (common in CI/CD secrets)
+        # CI/CD secrets often supply base64-encoded PEM keys
         if not content.startswith("-----BEGIN"):
             try:
                 decoded = base64.b64decode(content).decode("utf-8").strip()
                 if decoded.startswith("-----BEGIN"):
                     content = decoded
             except Exception:
-                pass  # Fall back to content as-is
+                pass
 
         if "-----BEGIN" not in content or "PRIVATE KEY-----" not in content:
             raise ValueError(
@@ -246,9 +243,8 @@ class GitHubAppAuth:
         Returns:
             Encoded JWT string.
         """
-        # Adjust timestamp using server clock skew to guarantee 'iat' is valid for GitHub
         now = int(time.time() - self._clock_skew)
-        # GitHub allows a 60 second clock drift leeway
+        # GitHub allows a 60s JWT clock-drift leeway
         payload = {
             "iat": now - 60,
             "exp": now + expiration_seconds,
@@ -280,7 +276,6 @@ class GitHubAppAuth:
         Returns:
             Bearer token string (starts with 'ghs_').
         """
-        # 1. Resolve target installation ID
         target_id: Optional[int] = None
         if installation_id is not None:
             target_id = int(installation_id)
@@ -305,13 +300,11 @@ class GitHubAppAuth:
 
         with self._token_lock:
             now = time.time()
-            # 2. Check per-installation cache (valid for at least 5 more minutes)
             if not force_refresh and target_id in self._token_cache:
                 cached_token, expires_at = self._token_cache[target_id]
                 if (expires_at - now) > 300:
                     return cached_token
 
-            # 3. Exchange new installation token via App JWT
             jwt_token = self.generate_jwt()
             endpoint = f"{self.api_base_url}/app/installations/{target_id}/access_tokens"
             headers = {
@@ -328,10 +321,8 @@ class GitHubAppAuth:
                 new_token: str = data["token"]
                 expires_at = now + 3500
 
-                # Store in multi-installation cache
                 self._token_cache[target_id] = (new_token, expires_at)
 
-                # Update legacy single-install cache if this matches active installation
                 if self.installation_id == target_id or self.installation_id is None:
                     self.installation_id = target_id
                     self._cached_token = new_token

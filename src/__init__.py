@@ -8,7 +8,7 @@ install_signal_handlers()
 
 import warnings
 
-# Suppress external SDK deprecation and syntax warnings on Python 3.12+ (e.g. google-genai invalid escape sequences)
+# Silence third-party SDK syntax/deprecation warnings (e.g. google-genai) on Python 3.12+
 warnings.filterwarnings("ignore", category=SyntaxWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=DeprecationWarning)

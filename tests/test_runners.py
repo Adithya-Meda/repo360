@@ -20,10 +20,10 @@ def test_runner_job_metrics_calculations():
     m.failed_jobs = 2
     m.timed_out_jobs = 0
     m.total_jobs = 10
-    m.total_duration_seconds = 1200.0  # 20 mins total
-    m.job_durations = [60.0, 120.0, 180.0, 240.0, 600.0]  # 5 samples
+    m.total_duration_seconds = 1200.0
+    m.job_durations = [60.0, 120.0, 180.0, 240.0, 600.0]
     m.total_queue_seconds = 250.0
-    m.queue_durations = [10.0, 20.0, 40.0, 80.0, 100.0]  # 2 breaches (>60s)
+    m.queue_durations = [10.0, 20.0, 40.0, 80.0, 100.0]
 
     assert m.completed_jobs == 10
     assert m.success_rate == 80.0
@@ -89,18 +89,17 @@ def test_build_runner_rows():
     assert r_row[4] == "Core-Compute"
     assert r_row[9] == "Online"
     assert r_row[10] == "Busy"
-    assert r_row[13] == 5  # Total jobs
-    assert r_row[18] == 100.0  # Success rate
+    assert r_row[13] == 5
+    assert r_row[18] == 100.0
 
     assert len(org_runner_rows) == 1
     o_row = org_runner_rows[0]
     assert o_row[0] == "fintech-org"
-    assert o_row[1] == 1  # Total runners
-    assert o_row[4] == 1  # Online
-    assert o_row[6] == 100.0  # Availability %
-    assert o_row[7] == 1  # Currently busy
+    assert o_row[1] == 1
+    assert o_row[4] == 1
+    assert o_row[6] == 100.0
+    assert o_row[7] == 1
 
-    # Multi-org test including an organization with 0 runners
     _, multi_org_rows = build_runner_rows(
         runners=[runner],
         runner_metrics={("fintech-org", "linux-runner-1"): metrics},
@@ -112,8 +111,8 @@ def test_build_runner_rows():
     assert "fintech-org" in org_names
     assert "empty-org" in org_names
     empty_row = next(row for row in multi_org_rows if row[0] == "empty-org")
-    assert empty_row[1] == 0  # 0 runners
-    assert empty_row[6] == "N/A"  # availability N/A
+    assert empty_row[1] == 0
+    assert empty_row[6] == "N/A"
 
 
 def test_write_runners_workbook_and_csv(tmp_path):
@@ -163,10 +162,8 @@ def test_write_runners_workbook_and_csv(tmp_path):
     from openpyxl import load_workbook
     wb = load_workbook(xlsx_path)
     summary = wb["Executive Summary"]
-    # Verify Total Duration cell B5 is centered
     assert summary["B5"].value == "2.0s"
     assert summary["B5"].alignment.horizontal == "center"
-    # Find Online Runners row and verify value has no percentage and is centered
     online_row_val = None
     for r in range(5, 16):
         metric_name = summary.cell(row=r, column=1).value
@@ -174,7 +171,7 @@ def test_write_runners_workbook_and_csv(tmp_path):
         if metric_name == "Online Runners":
             online_row_val = summary.cell(row=r, column=2).value
             assert summary.cell(row=r, column=2).alignment.horizontal == "center"
-    assert online_row_val == 1  # integer count, no percentage string like "1 (100.0%)"
+    assert online_row_val == 1
 
 
 def test_runners_hardened_isolation_ephemeral_and_pooled_metrics(tmp_path):
@@ -183,14 +180,12 @@ def test_runners_hardened_isolation_ephemeral_and_pooled_metrics(tmp_path):
     now = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
     since = now - timedelta(days=30)
 
-    # 1. Decisive rate excludes cancelled/skipped jobs while completed_jobs keeps total terminal count
     jm = RunnerJobMetrics(successful_jobs=4, failed_jobs=1, cancelled_jobs=5, total_jobs=10)
     assert jm.completed_jobs == 10
     assert jm.decisive_jobs == 5
     assert jm.success_rate == 80.0
     assert jm.failure_rate == 20.0
 
-    # 2. Collector: cross-org isolation, 403 capture, no 3-run abort, no phantom runner on skipped/unassigned jobs
     class _ForbiddenResp:
         status_code = 403
 
@@ -208,7 +203,7 @@ def test_runners_hardened_isolation_ephemeral_and_pooled_metrics(tmp_path):
             if endpoint == "/repos/org-a/repo-1/actions/runners":
                 raise _ForbiddenErr("forbidden")
             if endpoint == "/repos/org-a/repo-1/actions/runs":
-                # 4 GitHub-hosted runs BEFORE a self-hosted run to ensure no 3-run abort
+                # Include 4 GitHub-hosted runs first to verify scanning doesn't stop after 3 runs
                 return iter([
                     {"id": 1001, "created_at": "2026-10-19T12:00:00Z"},
                     {"id": 1002, "created_at": "2026-10-18T12:00:00Z"},
@@ -227,7 +222,6 @@ def test_runners_hardened_isolation_ephemeral_and_pooled_metrics(tmp_path):
                         "started_at": "2026-10-19T12:00:10Z",
                         "completed_at": "2026-10-19T12:01:10Z",
                     }])
-                # Run 1004: skipped self-hosted job (ignored), unassigned cancelled job (org-only), and valid ephemeral pod
                 return iter([
                     {"labels": ["self-hosted"], "runner_id": None, "runner_name": None, "conclusion": "skipped"},
                     {
@@ -245,8 +239,8 @@ def test_runners_hardened_isolation_ephemeral_and_pooled_metrics(tmp_path):
                         "arch": "x64",
                         "conclusion": "success",
                         "created_at": "2026-10-16T12:00:00Z",
-                        "started_at": "2026-10-16T12:01:40Z",  # 100s queue wait (SLA breach)
-                        "completed_at": "2026-10-16T12:03:40Z",  # 120s duration
+                        "started_at": "2026-10-16T12:01:40Z",
+                        "completed_at": "2026-10-16T12:03:40Z",
                     },
                 ])
             return iter([])
@@ -265,29 +259,25 @@ def test_runners_hardened_isolation_ephemeral_and_pooled_metrics(tmp_path):
         failures=failures,
     )
 
-    # Both org-a and org-b 'shared-runner' must be retained (cross-org isolation), plus arc-eph-pod-1 (no fake 'self-hosted-runner')
     names_by_org = sorted((r.org, r.name, r.status) for r in runners)
     assert ("org-a", "shared-runner", "Online") in names_by_org
     assert ("org-b", "shared-runner", "Offline") in names_by_org
     assert ("org-a", "arc-eph-pod-1", "Ephemeral") in names_by_org
     assert not any(r.name == "self-hosted-runner" for r in runners)
 
-    # 403 repo-runners failure must be captured rather than silently swallowed
     assert any("403 Forbidden" in msg and "org-a/repo-1" in target for target, msg in failures)
 
-    # Skipped job ignored; unassigned cancelled job attributed only to org_metrics; ephemeral job attributed to both
     assert runner_metrics[("org-a", "arc-eph-pod-1")].total_jobs == 1
     assert org_metrics["org-a"].total_jobs == 2
     assert org_metrics["org-a"].cancelled_jobs == 1
-    assert org_metrics["org-a"].success_rate == 100.0  # 1/1 decisive (cancelled excluded)
+    assert org_metrics["org-a"].success_rate == 100.0
 
-    # Ephemeral-only org must report 'N/A (Ephemeral Only)', not 0% offline failure
     eph_only = RunnerInfo(id=501, name="arc-1", os="Linux", status="Ephemeral", busy=False, labels=("self-hosted",), org="eph-org", ephemeral=True)
     r_rows, o_rows = build_runner_rows([eph_only], {}, {}, orgs=["eph-org"])
-    assert o_rows[0][5] == 0  # Offline == 0 (Ephemeral NOT counted as Offline)
+    assert o_rows[0][5] == 0
     assert o_rows[0][6] == "N/A (Ephemeral Only)"
 
-    # Pooled fleet metrics in workbook must use pooled P95 (not mean of per-runner P95s)
+    # Workbook uses pooled P95 rather than mean of per-runner P95s
     m_small = RunnerJobMetrics(total_jobs=1, successful_jobs=1, total_queue_seconds=200.0, queue_durations=[200.0])
     m_big = RunnerJobMetrics(total_jobs=10, successful_jobs=10, total_queue_seconds=50.0, queue_durations=[5.0] * 10)
     pooled_rows, pooled_org_rows = build_runner_rows(
@@ -318,5 +308,5 @@ def test_runners_hardened_isolation_ephemeral_and_pooled_metrics(tmp_path):
     wb_pooled = load_workbook(pooled_xlsx)
     ws_sum = wb_pooled["Executive Summary"]
     kpi_map = {ws_sum.cell(r, 1).value: ws_sum.cell(r, 2).value for r in range(5, 22)}
-    # Pooled avg of 200 + 10*5 = 250 / 11 = 22.73s; P95 of [5]*10 + [200] -> ceil(0.95*11)-1 = 10 -> 200.0s!
+    # Pooled avg = 250/11 = 22.73s; pooled P95 index ceil(0.95*11)-1 = 10 -> 200.0s
     assert kpi_map["Avg / P95 Queue Wait (s)"] == "22.73s / 200.0s"
