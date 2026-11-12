@@ -42,6 +42,9 @@ install_signal_handlers()
 
 from .auth.github_app_auth import GitHubAppAuth
 from .credentials import (
+    get_credentials_path,
+    get_secrets_dir,
+    load_user_credentials,
     save_private_key,
     save_user_credentials,
 )
@@ -102,6 +105,22 @@ def _build_default_app_name(org_name: str) -> str:
     return candidate[:34].rstrip("-") or "Repo360"
 
 
+DEFAULT_GITHUB_APP_PERMISSIONS: dict[str, str] = {
+    "actions": "read",
+    "administration": "read",
+    "contents": "read",
+    "deployments": "read",
+    "issues": "read",
+    "members": "read",
+    "metadata": "read",
+    "organization_administration": "read",
+    "organization_self_hosted_runners": "read",
+    "packages": "read",
+    "pull_requests": "read",
+    "secret_scanning_alerts": "read",
+}
+
+
 def get_manifest(
     github_domain: str,
     app_name: str = "Repo360",
@@ -125,20 +144,7 @@ def get_manifest(
             "active": False,
         },
         "redirect_url": clean_redirect,
-        "default_permissions": {
-            "actions": "read",
-            "administration": "read",
-            "contents": "read",
-            "deployments": "read",
-            "issues": "read",
-            "members": "read",
-            "metadata": "read",
-            "organization_administration": "read",
-            "organization_self_hosted_runners": "read",
-            "packages": "read",
-            "pull_requests": "read",
-            "secret_scanning_alerts": "read",
-        },
+        "default_permissions": dict(DEFAULT_GITHUB_APP_PERMISSIONS),
         "public": False,
     }
 
@@ -681,48 +687,7 @@ def run_wizard(
             installation_id = int(manual_in)
 
     # 3. Interactive AI Remediation Provider Selection
-    print("\n" + "=" * 65)
-    print("  STEP 3: AI REMEDIATION & GOVERNANCE ADVISORY ENGINE")
-    print("=" * 65)
-    print("Select your AI Remediation Provider:")
-    print("  [1] Google Gemini")
-    print("  [2] OpenAI")
-    print("  [3] Anthropic Claude")
-    print("  [4] None / Disable AI (Deterministic policy checks only)")
-    print("-" * 65)
-
-    llm_choice = interruptible_input("Select provider [1-4] (default: 1): ", eof_default="").strip() or "1"
-    llm_provider = "gemini"
-    llm_model = "gemini-3.5-flash"
-    llm_api_key = ""
-    llm_enabled = True
-
-    if llm_choice == "2":
-        llm_provider = "openai"
-        llm_model = "gpt-4o"
-        llm_api_key = interruptible_input("Enter OPENAI_API_KEY (press Enter to skip): ", eof_default="").strip()
-        custom_model = interruptible_input(f"Enter model name [{llm_model}]: ", eof_default="").strip()
-        if custom_model:
-            llm_model = custom_model
-    elif llm_choice == "3":
-        llm_provider = "anthropic"
-        llm_model = "claude-3-5-sonnet-20241022"
-        llm_api_key = interruptible_input("Enter ANTHROPIC_API_KEY (press Enter to skip): ", eof_default="").strip()
-        custom_model = interruptible_input(f"Enter model name [{llm_model}]: ", eof_default="").strip()
-        if custom_model:
-            llm_model = custom_model
-    elif llm_choice == "4":
-        llm_provider = "none"
-        llm_model = ""
-        llm_api_key = ""
-        llm_enabled = False
-    else:
-        llm_provider = "gemini"
-        llm_model = "gemini-3.5-flash"
-        llm_api_key = interruptible_input("Enter GEMINI_API_KEY (press Enter to skip): ", eof_default="").strip()
-        custom_model = interruptible_input(f"Enter model name [{llm_model}]: ", eof_default="").strip()
-        if custom_model:
-            llm_model = custom_model
+    llm_provider, llm_model, llm_api_key, llm_enabled = _prompt_ai_configuration()
 
     # 4. Persist credentials securely
     cfg_path = save_user_credentials(
@@ -736,26 +701,15 @@ def run_wizard(
         llm_enabled=llm_enabled,
     )
 
-    # Optional: Also update local .env if present for project consistency
-    try:
-        from .validator import ConfigValidator
-        env_path = os.path.abspath(".env")
-        if os.path.isfile(env_path):
-            ConfigValidator.update_env_file("REPO360_APP_ID", str(app_id), env_path)
-            if installation_id:
-                ConfigValidator.update_env_file("REPO360_APP_INSTALLATION_ID", str(installation_id), env_path)
-            ConfigValidator.update_env_file("REPO360_APP_PRIVATE_KEY_PATH", key_path, env_path)
-            if llm_enabled and llm_api_key:
-                if llm_provider == "gemini":
-                    ConfigValidator.update_env_file("GEMINI_API_KEY", llm_api_key, env_path)
-                elif llm_provider == "openai":
-                    ConfigValidator.update_env_file("OPENAI_API_KEY", llm_api_key, env_path)
-                elif llm_provider == "anthropic":
-                    ConfigValidator.update_env_file("ANTHROPIC_API_KEY", llm_api_key, env_path)
-                ConfigValidator.update_env_file("LLM_PROVIDER", llm_provider, env_path)
-                ConfigValidator.update_env_file("LLM_MODEL", llm_model, env_path)
-    except Exception as err:
-        logger.debug("Could not auto-update local .env: %s", err)
+    _update_local_env_if_present(
+        app_id=app_id,
+        key_path=key_path,
+        installation_id=installation_id,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+        llm_api_key=llm_api_key,
+        llm_enabled=llm_enabled,
+    )
 
     print("\n" + "=" * 65)
     print("  SETUP COMPLETE! ZERO CONFIGURATION REQUIRED.")
@@ -775,6 +729,320 @@ def run_wizard(
     print("=" * 65 + "\n")
 
 
+_LLM_PROVIDER_MAP: dict[str, tuple[str, str, str]] = {
+    "1": ("gemini", "gemini-3.5-flash", "GEMINI_API_KEY"),
+    "2": ("openai", "gpt-4o", "OPENAI_API_KEY"),
+    "3": ("anthropic", "claude-3-5-sonnet-20241022", "ANTHROPIC_API_KEY"),
+}
+
+
+def _prompt_choice(prompt: str, valid: tuple[str, ...], default: str, error_msg: str) -> str:
+    """Prompt until a valid option is selected or default is chosen on empty Enter."""
+    while True:
+        raw = interruptible_input(prompt).strip().lower()
+        chosen = raw or default
+        if chosen in valid:
+            return chosen
+        print(error_msg)
+
+
+def _prompt_setup_mode() -> str:
+    """Prompt user to choose browser auto-configuration vs manual setup."""
+    print("\nSelect GitHub App Setup Method:")
+    print("  [1] Auto-configure GitHub App (1-click registration via browser)")
+    print("  [2] Manual setup (enter existing app details or update config file manually)")
+    choice = _prompt_choice(
+        "Select option [1-2] (default: 1): ",
+        valid=("1", "2", "auto", "manual", "a", "m"),
+        default="1",
+        error_msg="Please enter 1 (Auto-configure) or 2 (Manual setup).",
+    )
+    return "manual" if choice in ("2", "manual", "m") else "auto"
+
+
+def _prompt_domain(default_domain: str = "https://github.com") -> str:
+    """Prompt for GitHub host URL and normalize it."""
+    custom_domain = interruptible_input(
+        f"Enter GitHub Domain [{default_domain}] (press Enter for default, or e.g. https://<enterprise>.ghe.com or https://ghe.company.com): ",
+        eof_default="",
+    ).strip()
+    return _normalize_github_domain(custom_domain or default_domain)
+
+
+def _prompt_ai_configuration() -> tuple[str, str, str, bool]:
+    """Prompt interactively for optional AI remediation provider settings."""
+    print("\n" + "=" * 65)
+    print("  AI REMEDIATION & GOVERNANCE ADVISORY ENGINE")
+    print("=" * 65)
+    print("Select your AI Remediation Provider:")
+    print("  [1] Google Gemini")
+    print("  [2] OpenAI")
+    print("  [3] Anthropic Claude")
+    print("  [4] None / Disable AI (Deterministic policy checks only)")
+    print("-" * 65)
+
+    llm_choice = interruptible_input("Select provider [1-4] (default: 1): ", eof_default="").strip() or "1"
+    if llm_choice == "4":
+        return "none", "", "", False
+
+    llm_provider, llm_model, env_key_name = _LLM_PROVIDER_MAP.get(
+        llm_choice, _LLM_PROVIDER_MAP["1"]
+    )
+    llm_api_key = interruptible_input(f"Enter {env_key_name} (press Enter to skip): ", eof_default="").strip()
+    custom_model = interruptible_input(f"Enter model name [{llm_model}]: ", eof_default="").strip()
+    if custom_model:
+        llm_model = custom_model
+    return llm_provider, llm_model, llm_api_key, True
+
+
+def _update_local_env_if_present(
+    app_id: int | str,
+    key_path: str,
+    installation_id: Optional[int | str],
+    llm_provider: str,
+    llm_model: str,
+    llm_api_key: str,
+    llm_enabled: bool,
+) -> None:
+    """Sync saved credentials into local .env when present in the working directory."""
+    try:
+        from .validator import ConfigValidator
+
+        env_path = os.path.abspath(".env")
+        if not os.path.isfile(env_path):
+            return
+        if app_id:
+            ConfigValidator.update_env_file("REPO360_APP_ID", str(app_id), env_path)
+        if installation_id:
+            ConfigValidator.update_env_file("REPO360_APP_INSTALLATION_ID", str(installation_id), env_path)
+        if key_path:
+            ConfigValidator.update_env_file("REPO360_APP_PRIVATE_KEY_PATH", key_path, env_path)
+        if llm_enabled and llm_api_key:
+            env_key_map = {
+                "gemini": "GEMINI_API_KEY",
+                "openai": "OPENAI_API_KEY",
+                "anthropic": "ANTHROPIC_API_KEY",
+            }
+            if llm_provider in env_key_map:
+                ConfigValidator.update_env_file(env_key_map[llm_provider], llm_api_key, env_path)
+            ConfigValidator.update_env_file("LLM_PROVIDER", llm_provider, env_path)
+            ConfigValidator.update_env_file("LLM_MODEL", llm_model, env_path)
+    except Exception as err:
+        logger.debug("Could not auto-update local .env: %s", err)
+
+
+def _print_manual_permissions_guide() -> None:
+    """Display read-only GitHub App permissions required for manual registration."""
+    org_only = {"members"}
+    repo_perms: list[str] = []
+    org_perms: list[str] = []
+    for perm in sorted(DEFAULT_GITHUB_APP_PERMISSIONS):
+        if perm.startswith("organization_"):
+            org_perms.append(perm.removeprefix("organization_"))
+        elif perm in org_only:
+            org_perms.append(perm)
+        else:
+            repo_perms.append(perm)
+
+    print("\n" + "=" * 65)
+    print("  REPO360 - MANUAL GITHUB APP SETUP")
+    print("=" * 65)
+    print("Ensure your GitHub App grants these read-only permissions:")
+    print(f"  Repository  : {', '.join(repo_perms)}")
+    print(f"  Organization: {', '.join(sorted(org_perms))}")
+    print("-" * 65)
+
+
+def _prompt_positive_int(prompt: str, field_name: str) -> int:
+    """Prompt until a valid positive integer is entered."""
+    while True:
+        raw = interruptible_input(prompt).strip()
+        if raw.isdigit() and int(raw) > 0:
+            return int(raw)
+        print(f"Error: {field_name} must be a positive number.")
+
+
+def _prompt_private_key_file() -> tuple[str, str]:
+    """Prompt for a readable RSA PEM private key path and validate its contents."""
+    while True:
+        raw = interruptible_input(
+            "Enter path to GitHub App private key (.pem): "
+        ).strip().strip("\"'")
+        if not raw:
+            print("Error: Private key path is required.")
+            continue
+        candidate = os.path.abspath(os.path.expanduser(raw))
+        if not os.path.isfile(candidate):
+            print(f"Error: Private key file not found: {candidate}")
+            continue
+        try:
+            with open(candidate, "r", encoding="utf-8") as f:
+                pem_content = f.read()
+        except OSError as err:
+            print(f"Error: Cannot read private key file ({err}).")
+            continue
+        if "-----BEGIN" not in pem_content or "PRIVATE KEY-----" not in pem_content:
+            print("Error: File does not appear to contain a valid PEM private key.")
+            continue
+        return candidate, pem_content
+
+
+def _prompt_or_discover_installation_id(
+    app_id: int,
+    pem_content: str,
+    api_domain: str,
+    target_org: str = "",
+) -> Optional[int]:
+    """Prompt for Installation ID or attempt live auto-discovery via GitHub API."""
+    while True:
+        raw = interruptible_input(
+            "Enter Installation ID (press Enter to auto-discover): ",
+            eof_default="",
+        ).strip()
+        if not raw:
+            break
+        if raw.isdigit() and int(raw) > 0:
+            return int(raw)
+        print("Error: Installation ID must be a positive number (or press Enter to auto-discover).")
+
+    try:
+        auth = GitHubAppAuth(app_id=app_id, private_key=pem_content, api_base_url=api_domain)
+        installations = auth.discover_installations()
+        if installations:
+            matched = (
+                [
+                    i for i in installations
+                    if i.get("account", {}).get("login", "").lower() == target_org.lower()
+                ]
+                if target_org
+                else []
+            )
+            selected = matched[0] if matched else installations[0]
+            inst_id = int(selected["id"])
+            org_login = selected.get("account", {}).get("login", "")
+            label = f" for '{org_login}'" if org_login else ""
+            print(f"-> [SUCCESS] Auto-detected Installation ID: {inst_id}{label}!")
+            return inst_id
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception as err:
+        logger.debug("Manual setup installation auto-discovery skipped: %s", err)
+
+    print("Installation ID will be auto-discovered at runtime.")
+    return None
+
+
+def run_manual_setup(github_domain: str = "", org_name: str = "") -> int:
+    """Guide manual GitHub App credential entry or config file template creation."""
+    _print_manual_permissions_guide()
+    clean_domain = _normalize_github_domain(github_domain) if github_domain else _prompt_domain()
+    api_domain = resolve_api_base_url(clean_domain)
+    clean_org = _normalize_org_name(org_name)
+
+    print("\nManual Configuration Options:")
+    print("  [1] Enter GitHub App credentials now (App ID, private key, Installation ID)")
+    print("  [2] Write ~/.repo360/config.json template to fill in manually")
+    sub_choice = _prompt_choice(
+        "Select option [1-2] (default: 1): ",
+        valid=("1", "2"),
+        default="1",
+        error_msg="Please enter 1 or 2.",
+    )
+
+    if sub_choice == "2":
+        secrets_dir = get_secrets_dir()
+        cfg_path = get_credentials_path()
+        existing = load_user_credentials()
+        existing_gh = existing.get("github", {}) if isinstance(existing, dict) else {}
+        has_existing = os.path.isfile(cfg_path) and bool(
+            existing_gh.get("app_id") or existing_gh.get("private_key_path")
+        )
+        write_template = True
+        if has_existing:
+            overwrite = interruptible_input(
+                f"Existing config found at {cfg_path}. Overwrite with a blank template? [y/N]: ",
+                eof_default="n",
+            ).strip().lower()
+            write_template = overwrite in ("y", "yes")
+
+        if write_template:
+            llm_provider, llm_model, llm_api_key, llm_enabled = _prompt_ai_configuration()
+            placeholder_key = os.path.join(secrets_dir, "<your-app>.private-key.pem")
+            cfg_path = save_user_credentials(
+                app_id="",
+                private_key_path=placeholder_key,
+                installation_id=None,
+                api_base_url=api_domain,
+                llm_provider=llm_provider,
+                llm_model=llm_model,
+                llm_api_key=llm_api_key,
+                llm_enabled=llm_enabled,
+            )
+
+        print("\n" + "=" * 65)
+        print("  MANUAL CONFIG TEMPLATE READY" if write_template else "  EXISTING CONFIG PRESERVED")
+        print("=" * 65)
+        print(f"  Config File:   {cfg_path}")
+        print(f"  Secrets Dir:   {secrets_dir}")
+        print(f"  API Base URL:  {api_domain}")
+        print("-" * 65)
+        print("  Next steps:")
+        print(f"    1. Place your downloaded .pem private key in {secrets_dir}")
+        print(f"    2. Update {cfg_path} with:")
+        print("       - github.app_id            : Your numeric GitHub App ID")
+        print("       - github.private_key_path  : Full path to your .pem file")
+        print("       - github.installation_id   : Numeric ID or null (auto-discovered)")
+        print("    3. Verify connectivity: repo360 health")
+        print("=" * 65 + "\n")
+        return 0
+
+    app_id = _prompt_positive_int("Enter GitHub App ID: ", "GitHub App ID")
+    key_path, pem_content = _prompt_private_key_file()
+    installation_id = _prompt_or_discover_installation_id(
+        app_id=app_id,
+        pem_content=pem_content,
+        api_domain=api_domain,
+        target_org=clean_org,
+    )
+    llm_provider, llm_model, llm_api_key, llm_enabled = _prompt_ai_configuration()
+
+    cfg_path = save_user_credentials(
+        app_id=app_id,
+        private_key_path=key_path,
+        installation_id=installation_id,
+        api_base_url=api_domain,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+        llm_api_key=llm_api_key,
+        llm_enabled=llm_enabled,
+    )
+    _update_local_env_if_present(
+        app_id=app_id,
+        key_path=key_path,
+        installation_id=installation_id,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+        llm_api_key=llm_api_key,
+        llm_enabled=llm_enabled,
+    )
+
+    ai_status = f"{llm_provider.upper()} ({llm_model})" if llm_enabled else "DISABLED"
+    print("\n" + "=" * 65)
+    print("  MANUAL SETUP COMPLETE")
+    print("=" * 65)
+    print(f"  App ID:           {app_id}")
+    print(f"  Installation ID:  {installation_id or 'Auto-discovered at runtime'}")
+    print(f"  Private Key:      {key_path}")
+    print(f"  API Base URL:     {api_domain}")
+    print(f"  Configuration:    {cfg_path}")
+    print(f"  AI Remediation:   {ai_status}")
+    print("-" * 65)
+    print("  Verify your setup anytime with:")
+    print("    repo360 health")
+    print("=" * 65 + "\n")
+    return 0
+
+
 def _parse_app_name(value: str) -> str:
     """Validate optional custom GitHub App name against GitHub's 1-34 char manifest limit."""
     cleaned = value.strip()
@@ -788,6 +1056,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         prog="repo360 setup",
         description="Register the GitHub App and configure local credentials.",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=("auto", "manual"),
+        default="",
+        help="Setup method: auto or manual (prompted if omitted).",
     )
     parser.add_argument(
         "--org",
@@ -814,7 +1088,16 @@ def main() -> int:
 
     try:
         args = parser.parse_args()
+        raw_mode = getattr(args, "mode", "")
+        mode = raw_mode.lower() if isinstance(raw_mode, str) and raw_mode.lower() in ("auto", "manual") else _prompt_setup_mode()
+
         org = _normalize_org_name(args.org)
+        has_explicit_domain = args.domain != "https://github.com"
+
+        if mode == "manual":
+            manual_domain = args.domain if (org or has_explicit_domain) else ""
+            return run_manual_setup(github_domain=manual_domain, org_name=org)
+
         if not org:
             org = _normalize_org_name(
                 interruptible_input("Enter your target GitHub Organization name: ", eof_default="")
@@ -824,17 +1107,12 @@ def main() -> int:
             print("Error: Organization name is required.")
             return 1
 
-        domain = args.domain
-        if not args.org and domain == "https://github.com":
-            custom_domain = interruptible_input(
-                "Enter GitHub Domain [https://github.com] (press Enter for default, or e.g. https://<enterprise>.ghe.com or https://ghe.company.com): ",
-                eof_default="",
-            ).strip()
-            if custom_domain:
-                domain = custom_domain
-
+        domain = args.domain if (args.org or has_explicit_domain) else _prompt_domain()
         run_wizard(org_name=org, github_domain=domain, app_name=args.app_name)
         return 0
+    except EOFError:
+        print("\nSetup cancelled (end of input).")
+        return 1
     except KeyboardInterrupt:
         return finalize_interrupt_exit(130)
 

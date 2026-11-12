@@ -120,7 +120,7 @@ def test_setup_app_main_keyboard_interrupt(capsys) -> None:
     from src.setup_app import main as setup_main
 
     with patch("argparse.ArgumentParser.parse_args") as mock_args:
-        mock_args.return_value = MagicMock(org="my-org", app_name="", domain="https://github.com")
+        mock_args.return_value = MagicMock(org="my-org", app_name="", domain="https://github.com", mode="auto")
         with patch("src.setup_app.run_wizard", side_effect=KeyboardInterrupt):
             code = setup_main()
             assert code == 130
@@ -129,7 +129,7 @@ def test_setup_app_main_keyboard_interrupt(capsys) -> None:
     assert captured.err == ""
 
     # Simulate Windows Ctrl+C on the interactive Enter GitHub Domain prompt (ReadConsoleW -> EOFError)
-    responses = iter(["my-org"])
+    responses = iter(["1", "my-org"])
 
     def _mock_domain_ctrlc(prompt: str = "") -> str:
         try:
@@ -220,3 +220,131 @@ def test_bind_callback_server_fallback_on_occupied_port() -> None:
         if fallback_server is not None:
             fallback_server.server_close()
         occupant.close()
+
+
+def test_setup_main_interactive_mode_routing_and_cli_flags(monkeypatch) -> None:
+    """Verify setup routes between auto wizard and manual flow via prompt or --mode flag."""
+    from src.setup_app import main as setup_main
+
+    # 1. Interactive choice '1' (after invalid 'x') triggers auto wizard
+    auto_inputs = iter(["x", "1", "my-org", "https://ghe.internal"])
+    monkeypatch.setattr("builtins.input", lambda _p="": next(auto_inputs))
+    monkeypatch.setattr("sys.argv", ["repo360"])
+    with patch("src.setup_app.run_wizard") as mock_wizard:
+        rc = setup_main()
+        assert rc == 0
+        mock_wizard.assert_called_once_with(
+            org_name="my-org",
+            github_domain="https://ghe.internal",
+            app_name="",
+        )
+
+    # 2. Interactive choice '2' routes to manual setup without requiring org upfront
+    manual_inputs = iter(["2"])
+    monkeypatch.setattr("builtins.input", lambda _p="": next(manual_inputs))
+    monkeypatch.setattr("sys.argv", ["repo360"])
+    with patch("src.setup_app.run_manual_setup", return_value=0) as mock_manual:
+        rc = setup_main()
+        assert rc == 0
+        mock_manual.assert_called_once_with(github_domain="", org_name="")
+
+    # 3. Explicit --mode auto skips mode prompt
+    monkeypatch.setattr("sys.argv", ["repo360", "--mode", "auto", "--org", "acme"])
+    with patch("src.setup_app.run_wizard") as mock_wizard:
+        rc = setup_main()
+        assert rc == 0
+        mock_wizard.assert_called_once_with(
+            org_name="acme",
+            github_domain="https://github.com",
+            app_name="",
+        )
+
+    # 4. Explicit --mode manual skips mode prompt and preserves --domain/--org
+    monkeypatch.setattr("sys.argv", ["repo360", "--mode", "manual", "--org", "acme", "--domain", "https://octo.ghe.com"])
+    with patch("src.setup_app.run_manual_setup", return_value=0) as mock_manual:
+        rc = setup_main()
+        assert rc == 0
+        mock_manual.assert_called_once_with(github_domain="https://octo.ghe.com", org_name="acme")
+
+
+def test_run_manual_setup_interactive_entry_and_template_mode(tmp_path, monkeypatch, capsys) -> None:
+    """Verify both manual sub-flows: entering credentials now and writing config.json template."""
+    import json
+    from src.setup_app import run_manual_setup
+
+    cfg_dir = tmp_path / ".repo360"
+    monkeypatch.setenv("REPO360_CONFIG_DIR", str(cfg_dir))
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("EXISTING_VAR=1\n", encoding="utf-8")
+
+    bad_file = tmp_path / "not_a_key.txt"
+    bad_file.write_text("hello world", encoding="utf-8")
+    pem_file = tmp_path / "test-app.private-key.pem"
+    pem_file.write_text("-----BEGIN RSA PRIVATE KEY-----\nTEST\n-----END RSA PRIVATE KEY-----\n", encoding="utf-8")
+
+    # Flow A: Option 1 (enter credentials interactively with validation retries + installation auto-discovery)
+    inputs_a = iter([
+        "https://octocorp.ghe.com",  # GitHub Domain
+        "1",                         # Enter credentials now
+        "abc",                       # Invalid App ID -> retry
+        "987654",                    # Valid App ID
+        str(tmp_path / "missing.pem"),  # Missing PEM -> retry
+        str(bad_file),               # Invalid PEM contents -> retry
+        str(pem_file),               # Valid PEM file
+        "",                          # Blank Installation ID -> auto-discover
+        "2",                         # OpenAI
+        "sk-test-key",               # OPENAI_API_KEY
+        "gpt-4o-mini",               # Custom model
+    ])
+    monkeypatch.setattr("builtins.input", lambda _p="": next(inputs_a))
+    with patch("src.setup_app.GitHubAppAuth") as mock_auth_cls:
+        mock_auth_cls.return_value.discover_installations.return_value = [
+            {"id": 555001, "account": {"login": "acme"}},
+        ]
+        rc = run_manual_setup(github_domain="", org_name="acme")
+    assert rc == 0
+
+    saved = json.loads((cfg_dir / "config.json").read_text(encoding="utf-8"))
+    assert saved["github"]["app_id"] == 987654
+    assert saved["github"]["installation_id"] == 555001
+    assert saved["github"]["private_key_path"] == str(pem_file.resolve())
+    assert saved["github"]["api_base_url"] == "https://api.octocorp.ghe.com"
+    assert saved["llm"]["provider"] == "openai"
+    assert saved["llm"]["model"] == "gpt-4o-mini"
+    assert saved["llm"]["api_key"] == "sk-test-key"
+    assert saved["llm"]["enabled"] is True
+
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "REPO360_APP_ID=987654" in env_text
+    assert "REPO360_APP_INSTALLATION_ID=555001" in env_text
+    assert "OPENAI_API_KEY=sk-test-key" in env_text
+
+    # Flow B: Option 2 (template mode preserves existing config unless confirmed)
+    inputs_preserve = iter([
+        "",   # Default domain https://github.com
+        "2",  # Template option
+        "n",  # Decline overwriting existing valid config
+    ])
+    monkeypatch.setattr("builtins.input", lambda _p="": next(inputs_preserve))
+    assert run_manual_setup() == 0
+    preserved = json.loads((cfg_dir / "config.json").read_text(encoding="utf-8"))
+    assert preserved["github"]["app_id"] == 987654
+
+    # Flow C: Option 2 with confirmed overwrite writes clean blank template
+    inputs_template = iter([
+        "",   # Default domain https://github.com
+        "2",  # Template option
+        "y",  # Confirm overwrite
+        "4",  # Disable AI
+    ])
+    monkeypatch.setattr("builtins.input", lambda _p="": next(inputs_template))
+    assert run_manual_setup() == 0
+    template = json.loads((cfg_dir / "config.json").read_text(encoding="utf-8"))
+    assert template["github"]["app_id"] == ""
+    assert template["github"]["installation_id"] is None
+    assert template["github"]["api_base_url"] == "https://api.github.com"
+    assert "<your-app>.private-key.pem" in template["github"]["private_key_path"]
+    assert template["llm"]["enabled"] is False
+    out = capsys.readouterr().out
+    assert "github.app_id" in out
+    assert "repo360 health" in out

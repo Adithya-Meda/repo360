@@ -42,7 +42,7 @@ Platform governance, compliance, engineering intelligence, and infrastructure me
 
 | Command | Description |
 | :--- | :--- |
-| `setup` | Register the GitHub App, configure credentials, and store keys under `~/.repo360/`. |
+| `setup` | Configure GitHub App credentials via auto-browser setup or manual config (`--mode auto|manual`), and store keys under `~/.repo360/`. |
 | `upgrade` | Upgrade Repo360 to the latest version. |
 | `health` | Check GitHub App authentication, organization installations, and AI engine status. |
 | `version` | Show the installed Repo360 version. |
@@ -84,7 +84,7 @@ pipx install git+https://github.com/Adithya-Meda/repo360.git
 ```bash
 repo360 setup --org <your-org>
 ```
-Registers the read-only GitHub App with all required permissions, downloads the private key to `~/.repo360/secrets/`, and saves local configuration.
+Prompts to choose between **auto-configuring** a read-only GitHub App in the browser or **manually configuring** credentials (entering an existing App's details or generating a `~/.repo360/config.json` template to edit directly). Pass `--mode auto` or `--mode manual` to skip the mode prompt.
 
 #### 3. Run Commands
 
