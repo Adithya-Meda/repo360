@@ -30,6 +30,7 @@ logger = logging.getLogger("repo360.upgrade")
 DEFAULT_REPO_URL = "https://github.com/Adithya-Meda/repo360.git"
 _VALID_GIT_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
 _SEMVER_TAG_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
+_HEX_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
 
 
 def _posix_bin_candidates(exe_name: str) -> List[Path]:
@@ -551,6 +552,61 @@ def resolve_release_target(
 
     _, best_tag, best_sha = max(semver_candidates, key=lambda item: item[0])
     return ReleaseTarget(tag=best_tag, commit=best_sha or None, source="semver-tag")
+
+
+def resolve_commit_target(
+    repo_url: str = DEFAULT_REPO_URL,
+    requested_ref: Optional[str] = None,
+) -> ReleaseTarget:
+    """Resolve the latest HEAD commit or an explicit branch/commit SHA for testing upgrades without a release."""
+    clean_url = (repo_url or "").strip()
+    if requested_ref is None:
+        ref_label = "HEAD"
+        if clean_url and not clean_url.startswith("-"):
+            try:
+                res = run_interruptible_subprocess(
+                    ["git", "ls-remote", "--", clean_url, "HEAD"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=8,
+                )
+                if res.returncode == 0:
+                    for line in (res.stdout or "").splitlines():
+                        parts = line.strip().split(None, 1)
+                        if len(parts) == 2 and parts[1].strip() == "HEAD" and parts[0].strip():
+                            sha = parts[0].strip()
+                            return ReleaseTarget(tag=ref_label, commit=sha, source="git-head")
+            except Exception:
+                pass
+        summary = _fetch_commit_summary(repo_url, "HEAD", timeout=5.0)
+        if summary and summary.get("sha"):
+            return ReleaseTarget(tag=ref_label, commit=summary["sha"], source="github-head")
+        return ReleaseTarget(tag=None, commit=None, source="error")
+
+    clean_ref = normalize_release_tag(requested_ref)
+    if clean_url and not clean_url.startswith("-") and not _HEX_SHA_RE.match(clean_ref):
+        try:
+            res = run_interruptible_subprocess(
+                ["git", "ls-remote", "--heads", "--", clean_url, f"refs/heads/{clean_ref}"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=8,
+            )
+            if res.returncode == 0:
+                for line in (res.stdout or "").splitlines():
+                    parts = line.strip().split(None, 1)
+                    if len(parts) == 2 and parts[0].strip():
+                        return ReleaseTarget(tag=clean_ref, commit=parts[0].strip(), source="git-branch")
+        except Exception:
+            pass
+
+    summary = _fetch_commit_summary(repo_url, clean_ref, timeout=5.0)
+    if summary and summary.get("sha"):
+        return ReleaseTarget(tag=clean_ref, commit=summary["sha"], source="github-commit")
+
+    return ReleaseTarget(tag=None, commit=None, source="ref-not-found")
 
 
 class UpgradeResult(int):
@@ -1106,20 +1162,42 @@ def run_upgrade_cli(argv: Optional[List[str]] = None) -> int:
     """CLI orchestrator for 'repo360 upgrade' subcommand."""
     parser = argparse.ArgumentParser(
         prog="repo360 upgrade",
-        description="Upgrade Repo360 to the latest release or install a specific release tag.",
+        description="Upgrade Repo360 to the latest release, a specific tag, or the latest commit for testing.",
     )
-    parser.add_argument(
+    target_group = parser.add_mutually_exclusive_group()
+    target_group.add_argument(
         "--tag",
         metavar="TAG",
         default="",
         help="Specific release tag to install or switch to (e.g. 'v1.0.0'; default: latest release).",
     )
+    target_group.add_argument(
+        "--latest-commit",
+        "--edge",
+        dest="latest_commit",
+        action="store_true",
+        help="Upgrade directly to the latest commit on the default branch (for testing without a release).",
+    )
+    target_group.add_argument(
+        "--ref",
+        metavar="REF",
+        default="",
+        help="Upgrade to a specific git branch or commit SHA (e.g. 'main' or '12805b0'; for testing).",
+    )
     args = parser.parse_args(argv)
 
     requested_tag = (args.tag or "").strip()
+    requested_ref = (args.ref or "").strip()
+    use_commit_mode = bool(args.latest_commit or requested_ref)
+
     if requested_tag:
         try:
             requested_tag = normalize_release_tag(requested_tag)
+        except ValueError as exc:
+            parser.error(str(exc))
+    if requested_ref:
+        try:
+            requested_ref = normalize_release_tag(requested_ref)
         except ValueError as exc:
             parser.error(str(exc))
 
@@ -1129,21 +1207,40 @@ def run_upgrade_cli(argv: Optional[List[str]] = None) -> int:
     local_dirty = bool(local_details.get("is_dirty"))
     is_stale = bool(local_details.get("is_stale_snapshot"))
 
-    target = resolve_release_target(DEFAULT_REPO_URL, requested_tag=requested_tag or None)
-    if not target.tag:
-        if requested_tag:
-            print(f"Release tag '{requested_tag}' was not found on {DEFAULT_REPO_URL}.")
-        elif target.source == "no-releases":
-            print(
-                f"No published releases found for {DEFAULT_REPO_URL}. "
-                "Create a release tag (e.g. v1.0.0) or run 'repo360 upgrade --tag <tag>'."
-            )
-        else:
-            print(
-                f"Unable to resolve release information from {DEFAULT_REPO_URL}. "
-                "Check network connectivity and try again."
-            )
-        return 1
+    if use_commit_mode:
+        target = resolve_commit_target(
+            DEFAULT_REPO_URL,
+            requested_ref=None if args.latest_commit else requested_ref,
+        )
+        if not target.commit:
+            if requested_ref:
+                print(f"Branch or commit '{requested_ref}' was not found on {DEFAULT_REPO_URL}.")
+            else:
+                print(
+                    f"Unable to resolve the latest commit from {DEFAULT_REPO_URL}. "
+                    "Check network connectivity and try again."
+                )
+            return 1
+        install_ref = target.commit
+        target_label = f"{target.tag} ({target.commit[:7]})" if target.tag and target.tag != "HEAD" else target.commit[:7]
+    else:
+        target = resolve_release_target(DEFAULT_REPO_URL, requested_tag=requested_tag or None)
+        if not target.tag:
+            if requested_tag:
+                print(f"Release tag '{requested_tag}' was not found on {DEFAULT_REPO_URL}.")
+            elif target.source == "no-releases":
+                print(
+                    f"No published releases found for {DEFAULT_REPO_URL}. "
+                    "Create a release tag (e.g. v1.0.0) or run 'repo360 upgrade --latest-commit' for testing."
+                )
+            else:
+                print(
+                    f"Unable to resolve release information from {DEFAULT_REPO_URL}. "
+                    "Check network connectivity and try again."
+                )
+            return 1
+        install_ref = target.tag
+        target_label = target.tag
 
     if (
         not is_stale
@@ -1153,8 +1250,8 @@ def run_upgrade_cli(argv: Optional[List[str]] = None) -> int:
         and _commits_match(local_sha, target.commit)
     ):
         ver_display = local_ver.lstrip("v")
-        if requested_tag:
-            print(f"Repo360 {ver_display} ({target.commit[:7]}) is already at {target.tag}.")
+        if requested_tag or requested_ref:
+            print(f"Repo360 {ver_display} ({target.commit[:7]}) is already at {target_label}.")
         else:
             print(f"Repo360 {ver_display} ({target.commit[:7]}) is already up to date.")
         return 0
@@ -1169,12 +1266,14 @@ def run_upgrade_cli(argv: Optional[List[str]] = None) -> int:
     candidates = get_upgrade_commands(
         DEFAULT_REPO_URL,
         force=force,
-        target_ref=target.tag,
+        target_ref=install_ref,
     )
-    if requested_tag:
-        print(f"Installing Repo360 {target.tag}...")
+    if requested_tag or requested_ref:
+        print(f"Installing Repo360 {target_label}...")
+    elif args.latest_commit:
+        print(f"Upgrading Repo360 to latest commit ({target_label})...")
     else:
-        print(f"Upgrading Repo360 to {target.tag}...")
+        print(f"Upgrading Repo360 to {target_label}...")
 
     res = execute_upgrade(candidates)
     exit_code = int(res)
@@ -1184,18 +1283,19 @@ def run_upgrade_cli(argv: Optional[List[str]] = None) -> int:
         commit_suffix = f" ({post_commit[:7]})" if post_commit else ""
 
         if getattr(res, "already_up_to_date", False):
-            if requested_tag:
-                print(f"Repo360 {display_ver}{commit_suffix} is already at {target.tag}.")
+            if requested_tag or requested_ref:
+                print(f"Repo360 {display_ver}{commit_suffix} is already at {target_label}.")
             else:
                 print(f"Repo360 {display_ver}{commit_suffix} is already up to date.")
-        elif requested_tag:
-            print(f"Repo360 {display_ver}{commit_suffix} installed ({target.tag}).")
+        elif requested_tag or requested_ref:
+            print(f"Repo360 {display_ver}{commit_suffix} installed ({target_label}).")
         else:
             print(f"Repo360 upgraded to {display_ver}{commit_suffix}.")
 
         if target.commit and post_commit and not _commits_match(post_commit, target.commit):
+            expected_desc = f"{target.tag} ({target.commit[:7]})" if not use_commit_mode else target_label
             print(
-                f"Warning: Installed commit ({post_commit[:7]}) differs from release {target.tag} ({target.commit[:7]})."
+                f"Warning: Installed commit ({post_commit[:7]}) differs from {expected_desc}."
             )
     else:
         print(f"Upgrade failed with exit code {exit_code}.")

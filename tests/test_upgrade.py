@@ -26,6 +26,7 @@ from src.upgrade import (
     get_upgrade_commands,
     is_output_already_up_to_date,
     normalize_release_tag,
+    resolve_commit_target,
     resolve_release_target,
     run_upgrade_cli,
     run_version_cli,
@@ -720,4 +721,61 @@ def test_posix_tool_discovery_falls_back_to_user_and_cargo_bins(tmp_path: Path) 
          patch.dict(sys.modules, {"uv": None}):
         assert find_pipx_executable() == str(pipx_bin)
         assert find_uv_executable() == str(uv_bin)
+
+
+def test_resolve_commit_target_head_branch_and_sha() -> None:
+    head_proc = MagicMock(returncode=0, stdout="deadbeef1234567890abcdef1234567890abcdef\tHEAD\n")
+    with patch("src.upgrade.run_interruptible_subprocess", return_value=head_proc):
+        res = resolve_commit_target("https://github.com/Adithya-Meda/repo360.git")
+        assert res == ReleaseTarget(
+            tag="HEAD",
+            commit="deadbeef1234567890abcdef1234567890abcdef",
+            source="git-head",
+        )
+
+    branch_proc = MagicMock(returncode=0, stdout="cafebabe1234567890abcdef1234567890abcdef\trefs/heads/main\n")
+    with patch("src.upgrade.run_interruptible_subprocess", return_value=branch_proc):
+        res = resolve_commit_target("https://github.com/Adithya-Meda/repo360.git", requested_ref="main")
+        assert res == ReleaseTarget(
+            tag="main",
+            commit="cafebabe1234567890abcdef1234567890abcdef",
+            source="git-branch",
+        )
+
+    with patch("src.upgrade._fetch_commit_summary", return_value={"sha": "12805b0d15f995f8ced59b4b8c576f875f65cf71"}):
+        res = resolve_commit_target("https://github.com/Adithya-Meda/repo360.git", requested_ref="12805b0")
+        assert res == ReleaseTarget(
+            tag="12805b0",
+            commit="12805b0d15f995f8ced59b4b8c576f875f65cf71",
+            source="github-commit",
+        )
+
+    with patch("src.upgrade._fetch_commit_summary", return_value=None):
+        res = resolve_commit_target("https://github.com/Adithya-Meda/repo360.git", requested_ref="12805b0")
+        assert res == ReleaseTarget(tag=None, commit=None, source="ref-not-found")
+
+
+def test_run_upgrade_cli_latest_commit_and_ref_modes(capsys) -> None:
+    local_details = {
+        "version": "v1.0.0",
+        "commit": "11111111",
+        "is_dirty": False,
+        "is_stale_snapshot": False,
+    }
+    head_target = ReleaseTarget(tag="HEAD", commit="abcdef1234567890", source="git-head")
+    ok_res = UpgradeResult(0, already_up_to_date=False, version="v1.0.0", commit="abcdef1234567890")
+
+    with patch("src.upgrade.get_installation_details", return_value=local_details), \
+         patch("src.upgrade.resolve_commit_target", return_value=head_target) as mock_res, \
+         patch("src.upgrade.get_upgrade_commands", return_value=[("pip", ["pip", "install"])]) as mock_cmds, \
+         patch("src.upgrade.execute_upgrade", return_value=ok_res):
+        rc = run_upgrade_cli(["--latest-commit"])
+        assert rc == 0
+        mock_res.assert_called_once_with("https://github.com/Adithya-Meda/repo360.git", requested_ref=None)
+        assert mock_cmds.call_args.kwargs.get("target_ref") == "abcdef1234567890"
+        assert "Upgrading Repo360 to latest commit (abcdef1)..." in capsys.readouterr().out
+
+    with pytest.raises(SystemExit) as exc:
+        run_upgrade_cli(["--tag", "v1.0.0", "--latest-commit"])
+    assert exc.value.code == 2
 
