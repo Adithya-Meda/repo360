@@ -344,3 +344,55 @@ def test_bypass_plan_tier_limitation_handling(tmp_path: Path):
     assert len(gap_rows) == 2  # header + 1 row
     assert gap_rows[1][0] == "FreeOrg (Private Repositories)"
     assert "GitHub Plan limitation" in gap_rows[1][1]
+
+
+def test_collect_repo_ruleset_bypasses_pushed_at_and_details():
+    """Verify ruleset collection handles pushed_at timestamp, refs/heads stripping, and detailed rule fetching."""
+    now = datetime.now(timezone.utc)
+    ts_str = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    mock_client = MagicMock()
+    # List endpoint returns basic rule-suite summaries with pushed_at
+    mock_client.paginate.return_value = [
+        {
+            "id": 9001,
+            "actor_name": "SeniorDev",
+            "ref": "refs/heads/main",
+            "before_sha": "1111111111",
+            "after_sha": "2222222222",
+            "pushed_at": ts_str,
+            "result": "bypass",
+        },
+        {
+            "id": 9002,
+            "actor_name": "JuniorDev",
+            "ref": "refs/heads/feature-x",
+            "before_sha": "3333333333",
+            "after_sha": "4444444444",
+            "pushed_at": ts_str,
+            "result": "pass",
+        },
+    ]
+
+    # Detailed endpoint returns evaluations with failed/bypassed rules
+    mock_client.get.return_value = {
+        "id": 9001,
+        "actor_name": "SeniorDev",
+        "ref": "refs/heads/main",
+        "rule_evaluations": [
+            {"rule_type": "pull_request", "result": "fail"},
+            {"rule_type": "code_scanning", "result": "fail"},
+            {"rule_type": "non_fast_forward", "result": "pass"},
+        ],
+    }
+
+    recs = collect_repo_ruleset_bypasses(mock_client, "my-org", "my-repo", now - timedelta(days=7))
+    assert len(recs) == 1
+    rec = recs[0]
+    assert rec.rule_suite_id == 9001
+    assert rec.actor == "SeniorDev"
+    assert rec.ref == "main"
+    assert rec.evaluation_result == "bypass"
+    assert rec.bypassed_rules == "pull_request, code_scanning"
+    assert rec.commit_sha == "2222222222"
+

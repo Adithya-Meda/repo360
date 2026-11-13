@@ -79,11 +79,21 @@ def parse_push_protection_alert(
     alert_num = alert.get("number", 0)
     secret_type = alert.get("secret_type_display_name") or alert.get("secret_type", "Secret")
     html_url = alert.get("html_url", "")
-    comment = alert.get("resolution_comment") or "-"
+    comment = alert.get("resolution_comment") or alert.get("push_protection_bypass_request_comment") or "-"
 
-    bypassed_by = alert.get("push_protection_bypassed_by") or {}
-    resolved_by = alert.get("resolved_by") or {}
-    actor = bypassed_by.get("login") or resolved_by.get("login") or "Unknown"
+    bypassed_by = alert.get("push_protection_bypassed_by")
+    resolved_by = alert.get("resolved_by")
+    reviewer = alert.get("push_protection_bypass_request_reviewer")
+    actor = (
+        (bypassed_by.get("login") if isinstance(bypassed_by, dict) else str(bypassed_by))
+        if bypassed_by else None
+    ) or (
+        (resolved_by.get("login") if isinstance(resolved_by, dict) else str(resolved_by))
+        if resolved_by else None
+    ) or (
+        (reviewer.get("login") if isinstance(reviewer, dict) else str(reviewer))
+        if reviewer else None
+    ) or "Unknown"
 
     bypassed_at_str = alert.get("push_protection_bypassed_at") or alert.get("created_at")
     ts = parse_ts(bypassed_at_str) if bypassed_at_str else None
@@ -174,10 +184,10 @@ def collect_repo_ruleset_bypasses(
     try:
         endpoint = f"/repos/{org}/{repo}/rulesets/rule-suites"
         for suite in client.paginate(org, endpoint):
-            created_str = suite.get("created_at")
-            if not created_str:
+            ts_str = suite.get("pushed_at") or suite.get("created_at")
+            if not ts_str:
                 continue
-            ts = parse_ts(created_str)
+            ts = parse_ts(ts_str)
             if ts < since:
                 break
 
@@ -190,10 +200,38 @@ def collect_repo_ruleset_bypasses(
 
             suite_id = suite.get("id", 0)
             actor = suite.get("actor_name") or "Unknown"
-            ref_name = suite.get("ref_name") or "main"
-            sha = suite.get("after_sha") or suite.get("before_sha") or ""
+            raw_ref = suite.get("ref") or suite.get("ref_name") or "main"
+            if raw_ref.startswith("refs/heads/"):
+                ref_name = raw_ref[11:]
+            elif raw_ref.startswith("refs/tags/"):
+                ref_name = raw_ref[10:]
+            else:
+                ref_name = raw_ref
 
-            bypassed_names = [ev.get("rule_type", "Rule") for ev in evaluations if (ev.get("result") or "").lower() == "bypass"]
+            raw_after = suite.get("after_sha")
+            raw_before = suite.get("before_sha")
+            sha = (raw_after if raw_after and raw_after != "PENDING" else raw_before) or ""
+
+            # GitHub rule-suites list endpoint omits rule_evaluations; fetch detailed suite for bypasses
+            if suite_id and (not evaluations or actor == "Unknown"):
+                try:
+                    detailed = client.get(org, f"/repos/{org}/{repo}/rulesets/rule-suites/{suite_id}")
+                    if isinstance(detailed, dict):
+                        if not evaluations:
+                            evaluations = detailed.get("rule_evaluations") or []
+                        if actor == "Unknown" and detailed.get("actor_name"):
+                            actor = detailed["actor_name"]
+                except Exception:
+                    pass
+
+            bypassed_names: List[str] = []
+            for ev in evaluations:
+                ev_res = (ev.get("result") or "").lower()
+                if ev_res in ("bypass", "fail"):
+                    r_type = ev.get("rule_type") or ((ev.get("rule_source") or {}).get("name")) or "Rule"
+                    if r_type not in bypassed_names:
+                        bypassed_names.append(r_type)
+
             bypassed_rules_str = ", ".join(bypassed_names) if bypassed_names else "Policy Bypass Permission"
 
             records.append(

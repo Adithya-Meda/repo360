@@ -89,6 +89,8 @@ def write_bypass_workbook(
         compliance_posture = "Review Required (Moderate Bypasses)"
     elif real_failures:
         compliance_posture = f"Partial Coverage ({len(real_failures)} Unaudited / Permission Gap(s))"
+    elif total_incidents > 0:
+        compliance_posture = "Low Risk (Minor Policy Overrides Detected)"
     elif plan_limitations:
         compliance_posture = "Satisfactory (No Bypasses; Branch Rulesets Plan-Restricted on Private Repos)"
     else:
