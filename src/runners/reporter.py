@@ -21,7 +21,7 @@ from ..activity.reporter import (
     write_table,
 )
 from ..common.concurrency import AI_NOT_ENABLED_MESSAGE, is_ai_disabled, is_ai_live
-from .models import ORG_RUNNER_HEADERS, RUNNER_HEADERS, RunnerInfo, RunnersConfig
+from .models import ORG_RUNNER_HEADERS, RUNNER_HEADERS, RUNNER_JOB_HEADERS, RunnerInfo, RunnersConfig
 
 
 def write_runners_workbook(
@@ -35,6 +35,8 @@ def write_runners_workbook(
     execution_duration: Optional[float] = None,
     ai_engine: Optional[Any] = None,
     org_runner_metrics: Optional[Dict[str, Any]] = None,
+    job_rows: Optional[List[list]] = None,
+    truncation_notes: Optional[List[Tuple[str, str]]] = None,
 ) -> None:
     """Generate executive Excel workbook for self-hosted runner fleet utilization."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -47,9 +49,13 @@ def write_runners_workbook(
 
     since_local, end_local = since.astimezone(LOCAL_TZ), end.astimezone(LOCAL_TZ)
     duration_str = f"{execution_duration:.1f}s" if execution_duration else "N/A"
+    window_str = (
+        f"Reporting Window: Full History (All-Time) as of {end_local:{DATE_FMT}}"
+        if cfg.lookback_days == 0
+        else f"Reporting Window: {since_local:{DATE_FMT}} to {end_local:{DATE_FMT}} ({cfg.lookback_days} days)"
+    )
     summary["A2"] = (
-        f"Reporting Window: {since_local:{DATE_FMT}} to {end_local:{DATE_FMT}} ({cfg.lookback_days} days) "
-        f"| Generated: {end_local:{DATE_FMT} %H:%M} {LOCAL_TZ_NAME} | Duration: {duration_str}"
+        f"{window_str} | Generated: {end_local:{DATE_FMT} %H:%M} {LOCAL_TZ_NAME} | Duration: {duration_str}"
     )
     summary["A2"].font = Font(italic=True, color="595959")
 
@@ -166,6 +172,9 @@ def write_runners_workbook(
             )
         )
 
+    real_failures = [f for f in failures if "truncated" not in str(f[0]).lower() and "truncated" not in str(f[1]).lower()]
+    all_truncations = list(truncation_notes or []) + [f for f in failures if "truncated" in str(f[0]).lower() or "truncated" in str(f[1]).lower()]
+
     kpis = [
         ["Total Duration", duration_str],
         ["Organizations Monitored", len(org_runner_rows)],
@@ -185,7 +194,7 @@ def write_runners_workbook(
             else "N/A",
         ],
         ["Queue SLA Breaches (>60s wait)", total_sla_breaches],
-        ["Unprocessed Items / Errors", len(failures)],
+        ["Unprocessed Items / Errors", len(real_failures)],
     ]
     curr_row = write_table(summary, 4, ("Metric", "Fleet Aggregate"), kpis) + 2
 
@@ -198,9 +207,19 @@ def write_runners_workbook(
     curr_row = section_title(summary, curr_row, "Organization Fleet Breakdown")
     curr_row = write_table(summary, curr_row, ORG_RUNNER_HEADERS, org_runner_rows, bar_col=1) + 2
 
-    if failures:
+    if real_failures:
         curr_row = section_title(summary, curr_row, "Items Requiring Review / Failures")
-        write_table(summary, curr_row, ("Target Item", "Issue Description"), [list(item) for item in failures])
+        curr_row = write_table(summary, curr_row, ("Target Item", "Issue Description"), [list(item) for item in real_failures]) + 2
+
+    if all_truncations:
+        curr_row = section_title(summary, curr_row, "Operational Notes / Run History Limits")
+        note_summary = [
+            [
+                f"{len(all_truncations)} Repositories Reached Inspection Limit",
+                f"Inspected latest {cfg.max_runner_runs_per_repo} runs per repo; earlier runs exist in window (increase --max-runs for full capture).",
+            ]
+        ]
+        curr_row = write_table(summary, curr_row, ("Scope", "Operational Guidance"), note_summary) + 2
 
     autofit(summary, skip_rows=2)
     summary.sheet_view.showGridLines = False
@@ -233,6 +252,39 @@ def write_runners_workbook(
             1,
             RUNNER_HEADERS,
             "No self-hosted runners found on target organizations.",
+        )
+
+    # Workflow Job History Detail Worksheet
+    job_ws = wb.create_sheet("Workflow Job History")
+    if job_rows:
+        last_job = write_table(job_ws, 1, RUNNER_JOB_HEADERS, job_rows)
+        finalize_sheet(job_ws, 1, last_job, len(RUNNER_JOB_HEADERS), "D2")
+
+        concl_col_idx = RUNNER_JOB_HEADERS.index("Conclusion") + 1
+        sla_col_idx = RUNNER_JOB_HEADERS.index("Queue SLA Breached (>60s)") + 1
+        for r_idx in range(2, last_job + 1):
+            c_cell = job_ws.cell(r_idx, concl_col_idx)
+            c_val = str(c_cell.value).capitalize()
+            if c_val == "Success":
+                c_cell.fill = PatternFill("solid", fgColor="C6EFCE")
+                c_cell.font = Font(bold=True, color="006100")
+            elif c_val in ("Failure", "Timed_out"):
+                c_cell.fill = PatternFill("solid", fgColor="FFC7CE")
+                c_cell.font = Font(bold=True, color="9C0006")
+            elif c_val == "Cancelled":
+                c_cell.fill = PatternFill("solid", fgColor="E2EFDA")
+                c_cell.font = Font(bold=True, color="375623")
+
+            s_cell = job_ws.cell(r_idx, sla_col_idx)
+            if str(s_cell.value).strip().lower() == "yes":
+                s_cell.fill = PatternFill("solid", fgColor="FFEB9C")
+                s_cell.font = Font(bold=True, color="9C5700")
+    else:
+        write_empty_table(
+            job_ws,
+            1,
+            RUNNER_JOB_HEADERS,
+            "No self-hosted workflow jobs executed within the lookback window.",
         )
 
     wb.save(path)

@@ -87,12 +87,15 @@ def print_runners_scorecard(
         avail_pct = online_count / registered_count * 100
         avail_color = G if avail_pct >= 80 else (Y if avail_pct >= 50 else R)
         avail_str = f"{avail_color}{avail_pct:.1f}%{X}"
+        if ephemeral_count > 0:
+            avail_str += f" (Persistent VMs) | {C}{ephemeral_count} Ephemeral Active{X}"
     elif total_runners > 0:
-        avail_str = f"{C}N/A (Ephemeral Only){X}"
+        avail_str = f"{C}Active ({ephemeral_count} Ephemeral Autoscaled){X}"
     else:
         avail_str = f"{Y}N/A{X}"
 
-    fail_count = len(failures) if failures else 0
+    real_failures = [f for f in (failures or []) if "truncated" not in str(f[0]).lower() and "truncated" not in str(f[1]).lower()]
+    fail_count = len(real_failures)
 
     print(f"\n{C}{'=' * 76}{X}")
     print(f"{B}{C}   REPO360 ACTIONS SELF-HOSTED RUNNER FLEET SCORECARD{X}")
@@ -214,10 +217,23 @@ def run_runners_cli(argv: Optional[List[str]] = None) -> int:
                 f"       https://github.com/organizations/{org_name}/settings/installations"
             )
 
+    job_records = []
+    truncation_notes = []
     runners, runner_metrics, org_runner_metrics = collect_runners_and_metrics(
-        client, orgs, targets, since, end, cfg, failures, metadata_cache
+        client,
+        orgs,
+        targets,
+        since,
+        end,
+        cfg,
+        failures,
+        metadata_cache,
+        job_records_out=job_records,
+        truncation_notes_out=truncation_notes,
     )
     runner_rows, org_runner_rows = build_runner_rows(runners, runner_metrics, org_runner_metrics, orgs)
+    from .collector import build_runner_job_rows
+    job_rows = build_runner_job_rows(job_records)
 
     out_dir = Path(cfg.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -235,6 +251,8 @@ def run_runners_cli(argv: Optional[List[str]] = None) -> int:
         execution_duration=elapsed,
         ai_engine=ai_engine,
         org_runner_metrics=org_runner_metrics,
+        job_rows=job_rows,
+        truncation_notes=truncation_notes,
     )
 
     print_runners_scorecard(

@@ -186,14 +186,26 @@ class ResilientGitHubClient:
             if headers_override:
                 headers.update(headers_override)
 
-            resp = self._http().request(
-                method,
-                url,
-                headers=headers,
-                params=params,
-                json=json_data,
-                timeout=self.timeout_seconds,
-            )
+            try:
+                resp = self._http().request(
+                    method,
+                    url,
+                    headers=headers,
+                    params=params,
+                    json=json_data,
+                    timeout=self.timeout_seconds,
+                )
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout, requests.exceptions.ChunkedEncodingError) as net_err:
+                if attempt == self.max_retries:
+                    logger.error("Network request failed after %d retries for %s: %s", self.max_retries, url, net_err)
+                    raise
+                backoff = min(30.0, (1.5 ** attempt) + random.uniform(0.1, 0.5))
+                logger.warning(
+                    "Transient network drop (%s) for %s; retrying in %.2fs (attempt %d/%d)",
+                    type(net_err).__name__, url, backoff, attempt + 1, self.max_retries
+                )
+                interruptible_sleep(backoff, sleep_fn=time.sleep)
+                continue
 
             rem = resp.headers.get("X-RateLimit-Remaining")
             rst = resp.headers.get("X-RateLimit-Reset")

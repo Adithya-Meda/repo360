@@ -363,3 +363,119 @@ def test_runner_group_self_hosted_detection(tmp_path):
     assert runners[0].runner_group_name == "Linux-Cluster"
     assert runner_metrics[("corp-org", "k8s-pod-worker-1")].total_jobs == 1
 
+
+def test_runners_error_sanitization():
+    """Verify raw socket and connection tracebacks are sanitized into clean diagnostic messages."""
+    from src.runners.collector import sanitize_api_error
+
+    class _MockResp:
+        def __init__(self, code: int):
+            self.status_code = code
+
+    class _MockHttpError(Exception):
+        def __init__(self, code: int):
+            self.response = _MockResp(code)
+
+    assert "403 Forbidden" in sanitize_api_error(_MockHttpError(403))
+    assert "404 Not Found" in sanitize_api_error(_MockHttpError(404))
+    assert "429 Too Many Requests" in sanitize_api_error(_MockHttpError(429))
+    assert "502 GitHub Server Error" in sanitize_api_error(_MockHttpError(502))
+
+    ssl_err = Exception("HTTPSConnectionPool(host='api.github.com'): SSLEOFError(8, '[SSL: UNEXPECTED_EOF_WHILE_READING]')")
+    assert sanitize_api_error(ssl_err) == "Transient SSL connection reset by peer during read"
+
+    abort_err = Exception("ConnectionAbortedError(10053, 'An established connection was aborted by the software')")
+    assert sanitize_api_error(abort_err) == "Network connection aborted by host / software reset"
+
+
+def test_runners_job_history_and_truncation_separation(tmp_path):
+    """Verify granular job history worksheet, repository list column, and clean truncation separation."""
+    from datetime import datetime, timezone
+    from src.runners.models import RunnerInfo, RunnerJobMetrics, RunnerJobRecord, RunnersConfig
+    from src.runners.collector import build_runner_rows, build_runner_job_rows
+    from src.runners.reporter import write_runners_workbook
+    from openpyxl import load_workbook
+
+    now = datetime(2026, 11, 13, 12, 0, tzinfo=timezone.utc)
+    runner = RunnerInfo(
+        id=505,
+        name="k8s-scale-set-worker",
+        os="Linux",
+        status="Online",
+        busy=False,
+        labels=("self-hosted", "k8s"),
+        runner_group_name="Default",
+        org="test-org",
+        arch="x64",
+        runner_version="2.329.0",
+        ephemeral=True,
+    )
+    metrics = RunnerJobMetrics(total_jobs=2, successful_jobs=1, failed_jobs=1)
+    metrics.repos_served.add("microservice-auth")
+    metrics.repos_served.add("microservice-billing")
+
+    runner_rows, org_runner_rows = build_runner_rows(
+        runners=[runner],
+        runner_metrics={("test-org", "k8s-scale-set-worker"): metrics},
+        org_runner_metrics={"test-org": metrics},
+        orgs=["test-org"],
+    )
+
+    # Verify Repositories Served column in runner_rows (index 29)
+    assert runner_rows[0][29] == "microservice-auth, microservice-billing"
+    # Verify Active Repositories in org_runner_rows (index 21)
+    assert org_runner_rows[0][21] == "microservice-auth, microservice-billing"
+
+    job_record = RunnerJobRecord(
+        org="test-org",
+        repo="microservice-auth",
+        workflow_name="Deploy CI",
+        run_id=12345,
+        job_id=67890,
+        job_name="build-container",
+        runner_id=505,
+        runner_name="k8s-scale-set-worker",
+        runner_type="Ephemeral (Autoscaled)",
+        conclusion="Success",
+        duration_seconds=125.0,
+        queue_seconds=75.0,
+        sla_breached=True,
+        started_at=now,
+        completed_at=now,
+        actor="dev-user",
+        html_url="https://github.com/test-org/microservice-auth/actions/runs/12345",
+    )
+    job_rows = build_runner_job_rows([job_record])
+    assert len(job_rows) == 1
+    assert job_rows[0][2] == "Deploy CI"
+    assert job_rows[0][11] == "Yes"  # SLA Breached
+
+    out_xlsx = tmp_path / "runners_with_jobs.xlsx"
+    truncation_notes = [("test-org/microservice-auth", "Inspected latest 50 runs; earlier exist")]
+    write_runners_workbook(
+        path=out_xlsx,
+        cfg=RunnersConfig(output_dir=str(tmp_path)),
+        since=now,
+        end=now,
+        runner_rows=runner_rows,
+        org_runner_rows=org_runner_rows,
+        failures=[],  # Zero genuine failures
+        execution_duration=1.5,
+        job_rows=job_rows,
+        truncation_notes=truncation_notes,
+    )
+
+    wb = load_workbook(out_xlsx)
+    assert "Workflow Job History" in wb.sheetnames
+    exec_ws = wb["Executive Summary"]
+    kpis = {r[0].value: r[1].value for r in exec_ws.iter_rows() if len(r) > 1 and r[0].value}
+    # Unprocessed Items / Errors MUST be 0 when truncation is purely informational!
+    assert kpis["Unprocessed Items / Errors"] == 0
+
+    job_ws = wb["Workflow Job History"]
+    assert job_ws.cell(2, 3).value == "Deploy CI"
+    assert job_ws.cell(2, 7).value == "k8s-scale-set-worker"
+    assert job_ws.cell(2, 9).value == "Success"
+    assert job_ws.cell(2, 12).value == "Yes"  # Queue SLA breached
+
+

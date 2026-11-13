@@ -11,9 +11,36 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from ..activity.models import fmt_timestamp, parse_ts
 from ..common.client import ResilientGitHubClient
 from ..common.concurrency import is_dormant_repo, map_concurrent, resolve_worker_count
-from .models import RunnerInfo, RunnerJobMetrics, RunnersConfig
+from .models import RunnerInfo, RunnerJobMetrics, RunnerJobRecord, RunnersConfig
 
 logger = logging.getLogger("repo360.runners")
+
+
+def sanitize_api_error(exc: Exception) -> str:
+    """Sanitize raw network exception tracebacks into clean executive diagnostic messages."""
+    status_code = getattr(getattr(exc, "response", None), "status_code", None)
+    if status_code == 403:
+        return "403 Forbidden (requires 'administration: read' repository permission)"
+    if status_code == 404:
+        return "404 Not Found"
+    if status_code == 429:
+        return "429 Too Many Requests (secondary rate limit reached)"
+    if status_code in (500, 502, 503, 504):
+        return f"{status_code} GitHub Server Error"
+
+    err_str = str(exc)
+    err_lower = err_str.lower()
+    if "ssleof" in err_lower or "unexpected_eof" in err_lower or "ssl: eof" in err_lower:
+        return "Transient SSL connection reset by peer during read"
+    if "connectionaborted" in err_lower or "10053" in err_lower or "connection aborted" in err_lower:
+        return "Network connection aborted by host / software reset"
+    if "remotedisconnected" in err_lower or "connection reset" in err_lower:
+        return "Connection reset by peer"
+    if "timeout" in err_lower:
+        return "Request timed out"
+    if "httpsconnectionpool" in err_lower:
+        return "Transient network error (connection pool exhaustion)"
+    return err_str[:120]
 
 
 def collect_runners_and_metrics(
@@ -25,6 +52,8 @@ def collect_runners_and_metrics(
     cfg: RunnersConfig,
     failures: List[Tuple[str, str]],
     metadata_cache: Optional[Dict[Tuple[str, str], Dict[str, Any]]] = None,
+    job_records_out: Optional[List[RunnerJobRecord]] = None,
+    truncation_notes_out: Optional[List[Tuple[str, str]]] = None,
 ) -> Tuple[List[RunnerInfo], Dict[Tuple[str, str], RunnerJobMetrics], Dict[str, RunnerJobMetrics]]:
     """Discover registered self-hosted runners and scrape workflow execution and queue metrics."""
     runners: List[RunnerInfo] = []
@@ -132,6 +161,8 @@ def collect_runners_and_metrics(
         loc_runners: List[RunnerInfo] = []
         loc_runner_metrics: Dict[Tuple[str, str], RunnerJobMetrics] = defaultdict(RunnerJobMetrics)
         loc_org_metrics: Dict[str, RunnerJobMetrics] = defaultdict(RunnerJobMetrics)
+        loc_jobs: List[RunnerJobRecord] = []
+        loc_truncations: List[Tuple[str, str]] = []
         loc_known_names: Set[str] = set(org_known_names.get(org_k, ()))
         loc_known_ids: Set[int] = set(org_known_ids.get(org_k, ()))
         loc_id_to_name: Dict[int, str] = dict(org_id_to_name.get(org_k, {}))
@@ -172,7 +203,7 @@ def collect_runners_and_metrics(
                     (f"{org}/{repo} (Repo-level runners)", "403 Forbidden (requires 'administration: read' repository permission)")
                 )
             elif status_code != 404:
-                repo_failures.append((f"{org}/{repo} (Repo-level runners)", str(exc)))
+                repo_failures.append((f"{org}/{repo} (Repo-level runners)", sanitize_api_error(exc)))
 
         try:
             runs_checked = 0
@@ -207,7 +238,7 @@ def collect_runners_and_metrics(
                     if not jobs_error_recorded:
                         status_code = getattr(getattr(exc, "response", None), "status_code", None)
                         if status_code != 404:
-                            repo_failures.append((f"{org}/{repo} (Workflow run jobs)", str(exc)))
+                            repo_failures.append((f"{org}/{repo} (Workflow run jobs)", sanitize_api_error(exc)))
                             jobs_error_recorded = True
                     continue
 
@@ -239,8 +270,10 @@ def collect_runners_and_metrics(
                     duration_sec = max(0.0, (completed_at - started_at).total_seconds()) if (completed_at and started_at) else None
                     job_end = completed_at or started_at
 
+                    matched_name = r_name or f"runner-{r_id}" if r_id else "runner-unknown"
                     if not r_id and not r_name:
                         target_buckets: Tuple[RunnerJobMetrics, ...] = (loc_org_metrics[org],)
+                        runner_type = "Ephemeral (Autoscaled)"
                     else:
                         if r_id and r_id in loc_id_to_name:
                             matched_name = loc_id_to_name[r_id]
@@ -272,6 +305,7 @@ def collect_runners_and_metrics(
                                 )
                             )
                         target_buckets = (loc_runner_metrics[(org, matched_name)], loc_org_metrics[org])
+                        runner_type = "Ephemeral (Autoscaled)" if (job.get("status") == "Ephemeral" or any(r.name == matched_name and r.ephemeral for r in loc_runners)) else "Persistent (Static VM)"
 
                     for target_bucket in target_buckets:
                         target_bucket.total_jobs += 1
@@ -304,8 +338,38 @@ def collect_runners_and_metrics(
                                 if target_bucket.last_job_time else job_end
                             )
 
+                    # Record granular workflow job execution event
+                    workflow_name = run_item.get("name") or run_item.get("path") or "Workflow"
+                    actor_name = (
+                        (run_item.get("actor") or {}).get("login")
+                        or (run_item.get("triggering_actor") or {}).get("login")
+                        or "Unknown"
+                    )
+                    job_html_url = job.get("html_url") or run_item.get("html_url") or f"https://github.com/{org}/{repo}/actions/runs/{run_id}"
+                    loc_jobs.append(
+                        RunnerJobRecord(
+                            org=org,
+                            repo=repo,
+                            workflow_name=workflow_name,
+                            run_id=run_id or 0,
+                            job_id=job.get("id") or 0,
+                            job_name=job.get("name") or "job",
+                            runner_id=r_id or 0,
+                            runner_name=matched_name,
+                            runner_type=runner_type,
+                            conclusion=conclusion.capitalize(),
+                            duration_seconds=duration_sec,
+                            queue_seconds=queue_sec,
+                            sla_breached=bool(queue_sec is not None and queue_sec > 60.0),
+                            started_at=started_at,
+                            completed_at=completed_at,
+                            actor=actor_name,
+                            html_url=job_html_url,
+                        )
+                    )
+
             if truncated_runs:
-                repo_failures.append(
+                loc_truncations.append(
                     (
                         f"{org}/{repo} (Run history truncated)",
                         f"Inspected latest {cfg.max_runner_runs_per_repo} runs; earlier runs exist in window (increase --max-runs for full capture)",
@@ -315,9 +379,9 @@ def collect_runners_and_metrics(
         except Exception as exc:
             status_code = getattr(getattr(exc, "response", None), "status_code", None)
             if status_code != 404:
-                repo_failures.append((f"{org}/{repo} (Actions workflow runs)", str(exc)))
+                repo_failures.append((f"{org}/{repo} (Actions workflow runs)", sanitize_api_error(exc)))
 
-        return loc_runners, loc_runner_metrics, loc_org_metrics, repo_failures
+        return loc_runners, loc_runner_metrics, loc_org_metrics, repo_failures, loc_jobs, loc_truncations
 
     if not active_targets:
         return runners, runner_metrics, org_runner_metrics
@@ -328,9 +392,13 @@ def collect_runners_and_metrics(
     try:
         futures = {pool.submit(_scan_repo_runs, target): target for target in active_targets}
         for fut in iter_completed(futures):
-            loc_r, loc_rm, loc_om, repo_fails = fut.result()
+            loc_r, loc_rm, loc_om, repo_fails, loc_jobs, loc_truncs = fut.result()
             if repo_fails:
                 failures.extend(repo_fails)
+            if job_records_out is not None and loc_jobs:
+                job_records_out.extend(loc_jobs)
+            if truncation_notes_out is not None and loc_truncs:
+                truncation_notes_out.extend(loc_truncs)
             for r in loc_r:
                 ok = r.org.casefold()
                 if r.repo:
@@ -407,6 +475,7 @@ def build_runner_rows(
             metrics.queue_sla_breaches,
             fmt_timestamp(metrics.first_job_time),
             fmt_timestamp(metrics.last_job_time),
+            ", ".join(sorted(metrics.repos_served)) if metrics.repos_served else "-",
         ])
 
     org_lookup: Dict[str, str] = {}
@@ -459,6 +528,34 @@ def build_runner_rows(
             metrics.p95_queue_seconds,
             metrics.queue_sla_breaches,
             metrics.queue_sla_breach_rate,
+            ", ".join(sorted(metrics.repos_served)) if metrics.repos_served else "-",
         ])
 
     return runner_rows, org_runner_rows
+
+
+def build_runner_job_rows(jobs: List[RunnerJobRecord]) -> List[list]:
+    """Compile formatted tabular records for individual workflow job executions."""
+    rows: List[list] = []
+    for j in sorted(jobs, key=lambda x: (x.started_at or datetime.min, x.org, x.repo), reverse=True):
+        dur_mins = round(j.duration_seconds / 60.0, 2) if j.duration_seconds is not None else "N/A"
+        q_sec = round(j.queue_seconds, 2) if j.queue_seconds is not None else "N/A"
+        rows.append([
+            j.org,
+            j.repo,
+            j.workflow_name,
+            j.run_id,
+            j.job_id,
+            j.job_name,
+            j.runner_name,
+            j.runner_type,
+            j.conclusion,
+            dur_mins,
+            q_sec,
+            "Yes" if j.sla_breached else "No",
+            fmt_timestamp(j.started_at),
+            fmt_timestamp(j.completed_at),
+            j.actor,
+            j.html_url,
+        ])
+    return rows

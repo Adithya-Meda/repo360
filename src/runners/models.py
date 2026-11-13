@@ -17,6 +17,7 @@ RUNNER_HEADERS = (
     "Min Duration (Mins)", "Max Duration (Mins)",
     "Avg Queue Wait (s)", "P95 Queue Wait (s)", "SLA Breaches (>60s)",
     f"First Active ({LOCAL_TZ_NAME})", f"Last Active ({LOCAL_TZ_NAME})",
+    "Repositories Served",
 )
 
 ORG_RUNNER_HEADERS = (
@@ -25,7 +26,50 @@ ORG_RUNNER_HEADERS = (
     "Active Repos", "Total Jobs Run", "Successful", "Failed", "Cancelled", "Timed Out",
     "Success Rate (%)", "Total Compute (Hours)",
     "Avg Queue Wait (s)", "P95 Queue Wait (s)", "SLA Breaches (>60s)", "SLA Breach Rate (%)",
+    "Active Repositories",
 )
+
+RUNNER_JOB_HEADERS = (
+    "Organization",
+    "Repository",
+    "Workflow Name",
+    "Run ID",
+    "Job ID",
+    "Job Name",
+    "Runner Name",
+    "Provisioning Type",
+    "Conclusion",
+    "Duration (Mins)",
+    "Queue Wait (s)",
+    "Queue SLA Breached (>60s)",
+    f"Started At ({LOCAL_TZ_NAME})",
+    f"Completed At ({LOCAL_TZ_NAME})",
+    "Triggered By",
+    "Job URL",
+)
+
+
+@dataclass
+class RunnerJobRecord:
+    """Individual workflow job execution event on a self-hosted runner."""
+
+    org: str
+    repo: str
+    workflow_name: str
+    run_id: int
+    job_id: int
+    job_name: str
+    runner_id: int
+    runner_name: str
+    runner_type: str  # "Persistent (Static VM)" or "Ephemeral (Autoscaled)"
+    conclusion: str   # "success", "failure", "cancelled", "timed_out", "other"
+    duration_seconds: Optional[float] = None
+    queue_seconds: Optional[float] = None
+    sla_breached: bool = False
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    actor: str = "Unknown"
+    html_url: str = ""
 
 
 @dataclass
