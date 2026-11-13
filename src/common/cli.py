@@ -47,6 +47,14 @@ def add_common_scan_arguments(
         help="Comma-separated orgs (e.g. 'org1,org2'; default: all).",
     )
     parser.add_argument(
+        "--repos",
+        "--repos-file",
+        dest="repos_file",
+        default="",
+        metavar="PATH",
+        help="Path to target repositories CSV file (e.g. 'repos.csv'; default: auto-discover or local repos.csv if present).",
+    )
+    parser.add_argument(
         "--output-dir",
         default=output_dir_default,
         metavar="DIR",

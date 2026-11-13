@@ -202,7 +202,15 @@ class ConfigValidator:
 
     @staticmethod
     def load_and_validate_repos_csv(file_path: str, optional: bool = True) -> List[RepoTarget]:
-        """Strictly parse and validate repository inventory from CSV.
+        """Strictly parse and validate repository inventory from CSV with flexible column headers.
+
+        Supported column aliases:
+          - Organization: 'org', 'org_name', 'organization'
+          - Repository: 'repo', 'repo_name', 'repository'
+          - Enabled flag: 'enabled', 'active' (optional, defaults to True)
+          - Personas: 'target_personas', 'personas', 'persona' (optional, defaults to 'all')
+          - Default branch: 'default_branch', 'branch' (optional, defaults to 'main')
+          - Owner team: 'owner_team', 'team', 'owner' (optional, defaults to '')
 
         Args:
             file_path: Path to inventory CSV file.
@@ -221,28 +229,52 @@ class ConfigValidator:
 
         try:
             with open(file_path, "r", encoding="utf-8-sig") as csv_file:
-                reader = csv.DictReader(csv_file)
+                lines = [line for line in csv_file if line.strip() and not line.strip().startswith("#")]
+                if not lines:
+                    return []
+
+                reader = csv.DictReader(lines)
                 if not reader.fieldnames:
                     return []
 
-                required_cols = {"org_name", "repo_name"}
-                present_cols = set(f.strip() for f in reader.fieldnames if f)
-                missing_cols = required_cols - present_cols
-                if missing_cols:
-                    if optional and not present_cols:
+                field_map: Dict[str, str] = {}
+                for fn in reader.fieldnames:
+                    if not fn:
+                        continue
+                    cleaned = fn.strip().lower()
+                    if cleaned in ("org", "org_name", "organization"):
+                        field_map["org"] = fn
+                    elif cleaned in ("repo", "repo_name", "repository"):
+                        field_map["repo"] = fn
+                    elif cleaned in ("enabled", "active"):
+                        field_map["enabled"] = fn
+                    elif cleaned in ("target_personas", "personas", "persona"):
+                        field_map["personas"] = fn
+                    elif cleaned in ("default_branch", "branch"):
+                        field_map["branch"] = fn
+                    elif cleaned in ("owner_team", "team", "owner"):
+                        field_map["team"] = fn
+
+                if "org" not in field_map or "repo" not in field_map:
+                    if optional and not reader.fieldnames:
                         return []
                     raise ValueError(
-                        f"Inventory CSV is missing required columns: {', '.join(sorted(missing_cols))}"
+                        f"Inventory CSV is missing required columns: org_name, repo_name (or 'org,repo')."
                     )
 
-                for line_no, row in enumerate(reader, start=2):
-                    clean_row = {
-                        (k.strip() if k else ""): (v.strip() if v else "")
-                        for k, v in row.items()
-                    }
+                org_col = field_map["org"]
+                repo_col = field_map["repo"]
+                enabled_col = field_map.get("enabled")
+                personas_col = field_map.get("personas")
+                branch_col = field_map.get("branch")
+                team_col = field_map.get("team")
 
-                    org = clean_row.get("org_name", "")
-                    repo = clean_row.get("repo_name", "")
+                for line_no, row in enumerate(reader, start=2):
+                    if not any(v and v.strip() for v in row.values() if isinstance(v, str)):
+                        continue
+
+                    org = (row.get(org_col) or "").strip()
+                    repo = (row.get(repo_col) or "").strip()
 
                     if not org and not repo:
                         continue
@@ -260,12 +292,19 @@ class ConfigValidator:
                             f"Line {line_no} in {file_path}: Invalid repo_name '{repo}'. Path separators and '..' are prohibited."
                         )
 
+                    if enabled_col:
+                        flag = (row.get(enabled_col) or "").strip().lower()
+                        if flag in ("false", "no", "n", "0"):
+                            continue
+
                     unique_key = f"{org.lower()}/{repo.lower()}"
                     if unique_key in seen_repos:
                         continue
                     seen_repos.add(unique_key)
 
-                    raw_personas = clean_row.get("target_personas", "all")
+                    raw_personas = (row.get(personas_col) or "").strip() if personas_col else ""
+                    if not raw_personas:
+                        raw_personas = "all"
                     personas_set: Set[str] = set()
                     for p in re.split(r"[,|;]", raw_personas):
                         p_clean = p.strip().lower()
@@ -274,8 +313,8 @@ class ConfigValidator:
                     if not personas_set:
                         personas_set = {"all"}
 
-                    default_branch = clean_row.get("default_branch", "main") or "main"
-                    owner_team = clean_row.get("owner_team", "")
+                    default_branch = ((row.get(branch_col) or "").strip() if branch_col else "") or "main"
+                    owner_team = (row.get(team_col) or "").strip() if team_col else ""
 
                     targets.append(
                         RepoTarget(

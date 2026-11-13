@@ -136,3 +136,44 @@ def test_validate_repos_csv_path_traversal() -> None:
     finally:
         if os.path.exists(temp_path2):
             os.remove(temp_path2)
+
+
+def test_validate_repos_csv_flexible_aliases_and_flags() -> None:
+    """Test flexible column aliases (org, repo, enabled, etc.) and comment handling."""
+    csv_content = """# Comment line to ignore
+org,repo,enabled,personas,branch,team
+my-org,active-svc,true,all,main,@my-org/core
+my-org,disabled-svc,false,repo_admin,main,@my-org/core
+# Trailing comment
+"""
+    with tempfile.NamedTemporaryFile("w", delete=False, suffix=".csv", encoding="utf-8") as f:
+        f.write(csv_content)
+        temp_path = f.name
+    try:
+        targets = ConfigValidator.load_and_validate_repos_csv(temp_path)
+        assert len(targets) == 1
+        assert targets[0].org_name == "my-org"
+        assert targets[0].repo_name == "active-svc"
+        assert targets[0].owner_team == "@my-org/core"
+        # Disabled repo should be excluded
+        assert not any(t.repo_name == "disabled-svc" for t in targets)
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+    # Test alternate aliases: organization, repository, active
+    csv_alt = """organization,repository,active
+other-org,frontend,yes
+other-org,inactive,0
+"""
+    with tempfile.NamedTemporaryFile("w", delete=False, suffix=".csv", encoding="utf-8") as f:
+        f.write(csv_alt)
+        temp_path2 = f.name
+    try:
+        targets2 = ConfigValidator.load_and_validate_repos_csv(temp_path2)
+        assert len(targets2) == 1
+        assert targets2[0].org_name == "other-org"
+        assert targets2[0].repo_name == "frontend"
+    finally:
+        if os.path.exists(temp_path2):
+            os.remove(temp_path2)

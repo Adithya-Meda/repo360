@@ -42,7 +42,11 @@ def test_org_rulesets_check() -> None:
     assert check.evaluate(inspector, "org", {}).status == CheckStatus.WARN
 
     inspector.get_org_rulesets.return_value = []
+    inspector.get_org_info.return_value = None
     assert check.evaluate(inspector, "org", {}).status == CheckStatus.FAIL
+
+    inspector.get_org_info.return_value = {"plan": {"name": "team"}}
+    assert check.evaluate(inspector, "org", {}).status == CheckStatus.SKIPPED
 
     resp_403 = requests.Response()
     resp_403.status_code = 403
@@ -131,6 +135,15 @@ def test_org_saml_sso_enforcement_check() -> None:
     assert check.evaluate(inspector, "org", {}).status == CheckStatus.FAIL
 
     inspector.get_org_saml_sso.return_value = {"error_403": True}
+    assert check.evaluate(inspector, "org", {}).status == CheckStatus.SKIPPED
+
+    # Fallback to REST two_factor_requirement_enabled when GraphQL requiresTwoFactorAuthentication is None
+    inspector.get_org_info.return_value = {"plan": {"name": "team"}, "two_factor_requirement_enabled": False}
+    inspector.get_org_saml_sso.return_value = {"samlIdentityProvider": None, "requiresTwoFactorAuthentication": None}
+    assert check.evaluate(inspector, "org", {}).status == CheckStatus.WARN
+
+    inspector.get_org_info.return_value = {"plan": {"name": "team"}, "two_factor_requirement_enabled": True}
+    inspector.get_org_saml_sso.return_value = {"samlIdentityProvider": None, "requiresTwoFactorAuthentication": None}
     assert check.evaluate(inspector, "org", {}).status == CheckStatus.SKIPPED
 
 
@@ -230,6 +243,13 @@ def test_workflow_sha_pinning_check() -> None:
 
     inspector.get_file_content.return_value = (
         "steps:\n  - uses: actions/checkout@B4FFDE65F46336AB88EB53BE808477A3936BAE11 # v4.1.1 ./local"
+    )
+    assert check.evaluate(inspector, "org", "repo", "main", {}).status == CheckStatus.PASS
+
+    # 64-character SHA-256 commit hash must also pass
+    sha256_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    inspector.get_file_content.return_value = (
+        f"steps:\n  - uses: actions/checkout@{sha256_hash} # sha256 pinned"
     )
     assert check.evaluate(inspector, "org", "repo", "main", {}).status == CheckStatus.PASS
 

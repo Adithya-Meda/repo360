@@ -84,6 +84,24 @@ def test_resilient_client_wire_speed_when_healthy():
         assert mock_sleep.call_args[0][0] > 0.0
 
 
+def test_resilient_client_paginate_guards_dict_payload():
+    """Ensure paginate ignores dictionary payloads and does not yield dict keys as items."""
+    auth = MagicMock()
+    auth.api_base_url = "https://api.github.com"
+    client = ResilientGitHubClient(auth=auth)
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"message": "Not Found", "documentation_url": "https://..."}
+    mock_resp.headers = {}
+    mock_resp.links = {}
+
+    with patch.object(client, "_send", return_value=mock_resp):
+        items = list(client.paginate("my-org", "/some/endpoint"))
+        # Must NOT yield ['message', 'documentation_url']
+        assert items == []
+
+
 def test_repo_inspector_empty_repo_skips_http_and_multi_page_parallel():
     mock_auth = MagicMock()
     mock_auth.api_base_url = "https://api.github.com"

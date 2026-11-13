@@ -282,7 +282,11 @@ class ResilientGitHubClient:
             if resp.status_code in EMPTY_RESOURCE_STATUSES:
                 return
             resp.raise_for_status()
-            yield from resp.json()
+            data = resp.json()
+            if isinstance(data, list):
+                yield from data
+            elif isinstance(data, dict):
+                logger.warning("paginate received dict response from %s instead of list: keys=%s", url, list(data.keys()))
             url, query = self._next_url(resp), None
 
     def paginate_enveloped(

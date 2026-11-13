@@ -21,6 +21,10 @@ inputs:
     description: "Optional comma-separated list of organizations to audit (e.g. 'org1,org2'). Audits all installed organizations if omitted."
     required: false
     default: ""
+  repos_file:
+    description: "Optional path to target repositories CSV file (e.g. 'repos.csv'). Audits all accessible repositories if omitted."
+    required: false
+    default: ""
   output_dir:
     description: "Directory to save generated Excel reports"
     required: false
@@ -123,6 +127,7 @@ runs:
         AI_MODEL: ${{ inputs.ai_model || inputs.llm_model }}
         AI_PROVIDER: ${{ inputs.llm_provider }}
         INPUT_ORG: ${{ inputs.org }}
+        INPUT_REPOS_FILE: ${{ inputs.repos_file }}
         INPUT_OUTPUT_DIR: ${{ inputs.output_dir }}
         INPUT_LOOKBACK_DAYS: ${{ inputs.lookback_days }}
         INPUT_REQUIRE_AI: ${{ inputs.require_ai }}
@@ -144,6 +149,9 @@ runs:
         COMMON_ARGS=(--output-dir "$INPUT_OUTPUT_DIR" --require-ai "$REQUIRE_AI_VAL")
         if [ -n "$INPUT_ORG" ]; then
           COMMON_ARGS+=(--org "$INPUT_ORG")
+        fi
+        if [ -n "$INPUT_REPOS_FILE" ]; then
+          COMMON_ARGS+=(--repos-file "$INPUT_REPOS_FILE")
         fi
 
         repo360 audit "${COMMON_ARGS[@]}"

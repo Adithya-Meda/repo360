@@ -255,3 +255,67 @@ def discover_app_repositories(
             logger.info("Organization '%s': 0 repositories discovered.", org_login)
 
     return targets, metadata_cache
+
+
+def resolve_scan_targets(
+    auth: Any,
+    client: Any,
+    repos_file: Optional[str] = None,
+    org_filter: Optional[List[str]] = None,
+    include_archived: bool = False,
+    include_forks: bool = True,
+) -> Tuple[List[Tuple[str, str]], Dict[Tuple[str, str], Dict[str, Any]]]:
+    """Resolve scan targets from inventory CSV if provided/available, else auto-discover from App installations."""
+    targets: List[Tuple[str, str]] = []
+    metadata_cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
+    csv_path = repos_file or ("repos.csv" if os.path.isfile("repos.csv") else None)
+    if csv_path and os.path.isfile(csv_path):
+        try:
+            entries = load_flexible_repo_entries(csv_path)
+            org_set = {o.strip().lower() for o in org_filter if o.strip()} if org_filter else None
+            seen: Set[Tuple[str, str]] = set()
+            wildcard_orgs: Set[str] = set()
+
+            for entry in entries:
+                if not entry.enabled:
+                    continue
+                if org_set and entry.org.lower() not in org_set:
+                    continue
+                if entry.repo == "*":
+                    wildcard_orgs.add(entry.org)
+                else:
+                    pair = (entry.org, entry.repo)
+                    pair_key = (entry.org.lower(), entry.repo.lower())
+                    if pair_key not in seen:
+                        seen.add(pair_key)
+                        targets.append(pair)
+
+            if wildcard_orgs:
+                disc_targets, disc_meta = discover_app_repositories(
+                    auth=auth,
+                    client=client,
+                    org_filter=list(wildcard_orgs),
+                    include_archived=include_archived,
+                    include_forks=include_forks,
+                )
+                for pair in disc_targets:
+                    pair_key = (pair[0].lower(), pair[1].lower())
+                    if pair_key not in seen:
+                        seen.add(pair_key)
+                        targets.append(pair)
+                metadata_cache.update(disc_meta)
+
+            if targets:
+                logger.info("Loaded %d target repository(ies) from %s.", len(targets), csv_path)
+                return targets, metadata_cache
+        except Exception as err:
+            logger.warning("Failed to load inventory from %s: %s. Falling back to auto-discovery.", csv_path, err)
+
+    return discover_app_repositories(
+        auth=auth,
+        client=client,
+        org_filter=org_filter,
+        include_archived=include_archived,
+        include_forks=include_forks,
+    )

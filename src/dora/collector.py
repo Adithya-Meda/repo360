@@ -550,6 +550,7 @@ def collect_deploy_workflow_runs(
     """Retrieve completed production-branch deployment workflow runs (excluding PR/CI checks)."""
     runs: List[DeploymentRecord] = []
     allowed_branches = {default_branch.strip().lower(), "main", "master"} if default_branch else {"main", "master"}
+    pre_since_scanned = 0
 
     try:
         endpoint = f"/repos/{org}/{repo}/actions/runs"
@@ -559,25 +560,24 @@ def collect_deploy_workflow_runs(
                 continue
             created_at = parse_ts(created_str)
 
+            if created_at < since:
+                pre_since_scanned += 1
+                if pre_since_scanned > 50:
+                    break
+
             event_trigger = (item.get("event") or "").lower()
             if event_trigger in _NON_DEPLOY_EVENTS:
-                if created_at < since:
-                    break
                 continue
 
             wf_name = item.get("name") or ""
             wf_path = item.get("path") or ""
             if not _is_deploy_workflow_name(wf_name, wf_path, include_non_prod=include_non_prod):
-                if created_at < since:
-                    break
                 continue
 
             head_branch = item.get("head_branch") or default_branch or "main"
             if not include_non_prod and event_trigger not in ("release", "deployment"):
                 branch_l = head_branch.strip().lower()
                 if branch_l not in allowed_branches and not _RELEASE_BRANCH_RE.match(branch_l):
-                    if created_at < since:
-                        break
                     continue
 
             conclusion = (item.get("conclusion") or "").lower()
@@ -588,7 +588,7 @@ def collect_deploy_workflow_runs(
             if created_at < since:
                 if baseline_out is not None and status_val == "SUCCESS" and head_sha:
                     baseline_out.setdefault(stream_key, str(head_sha))
-                break
+                continue
             if created_at > end:
                 continue
             if status_val == "OTHER":
@@ -866,7 +866,8 @@ def _collect_incident_issues(
 
     try:
         endpoint = f"/repos/{org}/{repo}/issues"
-        params = {"state": "all", "since": since.isoformat(), "sort": "created", "direction": "desc"}
+        since_str = since.strftime("%Y-%m-%dT%H:%M:%SZ")
+        params = {"state": "all", "since": since_str, "sort": "created", "direction": "desc"}
         for issue in client.paginate(org, endpoint, params):
             if "pull_request" in issue:
                 continue

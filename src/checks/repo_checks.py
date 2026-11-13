@@ -413,7 +413,7 @@ class WorkflowShaPinningCheck(BaseCheck):
     MUTABLE_TAG_PATTERN = re.compile(
         r"uses:\s*['\"]?([a-zA-Z0-9_.\-]+(?:/[a-zA-Z0-9_.\-]+)+)@([^\s'\"#]+)"
     )
-    SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
+    SHA_PATTERN = re.compile(r"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$")
 
     @staticmethod
     def _strip_yaml_comment(line: str) -> str:
@@ -501,7 +501,7 @@ class WorkflowShaPinningCheck(BaseCheck):
                 org_name=org,
                 repo_name=repo,
                 current_state=f"{len(unpinned_actions)} unpinned third-party actions detected: {'; '.join(sample_unpinned)}",
-                recommended_state="Pin actions to immutable 40-character commit SHAs with comments.",
+                recommended_state="Pin actions to immutable commit SHAs (40 or 64 hex characters) with comments.",
                 explanation="Mutable tags (e.g., @v4) can be retargeted or hijacked by malicious actors to inject supply-chain attacks.",
                 remediation_snippet_before="- uses: actions/checkout@v4",
                 remediation_snippet_after="- uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1",

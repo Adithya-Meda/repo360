@@ -32,6 +32,9 @@ class DevcontainersCheck(BaseCheck):
             or inspector.check_file_exists(
                 org, repo, ".devcontainer.json", default_branch
             )
+            or inspector.check_file_exists(
+                org, repo, ".devcontainer", default_branch
+            )
         )
 
         if has_devcontainer:
@@ -143,6 +146,13 @@ class IssueTemplatesCheck(BaseCheck):
         has_templates = (
             inspector.check_file_exists(org, repo, ".github/ISSUE_TEMPLATE", default_branch)
             or inspector.check_file_exists(org, repo, ".github/ISSUE_TEMPLATE.md", default_branch)
+            or inspector.check_file_exists(org, repo, ".github/issue_template.md", default_branch)
+            or inspector.check_file_exists(org, repo, "ISSUE_TEMPLATE", default_branch)
+            or inspector.check_file_exists(org, repo, "ISSUE_TEMPLATE.md", default_branch)
+            or inspector.check_file_exists(org, repo, "issue_template.md", default_branch)
+            or inspector.check_file_exists(org, repo, "docs/ISSUE_TEMPLATE", default_branch)
+            or inspector.check_file_exists(org, repo, "docs/ISSUE_TEMPLATE.md", default_branch)
+            or inspector.check_file_exists(org, repo, "docs/issue_template.md", default_branch)
         )
 
         if has_templates:
@@ -198,8 +208,17 @@ class PullRequestTemplatesCheck(BaseCheck):
     ) -> CheckResult:
         has_template = (
             inspector.check_file_exists(org, repo, ".github/PULL_REQUEST_TEMPLATE.md", default_branch)
+            or inspector.check_file_exists(org, repo, ".github/pull_request_template.md", default_branch)
             or inspector.check_file_exists(org, repo, ".github/PULL_REQUEST_TEMPLATE", default_branch)
+            or inspector.check_file_exists(org, repo, ".github/pull_request_template", default_branch)
             or inspector.check_file_exists(org, repo, "PULL_REQUEST_TEMPLATE.md", default_branch)
+            or inspector.check_file_exists(org, repo, "pull_request_template.md", default_branch)
+            or inspector.check_file_exists(org, repo, "PULL_REQUEST_TEMPLATE", default_branch)
+            or inspector.check_file_exists(org, repo, "pull_request_template", default_branch)
+            or inspector.check_file_exists(org, repo, "docs/PULL_REQUEST_TEMPLATE.md", default_branch)
+            or inspector.check_file_exists(org, repo, "docs/pull_request_template.md", default_branch)
+            or inspector.check_file_exists(org, repo, "docs/PULL_REQUEST_TEMPLATE", default_branch)
+            or inspector.check_file_exists(org, repo, "docs/pull_request_template", default_branch)
         )
 
         if has_template:
@@ -253,8 +272,13 @@ class PreCommitHooksCheck(BaseCheck):
         default_branch: str,
         thresholds: Dict[str, Any],
     ) -> CheckResult:
-        has_precommit = inspector.check_file_exists(
-            org, repo, ".pre-commit-config.yaml", default_branch
+        has_precommit = (
+            inspector.check_file_exists(
+                org, repo, ".pre-commit-config.yaml", default_branch
+            )
+            or inspector.check_file_exists(
+                org, repo, ".pre-commit-config.yml", default_branch
+            )
         )
 
         if has_precommit:

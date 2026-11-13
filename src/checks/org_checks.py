@@ -71,6 +71,20 @@ class OrgRulesetsCheck(BaseCheck):
                 documentation_url=doc_url,
             )
 
+        org_data = inspector.get_org_info(org)
+        plan_name = ""
+        if isinstance(org_data, dict):
+            plan_name = str((org_data.get("plan") or {}).get("name") or "").lower()
+        is_enterprise = "enterprise" in plan_name
+
+        if isinstance(org_data, dict) and plan_name and not is_enterprise:
+            return make_permission_skipped_result(
+                self,
+                org,
+                f"Organization-level rulesets require GitHub Enterprise Cloud (current organization plan: '{plan_name}'). Individual repository branch protections are evaluated per repo.",
+                doc_url,
+            )
+
         return CheckResult(
             check_id=self.check_id,
             check_name=self.check_name,
@@ -419,6 +433,8 @@ class OrgSamlSsoEnforcementCheck(BaseCheck):
         if isinstance(org_data, dict):
             plan_name = str((org_data.get("plan") or {}).get("name") or "").lower()
         requires_2fa = saml_info.get("requiresTwoFactorAuthentication")
+        if requires_2fa is None and isinstance(org_data, dict):
+            requires_2fa = org_data.get("two_factor_requirement_enabled")
         is_enterprise = "enterprise" in plan_name
 
         if is_enterprise:

@@ -20,6 +20,7 @@ from ..common.concurrency import format_ai_scorecard_status
 from ..common.inventory import (
     discover_app_organizations,
     discover_app_repositories,
+    resolve_scan_targets,
 )
 from ..credentials import resolve_runtime_credentials
 from .collector import (
@@ -168,10 +169,15 @@ def run_activity_cli(argv: Optional[List[str]] = None) -> int:
 
     org_list_str = ", ".join(discovered_orgs)
     print(f"\033[96m[INFO]\033[0m Discovered {len(discovered_orgs)} organization(s) with GitHub App installed: {org_list_str}")
-    print(f"\033[96m[INFO]\033[0m Auto-discovering repositories directly from GitHub App installations...")
-    targets, metadata_cache = discover_app_repositories(
+    repos_file_arg = getattr(args, "repos_file", "") or ("repos.csv" if os.path.isfile("repos.csv") else "")
+    if repos_file_arg:
+        print(f"\033[96m[INFO]\033[0m Resolving repositories from inventory {repos_file_arg}...")
+    else:
+        print(f"\033[96m[INFO]\033[0m Auto-discovering repositories directly from GitHub App installations...")
+    targets, metadata_cache = resolve_scan_targets(
         auth=auth,
         client=client,
+        repos_file=repos_file_arg or None,
         org_filter=org_filter,
         include_archived=cfg.include_archived,
         include_forks=cfg.include_forks,

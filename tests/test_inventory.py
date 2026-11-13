@@ -109,3 +109,22 @@ def test_discover_app_organizations():
 
     none_found = discover_app_organizations(auth=mock_auth, org_filter=["non-existent"])
     assert none_found == []
+
+
+def test_resolve_scan_targets_from_csv(tmp_path):
+    from unittest.mock import MagicMock
+    from src.common.inventory import resolve_scan_targets
+
+    csv_file = tmp_path / "custom_repos.csv"
+    csv_file.write_text("org,repo,enabled\ncustom-org,service-1,true\ncustom-org,service-2,false\n", encoding="utf-8")
+
+    mock_auth = MagicMock()
+    mock_client = MagicMock()
+
+    targets, _ = resolve_scan_targets(
+        auth=mock_auth,
+        client=mock_client,
+        repos_file=str(csv_file),
+    )
+    assert len(targets) == 1
+    assert targets[0] == ("custom-org", "service-1")
