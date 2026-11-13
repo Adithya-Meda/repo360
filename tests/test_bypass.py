@@ -395,4 +395,6 @@ def test_collect_repo_ruleset_bypasses_pushed_at_and_details():
     assert rec.evaluation_result == "bypass"
     assert rec.bypassed_rules == "pull_request, code_scanning"
     assert rec.commit_sha == "2222222222"
+    # Ensure time_period='week' was passed for 7-day lookback
+    assert mock_client.paginate.call_args[0][2] == {"time_period": "week", "per_page": 100}
 

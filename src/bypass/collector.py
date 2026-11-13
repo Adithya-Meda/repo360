@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import requests
@@ -182,8 +182,18 @@ def collect_repo_ruleset_bypasses(
     """Retrieve branch and repository ruleset evaluation events where rules were bypassed."""
     records: List[RulesetBypassRecord] = []
     try:
+        now = datetime.now(timezone.utc)
+        delta_days = (now - since).total_seconds() / 86400.0
+        if delta_days <= 1.05:
+            time_period = "day"
+        elif delta_days <= 7.05:
+            time_period = "week"
+        else:
+            time_period = "month"
+
         endpoint = f"/repos/{org}/{repo}/rulesets/rule-suites"
-        for suite in client.paginate(org, endpoint):
+        params = {"time_period": time_period, "per_page": 100}
+        for suite in client.paginate(org, endpoint, params):
             ts_str = suite.get("pushed_at") or suite.get("created_at")
             if not ts_str:
                 continue

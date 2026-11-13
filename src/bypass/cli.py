@@ -64,8 +64,9 @@ def print_bypass_scorecard(
     print(f"\n{C}{'=' * 76}{X}")
     print(f"{B}{C}   REPO360 PUSH PROTECTION & RULESET BYPASS LEDGER SCORECARD{X}")
     print(f"{C}{'=' * 76}{X}")
+    retention_note = " (Push Protection: up to 365d; Branch Rulesets: max 30d API retention)" if lookback_days > 30 else ""
     print(f"   {B}Organizations Monitored        :{X} {len(org_rows)}")
-    print(f"   {B}Analysis Lookback Window       :{X} {lookback_days} Days")
+    print(f"   {B}Analysis Lookback Window       :{X} {lookback_days} Days{retention_note}")
     print(f"   {B}Push Protection Bypasses       :{X} {R if total_push else G}{total_push} overrides{X}")
     print(f"   {B}Branch Ruleset Bypasses        :{X} {Y if total_ruleset else G}{total_ruleset} policy overrides{X}")
     print(f"   {B}Total Policy Bypass Incidents  :{X} {incident_color}{B}{total_incidents}{X}")
@@ -91,7 +92,18 @@ def run_bypass_cli(argv: Optional[List[str]] = None) -> int:
     add_common_scan_arguments(
         parser,
         ai_subject="risk assessment",
-        include_lookback=True,
+        include_lookback=False,
+    )
+    from ..common.cli import parse_lookback_arg
+    parser.add_argument(
+        "--lookback-days",
+        type=parse_lookback_arg,
+        default=30,
+        metavar="DAYS",
+        help=(
+            "Lookback window in days (1-365; default: 30). "
+            "Push protection alerts cover up to 365 days; GitHub branch ruleset logs are retained by GitHub for up to 30 days."
+        ),
     )
 
     args = parser.parse_args(argv)
