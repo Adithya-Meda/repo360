@@ -64,8 +64,13 @@ def write_bypass_workbook(
     summary["A1"] = "Repo360 Consolidated Push Protection & Ruleset Bypass Ledger"
     summary["A1"].font = Font(bold=True, size=16, color=NAVY)
 
+    window_str = (
+        f"Reporting Window: Full History (All-Time) as of {end_local:{DATE_FMT}}"
+        if cfg.lookback_days == 0
+        else f"Reporting Window: {since_local:{DATE_FMT}} to {end_local:{DATE_FMT}} ({cfg.lookback_days} days)"
+    )
     summary["A2"] = (
-        f"Reporting Window: {since_local:{DATE_FMT}} to {end_local:{DATE_FMT}} ({cfg.lookback_days} days) | "
+        f"{window_str} | "
         f"Generated: {end_local:{DATE_FMT} %H:%M} {LOCAL_TZ_NAME} | Duration: {duration_str}"
     )
     summary["A2"].font = Font(italic=True, color="595959")

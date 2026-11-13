@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..auth.github_app_auth import GitHubAppAuth
-from ..common.cli import add_common_scan_arguments, parse_lookback_arg
+from ..common.cli import add_common_scan_arguments, parse_days_in_year_arg, parse_lookback_arg
 from ..common.client import ResilientGitHubClient
 from ..common.concurrency import format_ai_scorecard_status
 from ..common.inventory import (
@@ -99,14 +99,14 @@ def run_activity_cli(argv: Optional[List[str]] = None) -> int:
     )
     parser.add_argument(
         "--active-min-days",
-        type=parse_lookback_arg,
+        type=parse_days_in_year_arg,
         default=8,
         metavar="DAYS",
         help="Min active days for 'Active' tier (1-365; default: 8).",
     )
     parser.add_argument(
         "--moderate-min-days",
-        type=parse_lookback_arg,
+        type=parse_days_in_year_arg,
         default=3,
         metavar="DAYS",
         help="Min active days for 'Moderate' tier (1-365; default: 3).",
@@ -154,7 +154,7 @@ def run_activity_cli(argv: Optional[List[str]] = None) -> int:
     client = ResilientGitHubClient(auth=auth)
 
     end = datetime.now(timezone.utc)
-    since = end - timedelta(days=cfg.lookback_days)
+    since = datetime(1970, 1, 1, tzinfo=timezone.utc) if cfg.lookback_days == 0 else end - timedelta(days=cfg.lookback_days)
     stamp = end.strftime("%Y%m%d_%H%M%S")
 
     targets: List[Tuple[str, str]] = []

@@ -28,7 +28,8 @@ def make_bounded_int_parser(min_value: int, max_value: Optional[int] = None) -> 
 parse_non_negative_int = make_bounded_int_parser(0)
 parse_positive_int = make_bounded_int_parser(1)
 parse_workers_arg = make_bounded_int_parser(0, 32)
-parse_lookback_arg = make_bounded_int_parser(1, 365)
+parse_days_in_year_arg = make_bounded_int_parser(1, 365)
+parse_lookback_arg = make_bounded_int_parser(0)
 parse_max_runs_arg = make_bounded_int_parser(1, 1000)
 
 
@@ -58,7 +59,7 @@ def add_common_scan_arguments(
             type=parse_lookback_arg,
             default=90,
             metavar="DAYS",
-            help="Lookback window in days (1-365; default: 90).",
+            help="Lookback window in days (>=1, or 0 for full history; default: 90).",
         )
     parser.add_argument(
         "--include-archived",

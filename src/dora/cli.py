@@ -112,7 +112,8 @@ def print_dora_scorecard(
         f"   {B}Repositories Assessed          :{X} {total_repos} "
         f"({active_repos} active, {inactive_repos} inactive/N/A)"
     )
-    print(f"   {B}Analysis Lookback Window       :{X} {lookback_days} Days")
+    window_display = "Full Lifetime (All-Time)" if lookback_days == 0 else f"{lookback_days} Days"
+    print(f"   {B}Analysis Lookback Window       :{X} {window_display}")
     print(f"   {B}Fleet Overall DORA Tier        :{X} {t_color}{B}{fleet_tier}{X}")
     print(
         f"   {B}Total Deployments & Releases   :{X} {B}{total_deploys:,}{X} "
@@ -222,7 +223,7 @@ def run_dora_cli(argv: Optional[List[str]] = None) -> int:
     client = ResilientGitHubClient(auth=auth)
 
     end = datetime.now(timezone.utc)
-    since = end - timedelta(days=cfg.lookback_days)
+    since = datetime(1970, 1, 1, tzinfo=timezone.utc) if cfg.lookback_days == 0 else end - timedelta(days=cfg.lookback_days)
     stamp = end.strftime("%Y%m%d_%H%M%S")
 
     org_filter = [o.strip() for o in args.org.split(",") if o.strip()] if args.org else None

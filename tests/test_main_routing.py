@@ -572,7 +572,7 @@ def test_subcommand_clis_pass_workers_flag_to_config(monkeypatch, tmp_path) -> N
         if "finops" in module_path:
             continue
         cli_mod = importlib.import_module(module_path)
-        for bad_days in ("0", "366"):
+        for bad_days in ("-1", "-5", "not_an_int"):
             with pytest.raises(SystemExit) as exc_lb:
                 getattr(cli_mod, fn_name)(["--lookback-days", bad_days])
             assert exc_lb.value.code == 2

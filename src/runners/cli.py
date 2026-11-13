@@ -169,7 +169,7 @@ def run_runners_cli(argv: Optional[List[str]] = None) -> int:
     client = ResilientGitHubClient(auth=auth)
 
     end = datetime.now(timezone.utc)
-    since = end - timedelta(days=cfg.lookback_days)
+    since = datetime(1970, 1, 1, tzinfo=timezone.utc) if cfg.lookback_days == 0 else end - timedelta(days=cfg.lookback_days)
     stamp = end.strftime("%Y%m%d_%H%M%S")
 
     targets: List[Tuple[str, str]] = []

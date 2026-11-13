@@ -599,3 +599,49 @@ def test_ruleset_bifurcation_org_vs_repo(tmp_path: Path):
     scope_idx = headers.index("Ruleset Level") + 1
     assert rule_ws.cell(2, scope_idx).value == "Organization"
 
+
+def test_bypass_unconstrained_lookback_and_full_history(tmp_path: Path):
+    """Verify lookback_days=0 (All-time full history) and unconstrained lookback (e.g. 1500 days)."""
+    now = datetime.now(timezone.utc)
+    profile = RepoBypassProfile(org="demo-org", repo="demo-repo")
+    profile.push_bypasses.append(
+        PushProtectionBypassRecord(
+            org="demo-org",
+            repo="demo-repo",
+            alert_number=1,
+            secret_type="GitHub PAT",
+            actor="committer",
+            timestamp=now - timedelta(days=1200),
+            resolution="used_in_tests",
+            resolution_comment="Legacy test fixture",
+            push_protection_bypassed=True,
+            html_url="https://github.com/demo-org/demo-repo/security/secret-scanning/1",
+        )
+    )
+    push_rows, ruleset_rows, org_rows, actor_rows = build_bypass_rows(
+        profiles=[profile],
+        orgs=["demo-org"],
+    )
+
+    out_file = tmp_path / "all_time_bypass.xlsx"
+    write_bypass_workbook(
+        path=out_file,
+        cfg=BypassConfig(output_dir=str(tmp_path), lookback_days=0),
+        since=datetime(1970, 1, 1, tzinfo=timezone.utc),
+        end=now,
+        push_rows=push_rows,
+        ruleset_rows=ruleset_rows,
+        org_rows=org_rows,
+        actor_rows=actor_rows,
+        failures=[],
+        execution_duration=1.2,
+    )
+
+    wb = load_workbook(out_file)
+    exec_ws = wb["Executive Summary"]
+    a2_val = str(exec_ws["A2"].value)
+    assert "Full History (All-Time)" in a2_val
+    kpis = {r[0].value: r[1].value for r in exec_ws.iter_rows() if len(r) > 1 and r[0].value}
+    assert kpis["Push Protection Secret Bypasses"] == 1
+
+

@@ -67,9 +67,17 @@ def print_bypass_scorecard(
     print(f"\n{C}{'=' * 76}{X}")
     print(f"{B}{C}   REPO360 PUSH PROTECTION & RULESET BYPASS LEDGER SCORECARD{X}")
     print(f"{C}{'=' * 76}{X}")
-    retention_note = " (Push Protection: up to 365d; Branch Rulesets: max 30d API retention)" if lookback_days > 30 else ""
+    if lookback_days == 0:
+        window_display = "Full Lifetime (All-Time)"
+        retention_note = " (Push Protection: Full History; Branch Rulesets: max 30d API retention)"
+    elif lookback_days > 30:
+        window_display = f"{lookback_days} Days"
+        retention_note = f" (Push Protection: up to {lookback_days}d; Branch Rulesets: max 30d API retention)"
+    else:
+        window_display = f"{lookback_days} Days"
+        retention_note = ""
     print(f"   {B}Organizations Monitored        :{X} {len(org_rows)}")
-    print(f"   {B}Analysis Lookback Window       :{X} {lookback_days} Days{retention_note}")
+    print(f"   {B}Analysis Lookback Window       :{X} {window_display}{retention_note}")
     print(f"   {B}Push Protection Bypasses       :{X} {R if total_push else G}{total_push} overrides{X}")
     print(f"   {B}Total Ruleset Policy Bypasses  :{X} {Y if total_ruleset else G}{total_ruleset} policy overrides{X}")
     print(f"      {B}↳ Organization Rulesets     :{X} {Y if total_org_ruleset else G}{total_org_ruleset}{X}")
@@ -106,8 +114,8 @@ def run_bypass_cli(argv: Optional[List[str]] = None) -> int:
         default=30,
         metavar="DAYS",
         help=(
-            "Lookback window in days (1-365; default: 30). "
-            "Push protection alerts cover up to 365 days; GitHub branch ruleset logs are retained by GitHub for up to 30 days."
+            "Lookback window in days (>=1, or 0 for full history; default: 30). "
+            "Push protection covers full repository lifetime; GitHub branch ruleset logs are retained by GitHub for up to 30 days."
         ),
     )
 
@@ -143,7 +151,7 @@ def run_bypass_cli(argv: Optional[List[str]] = None) -> int:
     client = ResilientGitHubClient(auth=auth)
 
     end = datetime.now(timezone.utc)
-    since = end - timedelta(days=cfg.lookback_days)
+    since = datetime(1970, 1, 1, tzinfo=timezone.utc) if cfg.lookback_days == 0 else end - timedelta(days=cfg.lookback_days)
     stamp = end.strftime("%Y%m%d_%H%M%S")
 
     org_filter = [o.strip() for o in args.org.split(",") if o.strip()] if args.org else None
