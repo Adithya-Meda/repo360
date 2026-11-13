@@ -72,6 +72,8 @@ def write_bypass_workbook(
 
     total_push = len(push_rows)
     total_ruleset = len(ruleset_rows)
+    total_org_ruleset = sum(1 for r in ruleset_rows if len(r) > 5 and str(r[5]).lower() == "organization")
+    total_repo_ruleset = total_ruleset - total_org_ruleset
     total_incidents = total_push + total_ruleset
     unique_actors = len(actor_rows)
     repos_with_bypasses = len(
@@ -102,7 +104,9 @@ def write_bypass_workbook(
         ["Repositories with Bypasses", repos_with_bypasses],
         ["Total Bypass Incidents", total_incidents],
         ["Push Protection Secret Bypasses", total_push],
-        ["Branch Ruleset Policy Bypasses", total_ruleset],
+        ["Total Ruleset Policy Bypasses", total_ruleset],
+        ["  ↳ Organization Rulesets", total_org_ruleset],
+        ["  ↳ Repository Rulesets", total_repo_ruleset],
         ["Unique Bypassing Actors", unique_actors],
         ["Unaudited / API Permission Gaps", len(real_failures)],
     ]
@@ -119,7 +123,7 @@ def write_bypass_workbook(
         curr_row += 2
 
     curr_row = section_title(summary, curr_row, "Organization Bypass & Compliance Summary")
-    curr_row = write_table(summary, curr_row, BYPASS_ORG_HEADERS, org_rows, bar_col=4) + 2
+    curr_row = write_table(summary, curr_row, BYPASS_ORG_HEADERS, org_rows, bar_col=6) + 2
 
     if actor_rows:
         curr_row = section_title(summary, curr_row, "Top Bypassing Actors Across Enterprise")

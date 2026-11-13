@@ -178,12 +178,75 @@ def collect_repo_push_bypasses(
     return records
 
 
+def resolve_ruleset_metadata(
+    client: ResilientGitHubClient,
+    org: str,
+    repo: str,
+    ruleset_cache: Optional[Dict[str, Dict[int, Tuple[str, str]]]] = None,
+) -> Dict[int, Tuple[str, str]]:
+    """Fetch and cache ruleset definitions (Organization vs Repository scope) for a repository.
+
+    Returns mapping of ruleset_id -> (source_type, ruleset_name), where source_type is
+    'Organization' or 'Repository'.
+    """
+    repo_key = f"repo:{org.casefold()}/{repo.casefold()}"
+    if ruleset_cache is not None and repo_key in ruleset_cache:
+        return ruleset_cache[repo_key]
+
+    meta_map: Dict[int, Tuple[str, str]] = {}
+
+    # 1. Check or populate cached organization-level rulesets
+    org_key = f"org:{org.casefold()}"
+    if ruleset_cache is not None and org_key in ruleset_cache:
+        meta_map.update(ruleset_cache[org_key])
+    else:
+        org_map: Dict[int, Tuple[str, str]] = {}
+        try:
+            org_rulesets = client.get(org, f"/orgs/{org}/rulesets")
+            if isinstance(org_rulesets, list):
+                for rs in org_rulesets:
+                    if isinstance(rs, dict) and "id" in rs:
+                        rs_id = rs["id"]
+                        rs_name = rs.get("name") or f"Org Ruleset #{rs_id}"
+                        org_map[rs_id] = ("Organization", rs_name)
+        except Exception:
+            pass
+        if ruleset_cache is not None:
+            ruleset_cache[org_key] = org_map
+        meta_map.update(org_map)
+
+    # 2. Query repository rulesets with includes_parents=true to capture both repo and inherited org rulesets
+    try:
+        repo_rulesets = client.get(org, f"/repos/{org}/{repo}/rulesets?includes_parents=true")
+        if isinstance(repo_rulesets, list):
+            for rs in repo_rulesets:
+                if isinstance(rs, dict) and "id" in rs:
+                    rs_id = rs["id"]
+                    rs_name = rs.get("name") or f"Ruleset #{rs_id}"
+                    src_type = (rs.get("source_type") or "").strip().lower()
+                    if src_type in ("organization", "enterprise"):
+                        scope = "Organization"
+                    elif src_type == "repository":
+                        scope = "Repository"
+                    else:
+                        scope = "Organization" if rs_id in meta_map else "Repository"
+                    meta_map[rs_id] = (scope, rs_name)
+    except Exception:
+        pass
+
+    if ruleset_cache is not None:
+        ruleset_cache[repo_key] = meta_map
+
+    return meta_map
+
+
 def collect_repo_ruleset_bypasses(
     client: ResilientGitHubClient,
     org: str,
     repo: str,
     since: datetime,
     errors_out: Optional[List[str]] = None,
+    ruleset_cache: Optional[Dict[str, Dict[int, Tuple[str, str]]]] = None,
 ) -> List[RulesetBypassRecord]:
     """Retrieve branch and repository ruleset evaluation events where rules were bypassed."""
     records: List[RulesetBypassRecord] = []
@@ -196,6 +259,8 @@ def collect_repo_ruleset_bypasses(
             time_period = "week"
         else:
             time_period = "month"
+
+        ruleset_meta = resolve_ruleset_metadata(client, org, repo, ruleset_cache)
 
         endpoint = f"/repos/{org}/{repo}/rulesets/rule-suites"
         params = {"time_period": time_period, "per_page": 100}
@@ -260,13 +325,44 @@ def collect_repo_ruleset_bypasses(
                     pass
 
             bypassed_names: List[str] = []
+            suite_scopes: List[str] = []
+            ruleset_names: List[str] = []
+
             for ev in evaluations:
                 ev_res = (ev.get("result") or "").lower()
                 if ev_res in ("bypass", "fail"):
-                    r_type = ev.get("rule_type") or ((ev.get("rule_source") or {}).get("name")) or "Rule"
-                    if r_type not in bypassed_names:
-                        bypassed_names.append(r_type)
+                    rule_source = ev.get("rule_source") or {}
+                    rs_type = (rule_source.get("type") or "").lower()
+                    rs_id = rule_source.get("id")
+                    rs_name = rule_source.get("name")
 
+                    rule_type = ev.get("rule_type")
+                    if rule_type and rule_type not in bypassed_names:
+                        bypassed_names.append(rule_type)
+                    elif rs_name and rs_name not in bypassed_names:
+                        bypassed_names.append(rs_name)
+
+                    # Classify ruleset scope and display name
+                    if rs_type == "protected_branch":
+                        suite_scopes.append("Repository")
+                        if "Protected Branch" not in ruleset_names:
+                            ruleset_names.append("Protected Branch")
+                    elif rs_id and rs_id in ruleset_meta:
+                        scope, name = ruleset_meta[rs_id]
+                        suite_scopes.append(scope)
+                        if name and name not in ruleset_names:
+                            ruleset_names.append(name)
+                    elif rs_type == "ruleset":
+                        src_type = (rule_source.get("source_type") or ev.get("source_type") or "").lower()
+                        if src_type in ("organization", "enterprise"):
+                            suite_scopes.append("Organization")
+                        else:
+                            suite_scopes.append("Repository")
+                        if rs_name and rs_name not in ruleset_names:
+                            ruleset_names.append(rs_name)
+
+            resolved_scope = "Organization" if "Organization" in suite_scopes else "Repository"
+            resolved_ruleset_name = ", ".join(ruleset_names) if ruleset_names else "-"
             bypassed_rules_str = ", ".join(bypassed_names) if bypassed_names else "Policy Bypass Permission"
 
             records.append(
@@ -281,6 +377,8 @@ def collect_repo_ruleset_bypasses(
                     commit_sha=sha[:10] if sha else "-",
                     timestamp=ts,
                     html_url=commit_url,
+                    ruleset_scope=resolved_scope,
+                    ruleset_name=resolved_ruleset_name,
                 )
             )
     except requests.HTTPError as err:
@@ -313,6 +411,7 @@ def profile_repo_bypasses(
     check_push: bool = True,
     skip_rulesets: bool = False,
     org_push_bypasses: Optional[Dict[str, Dict[str, List[PushProtectionBypassRecord]]]] = None,
+    ruleset_cache: Optional[Dict[str, Dict[int, Tuple[str, str]]]] = None,
 ) -> RepoBypassProfile:
     """Collect push protection overrides and ruleset bypasses for a repository."""
     profile = RepoBypassProfile(org=org, repo=repo)
@@ -340,7 +439,7 @@ def profile_repo_bypasses(
             profile.errors.append(PLAN_LIMITATION_RULESET_MSG)
         else:
             profile.ruleset_bypasses = collect_repo_ruleset_bypasses(
-                client, org, repo, since, errors_out=profile.errors
+                client, org, repo, since, errors_out=profile.errors, ruleset_cache=ruleset_cache
             )
     return profile
 
@@ -384,6 +483,23 @@ def collect_bypass_data(
                     )
         except Exception:
             pass
+
+    # Shared cache for ruleset definitions across all target evaluations
+    ruleset_cache: Dict[str, Dict[int, Tuple[str, str]]] = {}
+    for org_name in orgs:
+        org_key = f"org:{org_name.casefold()}"
+        org_map: Dict[int, Tuple[str, str]] = {}
+        try:
+            org_rulesets = client.get(org_name, f"/orgs/{org_name}/rulesets")
+            if isinstance(org_rulesets, list):
+                for rs in org_rulesets:
+                    if isinstance(rs, dict) and "id" in rs:
+                        rs_id = rs["id"]
+                        rs_name = rs.get("name") or f"Org Ruleset #{rs_id}"
+                        org_map[rs_id] = ("Organization", rs_name)
+        except Exception:
+            pass
+        ruleset_cache[org_key] = org_map
 
     org_push_bypasses: Dict[str, Dict[str, List[PushProtectionBypassRecord]]] = {}
     for org_name in orgs:
@@ -435,6 +551,7 @@ def collect_bypass_data(
                     check_push=can_check_push,
                     skip_rulesets=skip_rulesets,
                     org_push_bypasses=org_push_bypasses,
+                    ruleset_cache=ruleset_cache,
                 )
                 future_to_target[fut] = (org, repo)
 
@@ -521,7 +638,14 @@ def build_bypass_rows(
     org_profiles: Dict[str, List[RepoBypassProfile]] = {org: [] for org in orgs}
 
     actor_stats: Dict[Tuple[str, str], Dict[str, Any]] = defaultdict(
-        lambda: {"push": 0, "ruleset": 0, "secrets": Counter(), "last_ts": None}
+        lambda: {
+            "push": 0,
+            "org_ruleset": 0,
+            "repo_ruleset": 0,
+            "ruleset": 0,
+            "secrets": Counter(),
+            "last_ts": None,
+        }
     )
 
     for p in profiles:
@@ -565,6 +689,8 @@ def build_bypass_rows(
                 rule.rule_suite_id,
                 rule.ref,
                 rule.actor,
+                rule.ruleset_scope,
+                rule.ruleset_name,
                 rule.evaluation_result.capitalize(),
                 rule.bypassed_rules,
                 rule.commit_sha,
@@ -575,6 +701,10 @@ def build_bypass_rows(
             acc = actor_stats[(p.org, rule.actor.casefold())]
             acc.setdefault("display", rule.actor)
             acc["ruleset"] += 1
+            if (rule.ruleset_scope or "").lower() == "organization":
+                acc["org_ruleset"] += 1
+            else:
+                acc["repo_ruleset"] += 1
             if rule.timestamp:
                 acc["last_ts"] = max(acc["last_ts"], rule.timestamp) if acc["last_ts"] else rule.timestamp
 
@@ -586,6 +716,8 @@ def build_bypass_rows(
             org,
             stat.get("display", _actor_key),
             stat["push"],
+            stat["org_ruleset"],
+            stat["repo_ruleset"],
             stat["ruleset"],
             total,
             top_sec,
@@ -595,7 +727,9 @@ def build_bypass_rows(
     for org in orgs:
         p_list = org_profiles.get(org, [])
         total_push = sum(len(p.push_bypasses) for p in p_list)
-        total_ruleset = sum(len(p.ruleset_bypasses) for p in p_list)
+        total_org_ruleset = sum(p.org_ruleset_bypasses for p in p_list)
+        total_repo_ruleset = sum(p.repo_ruleset_bypasses for p in p_list)
+        total_ruleset = total_org_ruleset + total_repo_ruleset
         total_incidents = total_push + total_ruleset
         unique_org_actors = set()
         sec_counter = Counter()
@@ -619,6 +753,8 @@ def build_bypass_rows(
             org,
             len(p_list),
             total_push,
+            total_org_ruleset,
+            total_repo_ruleset,
             total_ruleset,
             total_incidents,
             len(unique_org_actors),

@@ -15,7 +15,9 @@ BYPASS_ORG_HEADERS = (
     "Organization",
     "Repositories Scanned",
     "Push Protection Bypasses",
-    "Ruleset Bypasses",
+    "Org Ruleset Bypasses",
+    "Repo Ruleset Bypasses",
+    "Total Ruleset Bypasses",
     "Total Bypass Incidents",
     "Unique Bypassing Actors",
     "Top Secret Exposed",
@@ -43,6 +45,8 @@ BYPASS_RULESET_HEADERS = (
     "Rule Suite ID",
     "Branch / Ref",
     "Actor",
+    "Ruleset Level",
+    "Ruleset Name",
     "Result",
     "Bypassed Rules",
     "Commit SHA",
@@ -54,7 +58,9 @@ BYPASS_ACTOR_HEADERS = (
     "Organization",
     "Actor",
     "Push Protection Bypasses",
-    "Ruleset Bypasses",
+    "Org Ruleset Bypasses",
+    "Repo Ruleset Bypasses",
+    "Total Ruleset Bypasses",
     "Total Bypasses",
     "Most Frequent Secret",
     f"Last Bypass ({LOCAL_TZ_NAME})",
@@ -93,6 +99,8 @@ class RulesetBypassRecord:
     commit_sha: str = ""
     timestamp: Optional[datetime] = None
     html_url: str = ""
+    ruleset_scope: str = "Repository"  # "Organization" or "Repository"
+    ruleset_name: str = "-"  # Display name of the ruleset
 
 
 @dataclass
@@ -108,6 +116,14 @@ class RepoBypassProfile:
     @property
     def total_bypasses(self) -> int:
         return len(self.push_bypasses) + len(self.ruleset_bypasses)
+
+    @property
+    def org_ruleset_bypasses(self) -> int:
+        return sum(1 for r in self.ruleset_bypasses if (r.ruleset_scope or "").lower() == "organization")
+
+    @property
+    def repo_ruleset_bypasses(self) -> int:
+        return sum(1 for r in self.ruleset_bypasses if (r.ruleset_scope or "").lower() != "organization")
 
     @property
     def unique_actors(self) -> Set[str]:

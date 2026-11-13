@@ -50,6 +50,8 @@ def print_bypass_scorecard(
 
     total_push = len(push_rows)
     total_ruleset = len(ruleset_rows)
+    total_org_ruleset = sum(1 for r in ruleset_rows if len(r) > 5 and str(r[5]).lower() == "organization")
+    total_repo_ruleset = total_ruleset - total_org_ruleset
     total_incidents = total_push + total_ruleset
     unique_actors = len(actor_rows)
 
@@ -69,7 +71,9 @@ def print_bypass_scorecard(
     print(f"   {B}Organizations Monitored        :{X} {len(org_rows)}")
     print(f"   {B}Analysis Lookback Window       :{X} {lookback_days} Days{retention_note}")
     print(f"   {B}Push Protection Bypasses       :{X} {R if total_push else G}{total_push} overrides{X}")
-    print(f"   {B}Branch Ruleset Bypasses        :{X} {Y if total_ruleset else G}{total_ruleset} policy overrides{X}")
+    print(f"   {B}Total Ruleset Policy Bypasses  :{X} {Y if total_ruleset else G}{total_ruleset} policy overrides{X}")
+    print(f"      {B}↳ Organization Rulesets     :{X} {Y if total_org_ruleset else G}{total_org_ruleset}{X}")
+    print(f"      {B}↳ Repository Rulesets       :{X} {Y if total_repo_ruleset else G}{total_repo_ruleset}{X}")
     print(f"   {B}Total Policy Bypass Incidents  :{X} {incident_color}{B}{total_incidents}{X}")
     print(f"   {B}Unique Bypassing Actors        :{X} {unique_actors}")
     if unaudited_count > 0:

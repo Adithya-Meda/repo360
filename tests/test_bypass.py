@@ -20,6 +20,7 @@ from src.bypass.collector import (
     collect_repo_push_bypasses,
     collect_repo_ruleset_bypasses,
     profile_repo_bypasses,
+    resolve_ruleset_metadata,
 )
 from src.bypass.reporter import write_bypass_workbook
 
@@ -127,19 +128,24 @@ def test_build_bypass_rows():
     assert ruleset_rows[0][0] == "fintech-org"
     assert ruleset_rows[0][2] == 505
     assert ruleset_rows[0][4] == "dev-ops-user"
+    assert ruleset_rows[0][5] == "Repository"
 
     assert len(org_rows) == 1
     assert org_rows[0][0] == "fintech-org"
-    assert org_rows[0][2] == 1
-    assert org_rows[0][3] == 1
-    assert org_rows[0][4] == 2
-    assert org_rows[0][5] == 1
+    assert org_rows[0][2] == 1  # Push Protection Bypasses
+    assert org_rows[0][3] == 0  # Org Ruleset Bypasses
+    assert org_rows[0][4] == 1  # Repo Ruleset Bypasses
+    assert org_rows[0][5] == 1  # Total Ruleset Bypasses
+    assert org_rows[0][6] == 2  # Total Bypass Incidents
+    assert org_rows[0][7] == 1  # Unique Bypassing Actors
 
     assert len(actor_rows) == 1
     assert actor_rows[0][1] == "dev-ops-user"
-    assert actor_rows[0][2] == 1
-    assert actor_rows[0][3] == 1
-    assert actor_rows[0][4] == 2
+    assert actor_rows[0][2] == 1  # Push Protection Bypasses
+    assert actor_rows[0][3] == 0  # Org Ruleset Bypasses
+    assert actor_rows[0][4] == 1  # Repo Ruleset Bypasses
+    assert actor_rows[0][5] == 1  # Total Ruleset Bypasses
+    assert actor_rows[0][6] == 2  # Total Bypasses
 
 
 def test_write_bypass_workbook(tmp_path: Path):
@@ -230,7 +236,7 @@ def test_bypass_hardened_accuracy_and_403_handling(tmp_path: Path):
         [p1, p2, blocked_profile], ["org-a", "org-b", "locked-org"]
     )
     locked_org_row = next(r for r in org_rows if r[0] == "locked-org")
-    assert locked_org_row[7] == "Unknown (Partial)"
+    assert locked_org_row[9] == "Unknown (Partial)"
 
     assert classify_bypass_risk(0, 21) == "High"
     assert classify_bypass_risk(0, 20) == "Medium"
@@ -265,7 +271,7 @@ def test_bypass_hardened_accuracy_and_403_handling(tmp_path: Path):
         end=now,
         push_rows=[],
         ruleset_rows=[],
-        org_rows=[["locked-org", 1, 0, 0, 0, 0, "None", "Unknown (Partial)"]],
+        org_rows=[["locked-org", 1, 0, 0, 0, 0, 0, 0, "None", "Unknown (Partial)"]],
         actor_rows=[],
         failures=[("locked-org/secret-repo", "403 Forbidden")],
     )
@@ -312,7 +318,7 @@ def test_bypass_plan_tier_limitation_handling(tmp_path: Path):
     push_rows, ruleset_rows, org_rows, actor_rows = build_bypass_rows(cleaned_profiles, ["FreeOrg"])
     assert len(org_rows) == 1
     assert org_rows[0][0] == "FreeOrg"
-    assert org_rows[0][7] == "Low"
+    assert org_rows[0][9] == "Low"
 
     # 4. Excel report generates clean posture and separate KPI
     out_file = tmp_path / "bypass_free_plan.xlsx"
@@ -432,4 +438,164 @@ def test_ruleset_bypass_branch_deletion_sha_and_ref_handling():
     # Zero after_sha fell back to before_sha
     assert rec.commit_sha == "abcdef1234"
     assert "abcdef1234" in rec.html_url
+
+
+def test_ruleset_bifurcation_org_vs_repo(tmp_path: Path):
+    """Verify Organization-Level vs Repository-Level ruleset bifurcation across collection, rows, and Excel."""
+    now = datetime.now(timezone.utc)
+    ts_str = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    mock_client = MagicMock()
+    # Mock /orgs/CanarysPlayground/rulesets and /repos/.../rulesets?includes_parents=true
+    def mock_get(org, endpoint):
+        if endpoint == f"/orgs/{org}/rulesets":
+            return [
+                {"id": 100, "name": "Org Baseline Policy", "source_type": "Organization"},
+            ]
+        elif "rulesets?includes_parents=true" in endpoint:
+            return [
+                {"id": 100, "name": "Org Baseline Policy", "source_type": "Organization"},
+                {"id": 200, "name": "Repo Local Policy", "source_type": "Repository"},
+            ]
+        elif "/rulesets/rule-suites/10001" in endpoint:
+            return {
+                "id": 10001,
+                "actor_name": "Adithyamedacan",
+                "ref": "refs/heads/main",
+                "rule_evaluations": [
+                    {
+                        "rule_source": {"type": "ruleset", "id": 100, "name": "Org Baseline Policy"},
+                        "rule_type": "pull_request",
+                        "result": "bypass",
+                    }
+                ],
+            }
+        elif "/rulesets/rule-suites/20001" in endpoint:
+            return {
+                "id": 20001,
+                "actor_name": "Adithyamedacan",
+                "ref": "refs/heads/main",
+                "rule_evaluations": [
+                    {
+                        "rule_source": {"type": "ruleset", "id": 200, "name": "Repo Local Policy"},
+                        "rule_type": "update",
+                        "result": "bypass",
+                    }
+                ],
+            }
+        return {}
+
+    mock_client.get.side_effect = mock_get
+    mock_client.paginate.return_value = [
+        {
+            "id": 10001,
+            "actor_name": "Adithyamedacan",
+            "ref": "refs/heads/main",
+            "after_sha": "aaaa111122",
+            "pushed_at": ts_str,
+            "result": "bypass",
+        },
+        {
+            "id": 20001,
+            "actor_name": "Adithyamedacan",
+            "ref": "refs/heads/main",
+            "after_sha": "bbbb222233",
+            "pushed_at": ts_str,
+            "result": "bypass",
+        },
+    ]
+
+    cache: dict = {}
+    recs = collect_repo_ruleset_bypasses(mock_client, "CanarysPlayground", "test-repo", now - timedelta(days=7), ruleset_cache=cache)
+    assert len(recs) == 2
+    assert recs[0].ruleset_scope == "Organization"
+    assert recs[0].ruleset_name == "Org Baseline Policy"
+    assert recs[1].ruleset_scope == "Repository"
+    assert recs[1].ruleset_name == "Repo Local Policy"
+
+    # Simulate 17 Org bypasses on TaskManager-DemoApp and 8 Repo bypasses on TCS-Resources
+    p_org = RepoBypassProfile(org="CanarysPlayground", repo="TaskManager-DemoApp")
+    for i in range(17):
+        p_org.ruleset_bypasses.append(
+            RulesetBypassRecord(
+                org="CanarysPlayground",
+                repo="TaskManager-DemoApp",
+                rule_suite_id=3000 + i,
+                ref="main",
+                actor="Adithyamedacan",
+                ruleset_scope="Organization",
+                ruleset_name="Org Baseline Policy",
+                timestamp=now,
+            )
+        )
+
+    p_repo = RepoBypassProfile(org="CanarysPlayground", repo="TCS-Resources")
+    for i in range(8):
+        p_repo.ruleset_bypasses.append(
+            RulesetBypassRecord(
+                org="CanarysPlayground",
+                repo="TCS-Resources",
+                rule_suite_id=4000 + i,
+                ref="main",
+                actor="Adithyamedacan",
+                ruleset_scope="Repository",
+                ruleset_name="Repo Local Policy",
+                timestamp=now,
+            )
+        )
+
+    assert p_org.org_ruleset_bypasses == 17
+    assert p_org.repo_ruleset_bypasses == 0
+    assert p_repo.org_ruleset_bypasses == 0
+    assert p_repo.repo_ruleset_bypasses == 8
+
+    push_rows, ruleset_rows, org_rows, actor_rows = build_bypass_rows(
+        [p_org, p_repo], ["CanarysPlayground"]
+    )
+
+    # Org summary verification
+    assert len(org_rows) == 1
+    assert org_rows[0][0] == "CanarysPlayground"
+    assert org_rows[0][3] == 17  # Org Ruleset Bypasses
+    assert org_rows[0][4] == 8   # Repo Ruleset Bypasses
+    assert org_rows[0][5] == 25  # Total Ruleset Bypasses
+    assert org_rows[0][6] == 25  # Total Incidents
+
+    # Actor ledger verification
+    assert len(actor_rows) == 1
+    assert actor_rows[0][1] == "Adithyamedacan"
+    assert actor_rows[0][3] == 17  # Org Ruleset Bypasses
+    assert actor_rows[0][4] == 8   # Repo Ruleset Bypasses
+    assert actor_rows[0][5] == 25  # Total Ruleset Bypasses
+    assert actor_rows[0][6] == 25  # Total Bypasses
+
+    # Excel Executive Summary KPI verification
+    out_file = tmp_path / "bifurcation_test.xlsx"
+    write_bypass_workbook(
+        path=out_file,
+        cfg=BypassConfig(output_dir=str(tmp_path), lookback_days=30),
+        since=now - timedelta(days=30),
+        end=now,
+        push_rows=push_rows,
+        ruleset_rows=ruleset_rows,
+        org_rows=org_rows,
+        actor_rows=actor_rows,
+        failures=[],
+        execution_duration=1.0,
+    )
+
+    wb = load_workbook(out_file)
+    exec_ws = wb["Executive Summary"]
+    kpis = {r[0].value: r[1].value for r in exec_ws.iter_rows() if len(r) > 1 and r[0].value}
+    assert kpis["Total Ruleset Policy Bypasses"] == 25
+    assert kpis["  ↳ Organization Rulesets"] == 17
+    assert kpis["  ↳ Repository Rulesets"] == 8
+
+    # Ruleset Bypasses sheet headers check
+    rule_ws = wb["Ruleset Bypasses"]
+    headers = [cell.value for cell in rule_ws[1]]
+    assert "Ruleset Level" in headers
+    assert "Ruleset Name" in headers
+    scope_idx = headers.index("Ruleset Level") + 1
+    assert rule_ws.cell(2, scope_idx).value == "Organization"
 
