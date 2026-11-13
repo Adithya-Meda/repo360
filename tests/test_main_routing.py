@@ -516,6 +516,8 @@ def test_all_scan_commands_share_consistent_flags_and_reject_max_workers(
     for shared_flag in ("--org", "--output-dir", "--include-archived", "--workers", "--require-ai"):
         assert shared_flag in help_text
     assert "--max-workers" not in help_text
+    assert "--repos" not in help_text
+    assert "--repos-file" not in help_text
     if has_lookback:
         assert "--lookback-days" in help_text
     assert "(0=auto, 1-32" in help_text

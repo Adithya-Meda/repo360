@@ -224,9 +224,12 @@ def resolve_ruleset_metadata(
                     rs_id = rs["id"]
                     rs_name = rs.get("name") or f"Ruleset #{rs_id}"
                     src_type = (rs.get("source_type") or "").strip().lower()
-                    if src_type in ("organization", "enterprise"):
+                    source = (rs.get("source") or "").strip().lower()
+                    if src_type in ("organization", "enterprise") or source == org.lower():
                         scope = "Organization"
-                    elif src_type == "repository":
+                        if ruleset_cache is not None:
+                            ruleset_cache.setdefault(org_key, {})[rs_id] = ("Organization", rs_name)
+                    elif src_type == "repository" or "/" in source:
                         scope = "Repository"
                     else:
                         scope = "Organization" if rs_id in meta_map else "Repository"
@@ -325,44 +328,50 @@ def collect_repo_ruleset_bypasses(
                     pass
 
             bypassed_names: List[str] = []
-            suite_scopes: List[str] = []
-            ruleset_names: List[str] = []
+            org_ruleset_names: List[str] = []
+            repo_ruleset_names: List[str] = []
+            has_org_ruleset = False
 
+            # Check all rules evaluated in this suite to detect if the branch change was governed by an Organization ruleset
             for ev in evaluations:
+                rule_source = ev.get("rule_source") or {}
+                rs_id = rule_source.get("id")
+                rs_name = rule_source.get("name")
+                rs_type = (rule_source.get("type") or "").lower()
+                src_type = (rule_source.get("source_type") or ev.get("source_type") or "").lower()
+
+                is_org = False
+                rs_display_name = rs_name
+                if rs_id and rs_id in ruleset_meta:
+                    scope, name = ruleset_meta[rs_id]
+                    if name:
+                        rs_display_name = name
+                    if scope == "Organization":
+                        is_org = True
+                elif src_type in ("organization", "enterprise"):
+                    is_org = True
+
+                if is_org:
+                    has_org_ruleset = True
+                    if rs_display_name and rs_display_name not in org_ruleset_names:
+                        org_ruleset_names.append(rs_display_name)
+                else:
+                    target_name = "Protected Branch" if rs_type == "protected_branch" else rs_display_name
+                    if target_name and target_name not in repo_ruleset_names:
+                        repo_ruleset_names.append(target_name)
+
+                # Capture bypassed / failed rule types
                 ev_res = (ev.get("result") or "").lower()
                 if ev_res in ("bypass", "fail"):
-                    rule_source = ev.get("rule_source") or {}
-                    rs_type = (rule_source.get("type") or "").lower()
-                    rs_id = rule_source.get("id")
-                    rs_name = rule_source.get("name")
-
                     rule_type = ev.get("rule_type")
                     if rule_type and rule_type not in bypassed_names:
                         bypassed_names.append(rule_type)
-                    elif rs_name and rs_name not in bypassed_names:
-                        bypassed_names.append(rs_name)
+                    elif rs_display_name and rs_display_name not in bypassed_names:
+                        bypassed_names.append(rs_display_name)
 
-                    # Classify ruleset scope and display name
-                    if rs_type == "protected_branch":
-                        suite_scopes.append("Repository")
-                        if "Protected Branch" not in ruleset_names:
-                            ruleset_names.append("Protected Branch")
-                    elif rs_id and rs_id in ruleset_meta:
-                        scope, name = ruleset_meta[rs_id]
-                        suite_scopes.append(scope)
-                        if name and name not in ruleset_names:
-                            ruleset_names.append(name)
-                    elif rs_type == "ruleset":
-                        src_type = (rule_source.get("source_type") or ev.get("source_type") or "").lower()
-                        if src_type in ("organization", "enterprise"):
-                            suite_scopes.append("Organization")
-                        else:
-                            suite_scopes.append("Repository")
-                        if rs_name and rs_name not in ruleset_names:
-                            ruleset_names.append(rs_name)
-
-            resolved_scope = "Organization" if "Organization" in suite_scopes else "Repository"
-            resolved_ruleset_name = ", ".join(ruleset_names) if ruleset_names else "-"
+            resolved_scope = "Organization" if has_org_ruleset else "Repository"
+            combined_ruleset_names = org_ruleset_names + [n for n in repo_ruleset_names if n not in org_ruleset_names]
+            resolved_ruleset_name = ", ".join(combined_ruleset_names) if combined_ruleset_names else "-"
             bypassed_rules_str = ", ".join(bypassed_names) if bypassed_names else "Policy Bypass Permission"
 
             records.append(
