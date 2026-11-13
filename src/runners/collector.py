@@ -186,12 +186,12 @@ def collect_runners_and_metrics(
             for run_item in client.paginate_enveloped(
                 org, f"/repos/{org}/{repo}/actions/runs", "workflow_runs", params=run_params
             ):
-                created_str = run_item.get("created_at") or run_item.get("run_started_at")
+                created_str = run_item.get("run_started_at") or run_item.get("created_at")
                 if not created_str:
                     continue
                 run_time = parse_ts(created_str)
                 if run_time < since:
-                    break
+                    continue
                 if run_time > end:
                     continue
 
@@ -226,6 +226,7 @@ def collect_runners_and_metrics(
                         "self-hosted" in labels
                         or bool(r_id and r_id in loc_known_ids)
                         or bool(r_name and r_name.casefold() in loc_known_names)
+                        or (bool(job.get("runner_group_name")) and job.get("runner_group_name") != "GitHub Actions")
                     )
                     if not is_self_hosted:
                         continue

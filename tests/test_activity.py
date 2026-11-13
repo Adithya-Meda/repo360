@@ -1,7 +1,7 @@
 """Unit and integration tests for Repo360 user activity scraper."""
 
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 import pytest
 
@@ -460,3 +460,43 @@ def test_activity_hardened_dormancy_partial_errors_reviews_and_normalization():
     teams_by_user, team_complete = fetch_team_access(client, ["acme-org"], exclude_bots=True)
     assert team_complete["acme-org"] is False
     assert "sec" in teams_by_user[("acme-org", "alice")]
+
+
+def test_activity_commit_unlinked_author_fallback():
+    """Verify that commits where author is None fall back to committer login."""
+    from src.activity.collector import collect_repo_events
+    from src.activity.models import RepositoryReport
+
+    now = datetime(2026, 10, 15, 12, 0, tzinfo=timezone.utc)
+    mock_client = MagicMock()
+    mock_client.paginate.side_effect = [
+        # commits endpoint
+        [
+            {
+                "author": None,  # unlinked git author
+                "committer": {"login": "verified-committer", "type": "User"},
+                "commit": {
+                    "author": {"name": "Unlinked Dev", "date": "2026-10-15T12:00:00Z"},
+                    "committer": {"name": "GitHub Web", "date": "2026-10-15T12:00:00Z"},
+                },
+            }
+        ],
+        [],  # issues
+        [],  # issue comments
+        [],  # review comments
+    ]
+    report = RepositoryReport()
+    report.metadata = {"has_pull_requests": False, "has_issues": False}
+
+    users = collect_repo_events(
+        client=mock_client,
+        org="demo-org",
+        repo="demo-repo",
+        since=now - timedelta(days=7),
+        exclude_bots=True,
+        end=now,
+        report=report,
+    )
+    assert "verified-committer" in users
+    assert users["verified-committer"].commits == 1
+

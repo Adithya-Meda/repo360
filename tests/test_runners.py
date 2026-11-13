@@ -1,6 +1,7 @@
 """Unit and integration tests for Repo360 Actions self-hosted runners analytics."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock
 import pytest
 
 from src.runners.models import (
@@ -310,3 +311,55 @@ def test_runners_hardened_isolation_ephemeral_and_pooled_metrics(tmp_path):
     kpi_map = {ws_sum.cell(r, 1).value: ws_sum.cell(r, 2).value for r in range(5, 22)}
     # Pooled avg = 250/11 = 22.73s; pooled P95 index ceil(0.95*11)-1 = 10 -> 200.0s
     assert kpi_map["Avg / P95 Queue Wait (s)"] == "22.73s / 200.0s"
+
+
+def test_runner_group_self_hosted_detection(tmp_path):
+    """Verify that jobs in custom runner groups are captured as self-hosted even without 'self-hosted' label."""
+    now = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
+    since = now - timedelta(days=7)
+
+    mock_client = MagicMock()
+    mock_client.paginate_enveloped.side_effect = [
+        # org runner groups
+        [{"id": 1, "name": "Linux-Cluster"}],
+        # org runners
+        [],
+        # repo runners
+        [],
+        # workflow runs
+        [{"id": 999, "run_started_at": "2026-10-18T10:00:00Z", "created_at": "2026-10-18T10:00:00Z"}],
+        # run jobs
+        [
+            {
+                "id": 1001,
+                "runner_id": 99,
+                "runner_name": "k8s-pod-worker-1",
+                "runner_group_name": "Linux-Cluster",  # Custom runner group
+                "labels": ["custom-linux"],  # Note: missing "self-hosted"
+                "conclusion": "success",
+                "created_at": "2026-10-18T10:00:00Z",
+                "started_at": "2026-10-18T10:00:15Z",
+                "completed_at": "2026-10-18T10:02:15Z",
+            }
+        ],
+    ]
+
+    from src.runners.collector import collect_runners_and_metrics
+
+    failures = []
+    cfg = RunnersConfig(lookback_days=7, max_runner_runs_per_repo=10, output_dir=str(tmp_path))
+    runners, runner_metrics, org_metrics = collect_runners_and_metrics(
+        client=mock_client,
+        orgs=["corp-org"],
+        targets=[("corp-org", "app-repo")],
+        since=since,
+        end=now,
+        cfg=cfg,
+        failures=failures,
+    )
+    assert len(runners) == 1
+    assert runners[0].name == "k8s-pod-worker-1"
+    assert runners[0].ephemeral is True
+    assert runners[0].runner_group_name == "Linux-Cluster"
+    assert runner_metrics[("corp-org", "k8s-pod-worker-1")].total_jobs == 1
+

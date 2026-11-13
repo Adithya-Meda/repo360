@@ -304,7 +304,8 @@ def collect_repo_events(
             ):
                 commit_meta = commit.get("commit", {})
                 commit_ts = (commit_meta.get("author") or {}).get("date") or (commit_meta.get("committer") or {}).get("date")
-                record(commit.get("author"), "commits", commit_ts)
+                author_user = commit.get("author") or commit.get("committer")
+                record(author_user, "commits", commit_ts)
         except Exception as exc:
             if report:
                 report.errors.append(_format_error("Commits", exc))

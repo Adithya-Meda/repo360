@@ -1202,4 +1202,43 @@ def test_build_dora_rows_passes_grounded_ai_context_and_stalled_suffix():
     assert "1 stalled IN_PROGRESS deploy(s) >24h." in repo_rows[0][14]
 
 
+def test_incident_issue_resolved_within_lookback_window():
+    """Verify incident issues created before lookback window but resolved within lookback are counted."""
+    from src.dora.collector import _collect_incident_issues
+    from src.dora.models import DORAConfig
+
+    now = datetime(2026, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
+    since = now - timedelta(days=30)  # 2026-10-11
+
+    mock_client = MagicMock()
+    # Issue #101 created before since (2026-09-15), closed during window (2026-10-25)
+    # Issue #102 created and closed within window
+    mock_client.paginate.return_value = [
+        {
+            "number": 101,
+            "title": "Outage on payment gateway",
+            "created_at": "2026-09-15T10:00:00Z",
+            "closed_at": "2026-10-25T14:00:00Z",
+            "state": "closed",
+            "labels": [{"name": "incident"}],
+        },
+        {
+            "number": 102,
+            "title": "Database connection spike",
+            "created_at": "2026-10-15T10:00:00Z",
+            "closed_at": "2026-10-15T12:00:00Z",
+            "state": "closed",
+            "labels": [{"name": "bug"}],
+        },
+    ]
+
+    cfg = DORAConfig(incident_labels=("incident", "bug"))
+    incidents = _collect_incident_issues(mock_client, "acme", "pay-svc", since, now, cfg)
+    assert len(incidents) == 2
+    assert incidents[0]["number"] == 101
+    assert incidents[0]["closed_at"] == datetime(2026, 10, 25, 14, 0, tzinfo=timezone.utc)
+    assert incidents[1]["number"] == 102
+
+
+
 

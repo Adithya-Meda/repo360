@@ -874,17 +874,17 @@ def _collect_incident_issues(
             if not created_str:
                 continue
             created_at = parse_ts(created_str)
-            if created_at < since:
-                break
-            if created_at > end:
+            closed_str = issue.get("closed_at")
+            closed_at = parse_ts(closed_str) if closed_str else None
+
+            in_window = (since <= created_at <= end) or (closed_at is not None and since <= closed_at <= end)
+            if not in_window:
                 continue
 
             labels = issue.get("labels") or []
             if not _has_matching_label(labels, incident_label_set):
                 continue
 
-            closed_str = issue.get("closed_at")
-            closed_at = parse_ts(closed_str) if closed_str else None
             incidents.append({
                 "number": issue.get("number"),
                 "title": str(issue.get("title") or "Production Incident"),
