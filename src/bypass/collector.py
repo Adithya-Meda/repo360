@@ -78,7 +78,7 @@ def parse_push_protection_alert(
     resolution = alert.get("resolution")
     alert_num = alert.get("number", 0)
     secret_type = alert.get("secret_type_display_name") or alert.get("secret_type", "Secret")
-    html_url = alert.get("html_url", "")
+    html_url = alert.get("html_url") or f"https://github.com/{org}/{repo}/security/secret-scanning/{alert_num}"
     comment = alert.get("resolution_comment") or alert.get("push_protection_bypass_request_comment") or "-"
 
     bypassed_by = alert.get("push_protection_bypassed_by")
@@ -93,6 +93,12 @@ def parse_push_protection_alert(
     ) or (
         (reviewer.get("login") if isinstance(reviewer, dict) else str(reviewer))
         if reviewer else None
+    ) or (
+        (alert.get("actor") or {}).get("login") if isinstance(alert.get("actor"), dict) else None
+    ) or (
+        (alert.get("created_by") or {}).get("login") if isinstance(alert.get("created_by"), dict) else None
+    ) or (
+        (alert.get("user") or {}).get("login") if isinstance(alert.get("user"), dict) else None
     ) or "Unknown"
 
     bypassed_at_str = alert.get("push_protection_bypassed_at") or alert.get("created_at")
@@ -199,7 +205,7 @@ def collect_repo_ruleset_bypasses(
                 continue
             ts = parse_ts(ts_str)
             if ts < since:
-                break
+                continue
 
             result = (suite.get("result") or "").lower()
             evaluations = suite.get("rule_evaluations") or []
@@ -215,12 +221,31 @@ def collect_repo_ruleset_bypasses(
                 ref_name = raw_ref[11:]
             elif raw_ref.startswith("refs/tags/"):
                 ref_name = raw_ref[10:]
+            elif raw_ref.startswith("refs/pull/"):
+                ref_name = raw_ref[5:]
+            elif raw_ref.startswith("refs/"):
+                ref_name = raw_ref[5:]
             else:
                 ref_name = raw_ref
 
             raw_after = suite.get("after_sha")
             raw_before = suite.get("before_sha")
-            sha = (raw_after if raw_after and raw_after != "PENDING" else raw_before) or ""
+
+            def _is_valid_sha(s: Optional[str]) -> bool:
+                return bool(s and s != "PENDING" and not all(c == "0" for c in s))
+
+            if _is_valid_sha(raw_after):
+                sha = raw_after
+            elif _is_valid_sha(raw_before):
+                sha = raw_before
+            else:
+                sha = (raw_after if raw_after and raw_after != "PENDING" else raw_before) or ""
+
+            commit_url = (
+                f"https://github.com/{org}/{repo}/commit/{sha}"
+                if _is_valid_sha(sha)
+                else f"https://github.com/{org}/{repo}/rules/history"
+            )
 
             # GitHub rule-suites list endpoint omits rule_evaluations; fetch detailed suite for bypasses
             if suite_id and (not evaluations or actor == "Unknown"):
@@ -255,6 +280,7 @@ def collect_repo_ruleset_bypasses(
                     bypassed_rules=bypassed_rules_str,
                     commit_sha=sha[:10] if sha else "-",
                     timestamp=ts,
+                    html_url=commit_url,
                 )
             )
     except requests.HTTPError as err:
@@ -528,6 +554,11 @@ def build_bypass_rows(
 
         for rule in p.ruleset_bypasses:
             ts_ist = fmt_timestamp(rule.timestamp)
+            rule_url = rule.html_url or (
+                f"https://github.com/{rule.org}/{rule.repo}/commit/{rule.commit_sha}"
+                if rule.commit_sha and rule.commit_sha != "-"
+                else f"https://github.com/{rule.org}/{rule.repo}/rules/history"
+            )
             ruleset_rows.append([
                 rule.org,
                 rule.repo,
@@ -538,6 +569,7 @@ def build_bypass_rows(
                 rule.bypassed_rules,
                 rule.commit_sha,
                 ts_ist,
+                rule_url,
             ])
 
             acc = actor_stats[(p.org, rule.actor.casefold())]

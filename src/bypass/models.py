@@ -47,6 +47,7 @@ BYPASS_RULESET_HEADERS = (
     "Bypassed Rules",
     "Commit SHA",
     "Timestamp (IST)",
+    "Audit / Commit URL",
 )
 
 BYPASS_ACTOR_HEADERS = (
@@ -91,6 +92,7 @@ class RulesetBypassRecord:
     bypassed_rules: str = "All Rules"
     commit_sha: str = ""
     timestamp: Optional[datetime] = None
+    html_url: str = ""
 
 
 @dataclass

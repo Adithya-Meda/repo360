@@ -395,6 +395,41 @@ def test_collect_repo_ruleset_bypasses_pushed_at_and_details():
     assert rec.evaluation_result == "bypass"
     assert rec.bypassed_rules == "pull_request, code_scanning"
     assert rec.commit_sha == "2222222222"
+    assert rec.html_url == "https://github.com/my-org/my-repo/commit/2222222222"
     # Ensure time_period='week' was passed for 7-day lookback
     assert mock_client.paginate.call_args[0][2] == {"time_period": "week", "per_page": 100}
+
+
+def test_ruleset_bypass_branch_deletion_sha_and_ref_handling():
+    """Verify ruleset collection correctly falls back to before_sha for branch deletion and strips refs/pull."""
+    now = datetime.now(timezone.utc)
+    ts_str = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    mock_client = MagicMock()
+    mock_client.paginate.return_value = [
+        {
+            "id": 9005,
+            "actor_name": "ReleaseLead",
+            "ref": "refs/pull/42/head",
+            "before_sha": "abcdef1234567890abcdef1234567890abcdef12",
+            "after_sha": "0000000000000000000000000000000000000000",
+            "pushed_at": ts_str,
+            "result": "bypass",
+        },
+    ]
+    mock_client.get.return_value = {
+        "id": 9005,
+        "actor_name": "ReleaseLead",
+        "ref": "refs/pull/42/head",
+        "rule_evaluations": [{"rule_type": "deletion", "result": "fail"}],
+    }
+
+    recs = collect_repo_ruleset_bypasses(mock_client, "my-org", "my-repo", now - timedelta(days=1))
+    assert len(recs) == 1
+    rec = recs[0]
+    assert rec.rule_suite_id == 9005
+    assert rec.ref == "pull/42/head"
+    # Zero after_sha fell back to before_sha
+    assert rec.commit_sha == "abcdef1234"
+    assert "abcdef1234" in rec.html_url
 
