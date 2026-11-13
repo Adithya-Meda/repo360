@@ -14,7 +14,13 @@ from src.bypass.models import (
     RulesetBypassRecord,
     classify_bypass_risk,
 )
-from src.bypass.collector import build_bypass_rows, collect_repo_push_bypasses, profile_repo_bypasses
+from src.bypass.collector import (
+    build_bypass_rows,
+    collapse_plan_limitations,
+    collect_repo_push_bypasses,
+    collect_repo_ruleset_bypasses,
+    profile_repo_bypasses,
+)
 from src.bypass.reporter import write_bypass_workbook
 
 
@@ -267,3 +273,74 @@ def test_bypass_hardened_accuracy_and_403_handling(tmp_path: Path):
     zero_text = "\n".join(str(c.value) for row in wb_zero["Executive Summary"].iter_rows() for c in row if c.value)
     assert "Partial Coverage" in zero_text
     assert "Satisfactory (No Bypasses)" not in zero_text
+
+
+def test_bypass_plan_tier_limitation_handling(tmp_path: Path):
+    """Verify GitHub Free plan 403 paywall is detected as plan limitation, not false permission error."""
+    now = datetime.now(timezone.utc)
+
+    err_resp = requests.Response()
+    err_resp.status_code = 403
+    err_resp._content = b'{"message":"Upgrade to GitHub Pro or make this repository public to enable this feature."}'
+    blocked_client = MagicMock()
+    blocked_client.paginate.side_effect = requests.HTTPError(response=err_resp)
+
+    # 1. Profile collection tags error as PLAN_LIMITATION_RULESET_MSG, NOT administration:read
+    errors: list[str] = []
+    recs = collect_repo_ruleset_bypasses(blocked_client, "FreeOrg", "priv-repo1", now - timedelta(days=7), errors_out=errors)
+    assert len(recs) == 0
+    assert len(errors) == 1
+    assert "GitHub Plan limitation" in errors[0]
+    assert "grant administration:read" not in errors[0]
+
+    # 2. Simulate 3 private repos in FreeOrg hitting plan limitations
+    p1 = RepoBypassProfile(org="FreeOrg", repo="repo1", errors=[errors[0]])
+    p2 = RepoBypassProfile(org="FreeOrg", repo="repo2", errors=[errors[0]])
+    p3 = RepoBypassProfile(org="FreeOrg", repo="repo3", errors=[errors[0]])
+
+    cleaned_profiles, failures = collapse_plan_limitations([p1, p2, p3])
+    # Collapsed into exactly 1 org-scoped entry
+    assert len(failures) == 1
+    assert failures[0][0] == "FreeOrg (Private Repositories)"
+    assert "GitHub Plan limitation" in failures[0][1]
+    # Repo profiles cleaned of plan limitations
+    assert p1.errors == []
+    assert p2.errors == []
+    assert p3.errors == []
+
+    # 3. Org risk classification with 0 bypasses remains Low (not Unknown/Partial)
+    push_rows, ruleset_rows, org_rows, actor_rows = build_bypass_rows(cleaned_profiles, ["FreeOrg"])
+    assert len(org_rows) == 1
+    assert org_rows[0][0] == "FreeOrg"
+    assert org_rows[0][7] == "Low"
+
+    # 4. Excel report generates clean posture and separate KPI
+    out_file = tmp_path / "bypass_free_plan.xlsx"
+    write_bypass_workbook(
+        path=out_file,
+        cfg=BypassConfig(output_dir=str(tmp_path), lookback_days=30),
+        since=now - timedelta(days=30),
+        end=now,
+        push_rows=push_rows,
+        ruleset_rows=ruleset_rows,
+        org_rows=org_rows,
+        actor_rows=actor_rows,
+        failures=failures,
+        execution_duration=1.2,
+    )
+    wb = load_workbook(out_file)
+    exec_ws = wb["Executive Summary"]
+    kpis = {r[0].value: r[1].value for r in exec_ws.iter_rows() if len(r) > 1 and r[0].value}
+
+    assert kpis["Unaudited / API Permission Gaps"] == 0
+    assert kpis["GitHub Plan Tier Limitations"] == 1
+    assert "Plan-Restricted" in kpis["Enterprise Compliance Posture"]
+    assert "Satisfactory" in kpis["Enterprise Compliance Posture"]
+
+    # Gaps sheet has the collapsed org-level entry
+    assert "Unaudited & Permission Gaps" in wb.sheetnames
+    gap_ws = wb["Unaudited & Permission Gaps"]
+    gap_rows = list(gap_ws.iter_rows(values_only=True))
+    assert len(gap_rows) == 2  # header + 1 row
+    assert gap_rows[1][0] == "FreeOrg (Private Repositories)"
+    assert "GitHub Plan limitation" in gap_rows[1][1]

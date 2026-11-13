@@ -22,14 +22,45 @@ from ..common.concurrency import (
     run_concurrent_ai,
 )
 from .models import (
+    PLAN_LIMITATION_PUSH_MSG,
+    PLAN_LIMITATION_RULESET_MSG,
     BypassConfig,
     PushProtectionBypassRecord,
     RepoBypassProfile,
     RulesetBypassRecord,
     classify_bypass_risk,
+    is_plan_limitation,
 )
 
 logger = logging.getLogger("repo360.bypass")
+
+
+def parse_github_api_error(err: Exception) -> Tuple[Optional[int], str, bool]:
+    """Extract HTTP status, response message, and determine whether error is a GitHub Plan tier limitation."""
+    resp = getattr(err, "response", None)
+    if resp is None:
+        return None, str(err), False
+    status = getattr(resp, "status_code", None)
+    msg = ""
+    try:
+        data = resp.json()
+        if isinstance(data, dict):
+            msg = data.get("message", "")
+    except Exception:
+        msg = getattr(resp, "text", "") or ""
+
+    msg_lower = msg.lower()
+    is_plan = any(
+        k in msg_lower
+        for k in [
+            "upgrade to github pro",
+            "make this repository public",
+            "advanced security",
+            "secret scanning is not enabled",
+            "plan",
+        ]
+    )
+    return status, msg, is_plan
 
 
 def collect_repo_push_bypasses(
@@ -101,10 +132,14 @@ def collect_repo_push_bypasses(
                 )
             )
     except requests.HTTPError as err:
-        status = getattr(getattr(err, "response", None), "status_code", None)
+        status, _, is_plan = parse_github_api_error(err)
         if status == 403:
-            if errors_out is not None:
-                errors_out.append("Push protection alerts blocked (403 Forbidden — grant secret_scanning_alerts:read)")
+            if is_plan:
+                if errors_out is not None:
+                    errors_out.append(PLAN_LIMITATION_PUSH_MSG)
+            else:
+                if errors_out is not None:
+                    errors_out.append("Push protection alerts blocked (403 Forbidden — grant secret_scanning_alerts:read)")
         elif status != 404:
             logger.debug("Secret scanning alert query failed for %s/%s: %s", org, repo, err)
             if errors_out is not None:
@@ -164,10 +199,14 @@ def collect_repo_ruleset_bypasses(
                 )
             )
     except requests.HTTPError as err:
-        status = getattr(getattr(err, "response", None), "status_code", None)
+        status, _, is_plan = parse_github_api_error(err)
         if status == 403:
-            if errors_out is not None:
-                errors_out.append("Ruleset rule-suites blocked (403 Forbidden — grant administration:read)")
+            if is_plan:
+                if errors_out is not None:
+                    errors_out.append(PLAN_LIMITATION_RULESET_MSG)
+            else:
+                if errors_out is not None:
+                    errors_out.append("Ruleset rule-suites blocked (403 Forbidden — grant administration:read)")
         elif status != 404:
             logger.debug("Ruleset rule-suites query failed for %s/%s: %s", org, repo, err)
             if errors_out is not None:
@@ -187,6 +226,7 @@ def profile_repo_bypasses(
     meta: Dict[str, Any],
     ai_engine: Optional[Any] = None,
     check_push: bool = True,
+    skip_rulesets: bool = False,
 ) -> RepoBypassProfile:
     """Collect push protection overrides and ruleset bypasses for a repository."""
     profile = RepoBypassProfile(org=org, repo=repo)
@@ -208,9 +248,12 @@ def profile_repo_bypasses(
             client, org, repo, since, ai_engine=ai_engine, errors_out=profile.errors
         )
     if not is_dormant_repo(meta, since, parse_ts):
-        profile.ruleset_bypasses = collect_repo_ruleset_bypasses(
-            client, org, repo, since, errors_out=profile.errors
-        )
+        if skip_rulesets:
+            profile.errors.append(PLAN_LIMITATION_RULESET_MSG)
+        else:
+            profile.ruleset_bypasses = collect_repo_ruleset_bypasses(
+                client, org, repo, since, errors_out=profile.errors
+            )
     return profile
 
 
@@ -227,6 +270,8 @@ def collect_bypass_data(
     profiles: List[RepoBypassProfile] = []
 
     push_allowed_by_org: Dict[str, bool] = {}
+    free_plan_orgs: Set[str] = set()
+
     auth = getattr(client, "auth", None)
     get_perms = getattr(auth, "get_installation_permissions", None)
     if callable(get_perms):
@@ -238,6 +283,20 @@ def collect_bypass_data(
             except Exception:
                 pass
 
+    for org_name in orgs:
+        try:
+            org_meta = client.get(org_name, f"/orgs/{org_name}")
+            if isinstance(org_meta, dict):
+                plan_name = ((org_meta.get("plan") or {}).get("name") or "").lower()
+                if plan_name == "free":
+                    free_plan_orgs.add(org_name.lower())
+                    logger.info(
+                        "Organization '%s' is on GitHub Free plan: branch rulesets on private repositories require GitHub Team or Enterprise Cloud.",
+                        org_name,
+                    )
+        except Exception:
+            pass
+
     if targets:
         workers = resolve_worker_count(cfg.max_workers, len(targets), max_cap=32)
         executor = ThreadPoolExecutor(max_workers=workers)
@@ -246,6 +305,8 @@ def collect_bypass_data(
             for org, repo in targets:
                 meta = metadata_cache.get((org.casefold(), repo.casefold()), {})
                 can_check_push = push_allowed_by_org.get(org.lower(), True)
+                is_private = bool(meta.get("private", True)) if isinstance(meta, dict) else True
+                skip_rulesets = is_private and (org.lower() in free_plan_orgs)
                 fut = executor.submit(
                     profile_repo_bypasses,
                     client,
@@ -255,6 +316,7 @@ def collect_bypass_data(
                     meta,
                     None,
                     check_push=can_check_push,
+                    skip_rulesets=skip_rulesets,
                 )
                 future_to_target[fut] = (org, repo)
 
@@ -294,6 +356,34 @@ def collect_bypass_data(
 
     profiles.sort(key=lambda p: (p.org.lower(), p.repo.lower()))
     return profiles
+
+
+def collapse_plan_limitations(
+    profiles: List[RepoBypassProfile],
+) -> Tuple[List[RepoBypassProfile], List[Tuple[str, str]]]:
+    """Separate org-scoped plan limitations from repo profiles, preventing false failure attribution.
+
+    Returns:
+        Tuple of (cleaned_profiles, failures_list) where failures_list includes individual repo
+        errors and single aggregated entries for organization-scoped plan tier restrictions.
+    """
+    failures: List[Tuple[str, str]] = []
+    org_plan_limitations: Set[Tuple[str, str]] = set()
+
+    for p in profiles:
+        clean_errors: List[str] = []
+        for err in p.errors:
+            if is_plan_limitation(err):
+                org_plan_limitations.add((f"{p.org} (Private Repositories)", err))
+            else:
+                clean_errors.append(err)
+                failures.append((f"{p.org}/{p.repo}", err))
+        p.errors = clean_errors
+
+    for scope, err in sorted(org_plan_limitations):
+        failures.append((scope, err))
+
+    return profiles, failures
 
 
 def build_bypass_rows(
@@ -385,7 +475,7 @@ def build_bypass_rows(
 
         for p in p_list:
             unique_org_actors.update(a.casefold() for a in p.unique_actors)
-            if p.errors:
+            if any(e for e in p.errors if not is_plan_limitation(e)):
                 org_had_errors = True
             for push in p.push_bypasses:
                 sec_counter[push.secret_type] += 1

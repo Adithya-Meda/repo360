@@ -28,6 +28,7 @@ from .models import (
     BYPASS_RULESET_HEADERS,
     BypassConfig,
     classify_bypass_risk,
+    is_plan_limitation,
 )
 
 RISK_TIER_STYLES = {
@@ -78,13 +79,18 @@ def write_bypass_workbook(
         | {(str(r[0]).casefold(), str(r[1]).casefold()) for r in ruleset_rows}
     )
 
+    real_failures = [f for f in failures if not is_plan_limitation(f[1])]
+    plan_limitations = [f for f in failures if is_plan_limitation(f[1])]
+
     risk_tier = classify_bypass_risk(total_push, total_incidents)
     if risk_tier == "High":
         compliance_posture = "Critical Concern (High Bypass Volume)"
     elif risk_tier == "Medium":
         compliance_posture = "Review Required (Moderate Bypasses)"
-    elif failures:
-        compliance_posture = f"Partial Coverage ({len(failures)} Unaudited / Permission Gap(s))"
+    elif real_failures:
+        compliance_posture = f"Partial Coverage ({len(real_failures)} Unaudited / Permission Gap(s))"
+    elif plan_limitations:
+        compliance_posture = "Satisfactory (No Bypasses; Branch Rulesets Plan-Restricted on Private Repos)"
     else:
         compliance_posture = "Satisfactory (No Bypasses)"
 
@@ -96,9 +102,11 @@ def write_bypass_workbook(
         ["Push Protection Secret Bypasses", total_push],
         ["Branch Ruleset Policy Bypasses", total_ruleset],
         ["Unique Bypassing Actors", unique_actors],
-        ["Unaudited / API Permission Gaps", len(failures)],
-        ["Enterprise Compliance Posture", compliance_posture],
+        ["Unaudited / API Permission Gaps", len(real_failures)],
     ]
+    if plan_limitations:
+        kpis.append(["GitHub Plan Tier Limitations", len(plan_limitations)])
+    kpis.append(["Enterprise Compliance Posture", compliance_posture])
     curr_row = write_table(summary, 4, ("Metric", "Fleet Aggregate"), kpis) + 2
 
     if is_ai_disabled(ai_engine):

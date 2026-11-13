@@ -20,8 +20,8 @@ from ..common.inventory import (
     discover_app_repositories,
 )
 from ..credentials import resolve_runtime_credentials
-from .collector import build_bypass_rows, collect_bypass_data
-from .models import BypassConfig, classify_bypass_risk
+from .collector import build_bypass_rows, collect_bypass_data, collapse_plan_limitations
+from .models import BypassConfig, classify_bypass_risk, is_plan_limitation
 from .reporter import write_bypass_workbook
 
 logger = logging.getLogger("repo360.bypass")
@@ -36,6 +36,7 @@ def print_bypass_scorecard(
     elapsed_seconds: float,
     lookback_days: int,
     unaudited_count: int = 0,
+    plan_limitation_count: int = 0,
     ai_engine: Optional[Any] = None,
 ) -> None:
     """Print an executive color-coded Bypass compliance scorecard to stdout."""
@@ -71,6 +72,8 @@ def print_bypass_scorecard(
     print(f"   {B}Unique Bypassing Actors        :{X} {unique_actors}")
     if unaudited_count > 0:
         print(f"   {B}Unaudited / Permission Gaps    :{X} {Y}{unaudited_count} signal check(s) skipped (403/missing permission){X}")
+    if plan_limitation_count > 0:
+        print(f"   {B}GitHub Plan Limitations        :{X} {C}{plan_limitation_count} org-scoped plan restriction(s) (requires Team/GHEC){X}")
     print(f"   {B}AI Advisory Engine             :{X} {format_ai_scorecard_status(ai_engine)}")
     print(f"   {B}Duration                       :{X} {elapsed_str}")
     print(f"{C}{'-' * 76}{X}")
@@ -161,12 +164,13 @@ def run_bypass_cli(argv: Optional[List[str]] = None) -> int:
     print(f"\033[96m[INFO]\033[0m Auditing push protection exemptions and branch ruleset overrides across {len(orgs)} org(s)...")
 
     profiles = collect_bypass_data(client, orgs, targets, since, cfg, metadata_cache, ai_engine=ai_engine)
+    profiles, failures = collapse_plan_limitations(profiles)
     push_rows, ruleset_rows, org_rows, actor_rows = build_bypass_rows(profiles, orgs)
-    failures: List[Tuple[str, str]] = [
-        (f"{p.org}/{p.repo}", err)
-        for p in profiles
-        for err in p.errors
-    ]
+
+    real_gaps = [f for f in failures if not is_plan_limitation(f[1])]
+    plan_gaps = [f for f in failures if is_plan_limitation(f[1])]
+    for scope, err in plan_gaps:
+        print(f"\033[96m[INFO]\033[0m {scope}: {err}")
 
     out_dir = Path(cfg.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -195,7 +199,8 @@ def run_bypass_cli(argv: Optional[List[str]] = None) -> int:
         xlsx_path=xlsx_path,
         elapsed_seconds=elapsed,
         lookback_days=cfg.lookback_days,
-        unaudited_count=len(failures),
+        unaudited_count=len(real_gaps),
+        plan_limitation_count=len(plan_gaps),
         ai_engine=ai_engine,
     )
     return 0

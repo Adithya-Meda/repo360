@@ -127,6 +127,26 @@ class BypassConfig:
     file_prefix: str = "repo360_bypass"
 
 
+PLAN_LIMITATION_RULESET_MSG = (
+    "Branch rulesets unavailable on private repositories (GitHub Plan limitation: requires GitHub Team or Enterprise Cloud)"
+)
+PLAN_LIMITATION_PUSH_MSG = (
+    "Secret scanning unavailable on private repositories (GitHub Plan limitation: requires GitHub Advanced Security)"
+)
+
+
+def is_plan_limitation(msg: str) -> bool:
+    """Return True if message denotes a GitHub subscription plan limitation rather than an API permission gap."""
+    msg_l = (msg or "").lower()
+    return (
+        "plan limitation" in msg_l
+        or "requires github team" in msg_l
+        or "requires github advanced security" in msg_l
+        or "upgrade to github pro" in msg_l
+        or "make this repository public" in msg_l
+    )
+
+
 def classify_bypass_risk(total_push: int, total_incidents: int) -> str:
     """Classify enterprise/org bypass risk tier with unified compliance thresholds."""
     if total_push > 10 or total_incidents > 20:
