@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..activity.models import DATE_FMT, IST, parse_ts
+from ..common.timezones import DATE_FMT, IST, LOCAL_TZ, LOCAL_TZ_NAME, parse_ts
 
 DORA_SUMMARY_HEADERS = ("Scope", "Category", "Metric", "Value", "DORA Benchmark Tier", "Industry Standard Context")
 
@@ -72,21 +72,21 @@ DORA_DEPLOYMENT_HEADERS = (
     "Environment / Name",
     "Status",
     "Trigger Ref / Branch",
-    "Created (IST)",
+    f"Created ({LOCAL_TZ_NAME})",
     "Lead Time (Hours)",
     "Workflow Run ID",
     "Lead Time Method",
     "Rework / Hotfix",
-    "Completed / Updated (IST)",
+    f"Completed / Updated ({LOCAL_TZ_NAME})",
 )
 
 DORA_RECOVERY_HEADERS = (
     "Organization",
     "Repository",
     "Failed Event",
-    "Failure Time (IST)",
+    f"Failure Time ({LOCAL_TZ_NAME})",
     "Restored Event",
-    "Restored Time (IST)",
+    f"Restored Time ({LOCAL_TZ_NAME})",
     "MTTR (Hours)",
     "Status",
     "Recovery Source",

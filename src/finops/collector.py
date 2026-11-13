@@ -13,7 +13,7 @@ from urllib.parse import quote
 
 import requests
 
-from ..activity.models import IST, fmt_timestamp, parse_ts
+from ..common.timezones import LOCAL_TZ, LOCAL_TZ_NAME, fmt_timestamp, parse_ts
 from ..common.client import ResilientGitHubClient
 from ..common.concurrency import (
     AI_NOT_ENABLED_LABEL,

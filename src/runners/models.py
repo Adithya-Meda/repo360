@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from ..common.timezones import DATE_FMT, IST, LOCAL_TZ, LOCAL_TZ_NAME
+
 RUNNER_HEADERS = (
     "Organization", "Runner ID", "Runner Name", "Scope", "Runner Group", "OS", "Arch", "Agent Version",
     "Provisioning Type", "Status", "Current State", "Labels", "Repos Served",
@@ -14,7 +16,7 @@ RUNNER_HEADERS = (
     "Total Compute (Hours)", "Avg Duration (Mins)", "Median Duration (Mins)",
     "Min Duration (Mins)", "Max Duration (Mins)",
     "Avg Queue Wait (s)", "P95 Queue Wait (s)", "SLA Breaches (>60s)",
-    "First Active (IST)", "Last Active (IST)",
+    f"First Active ({LOCAL_TZ_NAME})", f"Last Active ({LOCAL_TZ_NAME})",
 )
 
 ORG_RUNNER_HEADERS = (

@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 
-from ..activity.models import DATE_FMT, IST
+from ..common.timezones import DATE_FMT, IST, LOCAL_TZ, LOCAL_TZ_NAME
 from ..activity.reporter import (
     NAVY,
     autofit,
@@ -80,7 +80,7 @@ def write_dora_workbook(
     path.parent.mkdir(parents=True, exist_ok=True)
     wb = Workbook()
 
-    since_ist, end_ist = since.astimezone(IST), end.astimezone(IST)
+    since_local, end_local = since.astimezone(LOCAL_TZ), end.astimezone(LOCAL_TZ)
     duration_str = f"{execution_duration:.1f}s" if execution_duration else "N/A"
 
     summary = wb.active
@@ -89,8 +89,8 @@ def write_dora_workbook(
     summary["A1"].font = Font(bold=True, size=16, color=NAVY)
 
     summary["A2"] = (
-        f"Reporting Window: {since_ist:{DATE_FMT}} to {end_ist:{DATE_FMT}} ({cfg.lookback_days} days) | "
-        f"Generated: {end_ist:{DATE_FMT} %H:%M} IST | Duration: {duration_str}"
+        f"Reporting Window: {since_local:{DATE_FMT}} to {end_local:{DATE_FMT}} ({cfg.lookback_days} days) | "
+        f"Generated: {end_local:{DATE_FMT} %H:%M} {LOCAL_TZ_NAME} | Duration: {duration_str}"
     )
     summary["A2"].font = Font(italic=True, color="595959")
 
@@ -196,7 +196,7 @@ def write_dora_workbook(
         ],
         [
             "Recovery Time (MTTR)",
-            "Stream-scoped failure-to-next-success recovery plus resolved incident issues (timestamps in IST; Ledger includes Completed/Updated timestamp). Open unresolved incidents cap tier at Medium.",
+            f"Stream-scoped failure-to-next-success recovery plus resolved incident issues (timestamps in {LOCAL_TZ_NAME}; Ledger includes Completed/Updated timestamp). Open unresolved incidents cap tier at Medium.",
         ],
         [
             "Deployment Rework Rate",

@@ -26,30 +26,10 @@ class BaseReporter(ABC):
     @staticmethod
     def get_local_timestamp() -> str:
         """Return formatted local timestamp with smart timezone detection in DD-MM-YYYY format (e.g. 04-11-2026 16:22:00 IST)."""
-        now = datetime.now().astimezone()
-        tz_name = now.tzname() or "UTC"
-        tz_abbreviations = {
-            "India Standard Time": "IST",
-            "Pacific Standard Time": "PST",
-            "Pacific Daylight Time": "PDT",
-            "Eastern Standard Time": "EST",
-            "Eastern Daylight Time": "EDT",
-            "Central Standard Time": "CST",
-            "Central Daylight Time": "CDT",
-            "Mountain Standard Time": "MST",
-            "Mountain Daylight Time": "MDT",
-            "Greenwich Mean Time": "GMT",
-            "Coordinated Universal Time": "UTC",
-            "W. Europe Standard Time": "CET",
-            "Central Europe Standard Time": "CET",
-            "Romance Standard Time": "CET",
-            "GMT Standard Time": "GMT",
-            "Singapore Standard Time": "SGT",
-            "Tokyo Standard Time": "JST",
-            "China Standard Time": "CST",
-            "AUS Eastern Standard Time": "AEST",
-        }
-        tz_abbr = tz_abbreviations.get(tz_name, tz_name)
+        from ..common.timezones import get_local_timezone, get_local_tz_name
+        tz = get_local_timezone()
+        now = datetime.now(tz)
+        tz_abbr = get_local_tz_name(now)
         return f"{now.strftime('%d-%m-%Y %H:%M:%S')} {tz_abbr}"
 
     @staticmethod

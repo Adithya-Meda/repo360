@@ -7,8 +7,17 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-IST = timezone(timedelta(hours=5, minutes=30), "IST")
-DATE_FMT = "%d-%m-%Y"
+from ..common.timezones import (
+    DATE_FMT,
+    IST,
+    LOCAL_TZ,
+    LOCAL_TZ_NAME,
+    fmt_timestamp,
+    get_local_timezone,
+    get_local_tz_name,
+    parse_ts,
+)
+
 BOT_SUFFIX = "[bot]"
 ISO_Z_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$")
 
@@ -29,7 +38,7 @@ STATUS_ORDER = {s: i for i, s in enumerate(STATUSES)}
 USER_HEADERS = (
     "Organization", "User", "Activity Status", "Active Days", "Total Activities",
     *METRIC_LABELS, "Average Commits per Active Month",
-    "Repositories Contributed", "First Activity (IST)", "Last Activity (IST)",
+    "Repositories Contributed", f"First Activity ({LOCAL_TZ_NAME})", f"Last Activity ({LOCAL_TZ_NAME})",
     "Days Since Last Activity", "Org Member", "Teams",
 )
 STATUS_IDX = USER_HEADERS.index("Activity Status")
@@ -38,7 +47,7 @@ METRIC_START_IDX = USER_HEADERS.index(METRIC_LABELS[0])
 
 REPO_HEADERS = (
     "Organization", "Repository", "User", "Total Activities", *METRIC_LABELS,
-    "Active Days", "Last Activity (IST)",
+    "Active Days", f"Last Activity ({LOCAL_TZ_NAME})",
 )
 ORG_HEADERS = ("Organization", "Repositories Scanned", "Contributors", *STATUSES, "Total Activities")
 
@@ -46,7 +55,7 @@ REPO_INVENTORY_HEADERS = (
     "Organization",
     "Repository",
     "Visibility",
-    "Created (IST)",
+    f"Created ({LOCAL_TZ_NAME})",
     "New in Period",
     "Archived",
     "Default Branch",
@@ -75,20 +84,6 @@ TOP_REPOS_HEADERS = (
 )
 
 MGMT_KPI_HEADERS = ("Scope", "Category", "Metric", "Value", "What this means")
-
-
-def parse_ts(ts_str: str) -> datetime:
-    """Parse ISO8601 UTC timestamp to timezone-aware datetime."""
-    if ts_str.endswith("Z"):
-        ts_str = ts_str[:-1] + "+00:00"
-    return datetime.fromisoformat(ts_str)
-
-
-def fmt_timestamp(dt: Optional[datetime]) -> str:
-    """Format datetime into IST string representation."""
-    if not dt:
-        return "No activity"
-    return dt.astimezone(IST).strftime("%d-%m-%Y %H:%M")
 
 
 def is_bot(user: Dict[str, Any]) -> bool:
@@ -131,12 +126,12 @@ class Activity:
     def add(self, metric: str, when: datetime) -> None:
         current = getattr(self, metric, 0)
         setattr(self, metric, current + 1)
-        when_ist = when.astimezone(IST)
-        self.active_days.add(when_ist.strftime(DATE_FMT))
+        when_local = when.astimezone(LOCAL_TZ)
+        self.active_days.add(when_local.strftime(DATE_FMT))
         self.first_active = min(self.first_active, when) if self.first_active else when
         self.last_active = max(self.last_active, when) if self.last_active else when
         if metric == "commits":
-            self.commit_months.add((when_ist.year, when_ist.month))
+            self.commit_months.add((when_local.year, when_local.month))
 
     def merge(self, other: Activity) -> None:
         for k in METRIC_KEYS:

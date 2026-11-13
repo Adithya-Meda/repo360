@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..activity.models import DATE_FMT, IST, parse_ts
+from ..common.timezones import DATE_FMT, IST, LOCAL_TZ, LOCAL_TZ_NAME, parse_ts
 
 FINOPS_SUMMARY_HEADERS = ("Scope", "Category", "Metric", "Value", "Optimization / Impact")
 
@@ -53,8 +53,8 @@ FINOPS_ARTIFACT_HEADERS = (
     "Artifact ID",
     "Artifact Name",
     "Size (MB)",
-    "Created (IST)",
-    "Expires (IST)",
+    f"Created ({LOCAL_TZ_NAME})",
+    f"Expires ({LOCAL_TZ_NAME})",
     "Retention Days",
     "Default 90-Day Policy",
     "Status",
@@ -68,8 +68,8 @@ FINOPS_CACHE_PACKAGE_HEADERS = (
     "Resource Type",
     "Identifier / Name",
     "Size (MB)",
-    "Created (IST)",
-    "Last Accessed / Updated (IST)",
+    f"Created ({LOCAL_TZ_NAME})",
+    f"Last Accessed / Updated ({LOCAL_TZ_NAME})",
     "Details / Versions",
 )
 

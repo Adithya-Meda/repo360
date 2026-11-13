@@ -10,7 +10,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from ..activity.models import DATE_FMT, IST
+from ..common.timezones import DATE_FMT, IST, LOCAL_TZ, LOCAL_TZ_NAME
 from ..activity.reporter import (
     NAVY,
     autofit,
@@ -64,7 +64,7 @@ def write_finops_workbook(
     path.parent.mkdir(parents=True, exist_ok=True)
     wb = Workbook()
 
-    now_ist = now.astimezone(IST)
+    now_local = now.astimezone(LOCAL_TZ)
     duration_str = f"{execution_duration:.1f}s" if execution_duration else "N/A"
 
     summary = wb.active
@@ -73,7 +73,7 @@ def write_finops_workbook(
     summary["A1"].font = Font(bold=True, size=16, color=NAVY)
 
     summary["A2"] = (
-        f"Generated: {now_ist:{DATE_FMT} %H:%M} IST | "
+        f"Generated: {now_local:{DATE_FMT} %H:%M} {LOCAL_TZ_NAME} | "
         f"Organizations: {len(org_rows)} | Repositories: {len(repo_rows)} | Duration: {duration_str}"
     )
     summary["A2"].font = Font(italic=True, color="595959")

@@ -16,6 +16,8 @@ from ..common.inventory import RepoEntry
 from .models import (
     DATE_FMT,
     IST,
+    LOCAL_TZ,
+    LOCAL_TZ_NAME,
     METRIC_KEYS,
     METRIC_LABELS,
     METRICS,
@@ -279,7 +281,7 @@ def collect_repo_events(
     activity: Dict[str, Activity] = defaultdict(Activity)
     base = f"/repos/{org}/{repo}"
     end = end or datetime.now(timezone.utc)
-    month_start = end.astimezone(IST).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    month_start = end.astimezone(LOCAL_TZ).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     collected_since = min(since, end - timedelta(days=30), month_start) if report else since
     since_param = {"since": collected_since.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
 
@@ -415,7 +417,7 @@ def collect_repository(
     size = report.metadata.get("size", 1)
     pushed_at = parse_ts(report.metadata["pushed_at"]) if report.metadata.get("pushed_at") else None
     updated_at = parse_ts(report.metadata["updated_at"]) if report.metadata.get("updated_at") else None
-    month_start = end.astimezone(IST).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    month_start = end.astimezone(LOCAL_TZ).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     collected_since = min(since, end - timedelta(days=30), month_start)
 
     is_dormant = bool(size == 0 or (pushed_at and pushed_at < collected_since and updated_at and updated_at < collected_since))
@@ -854,7 +856,7 @@ def build_management_tables(
     for org in (organization_status or {}):
         org_lookup.setdefault(org.casefold(), org)
     organizations = sorted(org_lookup.values(), key=str.casefold)
-    month_start = end.astimezone(IST).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    month_start = end.astimezone(LOCAL_TZ).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
     for org in organizations:
         org_k = org.casefold()
@@ -899,7 +901,7 @@ def build_management_tables(
             "User Adoption",
             "Monthly active users (month to date)",
             len(monthly),
-            "Distinct people with tracked activity so far this calendar month (IST), including people who are not members.",
+            f"Distinct people with tracked activity so far this calendar month ({LOCAL_TZ_NAME}), including people who are not members.",
         )
         add(
             "User Adoption",

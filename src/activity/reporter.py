@@ -17,6 +17,8 @@ from ..common.concurrency import AI_NOT_ENABLED_MESSAGE, is_ai_disabled, is_ai_l
 from .models import (
     DATE_FMT,
     IST,
+    LOCAL_TZ,
+    LOCAL_TZ_NAME,
     METRIC_LABELS,
     METRICS,
     ORG_HEADERS,
@@ -46,6 +48,8 @@ STATUS_STYLES = {
 
 EMPTY_CELL_MESSAGES = {
     "Average Commits per Active Month": "No months",
+    f"First Activity ({LOCAL_TZ_NAME})": "No activity",
+    f"Last Activity ({LOCAL_TZ_NAME})": "No activity",
     "First Activity (IST)": "No activity",
     "Last Activity (IST)": "No activity",
     "Days Since Last Activity": "No activity",
@@ -86,6 +90,10 @@ CENTER_HEADERS = {
     "Archived",
     "Activity Last 7 Days",
     "Visibility",
+    f"Created ({LOCAL_TZ_NAME})",
+    f"First Activity ({LOCAL_TZ_NAME})",
+    f"Last Activity ({LOCAL_TZ_NAME})",
+    f"First Seen ({LOCAL_TZ_NAME})",
     "Created (IST)",
     "First Activity (IST)",
     "Last Activity (IST)",
@@ -246,11 +254,11 @@ def write_activity_workbook(
     summary["A1"] = "Repo360 Contributor & Platform Activity Intelligence"
     summary["A1"].font = Font(bold=True, size=16, color=NAVY)
 
-    since_ist, end_ist = since.astimezone(IST), end.astimezone(IST)
+    since_local, end_local = since.astimezone(LOCAL_TZ), end.astimezone(LOCAL_TZ)
     duration_str = f"{execution_duration:.1f}s" if execution_duration else "N/A"
     summary["A2"] = (
-        f"Reporting Window: {since_ist:{DATE_FMT}} to {end_ist:{DATE_FMT}} ({cfg.lookback_days} days) "
-        f"| Generated: {end_ist:{DATE_FMT} %H:%M} IST | Duration: {duration_str}"
+        f"Reporting Window: {since_local:{DATE_FMT}} to {end_local:{DATE_FMT}} ({cfg.lookback_days} days) "
+        f"| Generated: {end_local:{DATE_FMT} %H:%M} {LOCAL_TZ_NAME} | Duration: {duration_str}"
     )
     summary["A2"].font = Font(italic=True, color="595959")
 

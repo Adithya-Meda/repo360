@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from ..activity.models import DATE_FMT, IST, parse_ts
+from ..common.timezones import DATE_FMT, IST, LOCAL_TZ, LOCAL_TZ_NAME, parse_ts
 
 BYPASS_SUMMARY_HEADERS = ("Scope", "Category", "Metric", "Value", "Risk Context & Compliance Impact")
 
@@ -28,7 +28,7 @@ BYPASS_PUSH_PROTECTION_HEADERS = (
     "Alert #",
     "Secret Type",
     "Actor (Bypasser)",
-    "Timestamp (IST)",
+    f"Timestamp ({LOCAL_TZ_NAME})",
     "Resolution Reason",
     "Resolution Justification / Comment",
     "AI Risk Assessment",
@@ -46,7 +46,7 @@ BYPASS_RULESET_HEADERS = (
     "Result",
     "Bypassed Rules",
     "Commit SHA",
-    "Timestamp (IST)",
+    f"Timestamp ({LOCAL_TZ_NAME})",
     "Audit / Commit URL",
 )
 
@@ -57,7 +57,7 @@ BYPASS_ACTOR_HEADERS = (
     "Ruleset Bypasses",
     "Total Bypasses",
     "Most Frequent Secret",
-    "Last Bypass (IST)",
+    f"Last Bypass ({LOCAL_TZ_NAME})",
 )
 
 
