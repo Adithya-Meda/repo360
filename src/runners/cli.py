@@ -139,6 +139,11 @@ def run_runners_cli(argv: Optional[List[str]] = None) -> int:
         metavar="N",
         help="Max workflow runs per repo (1-1000; default: 50).",
     )
+    parser.add_argument(
+        "--skip-repo-runners",
+        action="store_true",
+        help="Skip querying repository-level runner registration endpoints (recommended for large orgs with org-level runner pools to conserve API calls).",
+    )
 
     args = parser.parse_args(argv)
     from ..ai import init_ai_engine, resolve_ai_cli_flag
@@ -161,6 +166,7 @@ def run_runners_cli(argv: Optional[List[str]] = None) -> int:
         lookback_days=args.lookback_days,
         max_runner_runs_per_repo=args.max_runs,
         max_workers=args.workers,
+        scan_repo_runners=not args.skip_repo_runners,
         output_dir=args.output_dir,
     )
 

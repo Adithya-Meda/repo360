@@ -169,41 +169,42 @@ def collect_runners_and_metrics(
         loc_name_map: Dict[str, str] = dict(org_name_map.get(org_k, {}))
         repo_failures: List[Tuple[str, str]] = []
 
-        try:
-            for item in client.paginate_enveloped(org, f"/repos/{org}/{repo}/actions/runners", "runners"):
-                if isinstance(item, dict) and "id" in item:
-                    r_id = item["id"]
-                    name = item.get("name", f"runner-{r_id}")
-                    loc_runners.append(
-                        RunnerInfo(
-                            id=r_id,
-                            name=name,
-                            os=item.get("os", "Unknown"),
-                            status=str(item.get("status", "unknown")).capitalize(),
-                            busy=bool(item.get("busy", False)),
-                            labels=tuple(sorted(l.get("name") for l in item.get("labels", []) if isinstance(l, dict) and l.get("name"))),
-                            runner_group_id=None,
-                            runner_group_name="Repository-level",
-                            org=org,
-                            repo=repo,
-                            arch=item.get("arch", "x64"),
-                            runner_version=item.get("runner_version") or item.get("version") or "Unknown",
-                            ephemeral=bool(item.get("ephemeral", False)),
+        if cfg.scan_repo_runners:
+            try:
+                for item in client.paginate_enveloped(org, f"/repos/{org}/{repo}/actions/runners", "runners"):
+                    if isinstance(item, dict) and "id" in item:
+                        r_id = item["id"]
+                        name = item.get("name", f"runner-{r_id}")
+                        loc_runners.append(
+                            RunnerInfo(
+                                id=r_id,
+                                name=name,
+                                os=item.get("os", "Unknown"),
+                                status=str(item.get("status", "unknown")).capitalize(),
+                                busy=bool(item.get("busy", False)),
+                                labels=tuple(sorted(l.get("name") for l in item.get("labels", []) if isinstance(l, dict) and l.get("name"))),
+                                runner_group_id=None,
+                                runner_group_name="Repository-level",
+                                org=org,
+                                repo=repo,
+                                arch=item.get("arch", "x64"),
+                                runner_version=item.get("runner_version") or item.get("version") or "Unknown",
+                                ephemeral=bool(item.get("ephemeral", False)),
+                            )
                         )
+                        loc_known_names.add(name.casefold())
+                        loc_name_map[name.casefold()] = name
+                        if r_id:
+                            loc_known_ids.add(r_id)
+                            loc_id_to_name[r_id] = name
+            except Exception as exc:
+                status_code = getattr(getattr(exc, "response", None), "status_code", None)
+                if status_code == 403:
+                    repo_failures.append(
+                        (f"{org}/{repo} (Repo-level runners)", "403 Forbidden (requires 'administration: read' repository permission)")
                     )
-                    loc_known_names.add(name.casefold())
-                    loc_name_map[name.casefold()] = name
-                    if r_id:
-                        loc_known_ids.add(r_id)
-                        loc_id_to_name[r_id] = name
-        except Exception as exc:
-            status_code = getattr(getattr(exc, "response", None), "status_code", None)
-            if status_code == 403:
-                repo_failures.append(
-                    (f"{org}/{repo} (Repo-level runners)", "403 Forbidden (requires 'administration: read' repository permission)")
-                )
-            elif status_code != 404:
-                repo_failures.append((f"{org}/{repo} (Repo-level runners)", sanitize_api_error(exc)))
+                elif status_code != 404:
+                    repo_failures.append((f"{org}/{repo} (Repo-level runners)", sanitize_api_error(exc)))
 
         try:
             runs_checked = 0
@@ -386,7 +387,7 @@ def collect_runners_and_metrics(
     if not active_targets:
         return runners, runner_metrics, org_runner_metrics
 
-    workers = resolve_worker_count(cfg.max_workers, len(active_targets), max_cap=32)
+    workers = resolve_worker_count(cfg.max_workers, len(active_targets), max_cap=6)
     from ..common.interrupts import iter_completed
     pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="runner-pool")
     try:

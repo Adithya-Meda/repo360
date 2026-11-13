@@ -50,6 +50,7 @@ class ResilientGitHubClient:
         self._org_reset: Dict[str, float] = {}
         self._org_last_request_time: Dict[str, float] = {}
         self._last_request_time: float = 0.0
+        self._last_rate_limit_warn_time: Dict[str, float] = {}
 
     def _http(self) -> requests.Session:
         """Thread-local session instance with connection retry pooling."""
@@ -108,10 +109,12 @@ class ResilientGitHubClient:
                                 if needed <= self.max_rate_limit_wait_seconds:
                                     self._org_pause_until[org_key] = now + needed
                                     pause_wait = needed
-                                    logger.warning(
-                                        "Proactive rate limit pause for %s: %d calls remaining; waiting %.1fs until reset",
-                                        org, remaining, needed
-                                    )
+                                    if now - self._last_rate_limit_warn_time.get(org_key, 0.0) > 5.0:
+                                        self._last_rate_limit_warn_time[org_key] = now
+                                        logger.warning(
+                                            "Proactive rate limit pause for %s: %d calls remaining; waiting %.1fs until reset",
+                                            org, remaining, needed
+                                        )
                                 else:
                                     logger.error(
                                         "Rate limit reset for %s is %.0fs away, exceeding max limit %ds",
@@ -129,10 +132,12 @@ class ResilientGitHubClient:
                         delay = self.inter_request_delay_seconds
                     elif org_key and org_key in self._org_remaining:
                         rem_quota = self._org_remaining[org_key]
-                        if rem_quota < 500:
-                            delay = 0.04
+                        if rem_quota < 300:
+                            delay = 0.40
                         elif rem_quota < 1000:
-                            delay = 0.01
+                            delay = 0.15
+                        elif rem_quota < 2500:
+                            delay = 0.05
                         else:
                             delay = 0.0
                     else:
@@ -237,17 +242,21 @@ class ResilientGitHubClient:
                 if is_secondary or not org_key:
                     backoff_wait = max(actual_wait, (2 ** attempt) * 15.0 + jitter)
                     self._global_pause_until = max(self._global_pause_until, now + backoff_wait)
-                    logger.warning(
-                        "Secondary rate limit hit (HTTP %s) on %s; pausing all requests for %.1fs (attempt %d/%d)",
-                        resp.status_code, urlparse(url).path, backoff_wait, attempt + 1, self.max_retries
-                    )
+                    if now - self._last_rate_limit_warn_time.get("__global__", 0.0) > 5.0:
+                        self._last_rate_limit_warn_time["__global__"] = now
+                        logger.warning(
+                            "Secondary rate limit hit (HTTP %s) on %s; pausing all requests for %.1fs (attempt %d/%d)",
+                            resp.status_code, urlparse(url).path, backoff_wait, attempt + 1, self.max_retries
+                        )
                     actual_wait = backoff_wait
                 else:
                     self._org_pause_until[org_key] = max(self._org_pause_until.get(org_key, 0.0), now + actual_wait)
-                    logger.warning(
-                        "Installation rate limit hit for %s (HTTP %s); pausing org for %.1fs (attempt %d/%d)",
-                        org, resp.status_code, actual_wait, attempt + 1, self.max_retries
-                    )
+                    if now - self._last_rate_limit_warn_time.get(org_key, 0.0) > 5.0:
+                        self._last_rate_limit_warn_time[org_key] = now
+                        logger.warning(
+                            "Installation rate limit hit for %s (HTTP %s); pausing org for %.1fs (attempt %d/%d)",
+                            org, resp.status_code, actual_wait, attempt + 1, self.max_retries
+                        )
 
             interruptible_sleep(actual_wait, sleep_fn=time.sleep)
 
