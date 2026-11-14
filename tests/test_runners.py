@@ -249,7 +249,7 @@ def test_runners_hardened_isolation_ephemeral_and_pooled_metrics(tmp_path):
     from src.runners.collector import collect_runners_and_metrics
 
     failures = []
-    cfg = RunnersConfig(lookback_days=30, max_runner_runs_per_repo=20, scan_repo_runners=True, output_dir=str(tmp_path))
+    cfg = RunnersConfig(lookback_days=30, max_runner_runs_per_repo=20, scan_repo_runners=True, include_github_hosted=False, output_dir=str(tmp_path))
     runners, runner_metrics, org_metrics = collect_runners_and_metrics(
         client=_FakeClient(),
         orgs=["org-a", "org-b"],
@@ -628,6 +628,109 @@ def test_runners_unlimited_runs_no_truncation(tmp_path):
     )
     # Check that failures and truncations do not have truncation entries
     assert len(failures) == 0
+
+
+def test_include_github_hosted_runners(tmp_path):
+    """Verify that --include-github-hosted pools standard GitHub runners and records job history."""
+    now = datetime(2026, 11, 14, 12, 0, tzinfo=timezone.utc)
+    since = now - timedelta(days=7)
+
+    class _HostedAndSelfHostedClient:
+        def paginate_enveloped(self, org, endpoint, key, params=None):
+            if endpoint.endswith("/actions/runner-groups"):
+                return iter([{"id": 1, "name": "Default"}])
+            if endpoint == "/orgs/hybrid-org/actions/runners":
+                return iter([{"id": 50, "name": "prod-vm-1", "os": "Linux", "status": "online", "busy": False, "labels": ["self-hosted"]}])
+            if endpoint == "/repos/hybrid-org/web-app/actions/runs":
+                return iter([
+                    {"id": 5001, "name": "CI", "created_at": "2026-11-13T10:00:00Z", "run_started_at": "2026-11-13T10:00:00Z"},
+                    {"id": 5002, "name": "Release", "created_at": "2026-11-13T11:00:00Z", "run_started_at": "2026-11-13T11:00:00Z"},
+                ])
+            if endpoint == "/repos/hybrid-org/web-app/actions/runs/5001/jobs":
+                return iter([
+                    {
+                        "id": 8001,
+                        "name": "lint-and-test",
+                        "runner_id": 9001,
+                        "runner_name": "GitHub Actions 9001",
+                        "runner_group_name": "GitHub Actions",
+                        "labels": ["ubuntu-latest"],
+                        "conclusion": "success",
+                        "created_at": "2026-11-13T10:00:00Z",
+                        "started_at": "2026-11-13T10:00:05Z",
+                        "completed_at": "2026-11-13T10:01:05Z",
+                    }
+                ])
+            if endpoint == "/repos/hybrid-org/web-app/actions/runs/5002/jobs":
+                return iter([
+                    {
+                        "id": 8002,
+                        "name": "deploy-self-hosted",
+                        "runner_id": 50,
+                        "runner_name": "prod-vm-1",
+                        "runner_group_name": "Default",
+                        "labels": ["self-hosted"],
+                        "conclusion": "success",
+                        "created_at": "2026-11-13T11:00:00Z",
+                        "started_at": "2026-11-13T11:00:10Z",
+                        "completed_at": "2026-11-13T11:03:10Z",
+                    }
+                ])
+            return iter([])
+
+    from src.runners.collector import collect_runners_and_metrics, build_runner_rows
+
+    # 1. By default: both self-hosted and GitHub-hosted are captured automatically
+    cfg_default = RunnersConfig(lookback_days=7, output_dir=str(tmp_path))
+    failures_def = []
+    job_records_def = []
+    runners_def, metrics_def, org_metrics_def = collect_runners_and_metrics(
+        client=_HostedAndSelfHostedClient(),
+        orgs=["hybrid-org"],
+        targets=[("hybrid-org", "web-app")],
+        since=since,
+        end=now,
+        cfg=cfg_default,
+        failures=failures_def,
+        job_records_out=job_records_def,
+    )
+    runner_names_def = [r.name for r in runners_def]
+    assert "prod-vm-1" in runner_names_def
+    assert "GitHub-Hosted (ubuntu-latest)" in runner_names_def
+    assert len(job_records_def) == 2
+
+    # Check job records
+    hosted_job = next(j for j in job_records_def if j.job_id == 8001)
+    assert hosted_job.runner_type == "GitHub-Hosted (Standard)"
+    assert hosted_job.runner_name == "GitHub-Hosted (ubuntu-latest)"
+
+    # Check build_runner_rows styling
+    r_rows, o_rows = build_runner_rows(runners_def, metrics_def, org_metrics_def, orgs=["hybrid-org"])
+    hosted_row = next(r for r in r_rows if r[2] == "GitHub-Hosted (ubuntu-latest)")
+    assert hosted_row[3] == "GitHub-Hosted"
+    assert hosted_row[8] == "GitHub-Hosted (Standard)"
+    assert hosted_row[9] == "Hosted"
+
+    # 2. When include_github_hosted=False (--no-github-hosted): only self-hosted runners captured
+    cfg_no_hosted = RunnersConfig(lookback_days=7, include_github_hosted=False, output_dir=str(tmp_path))
+    failures_no = []
+    job_records_no = []
+    runners_no, metrics_no, org_metrics_no = collect_runners_and_metrics(
+        client=_HostedAndSelfHostedClient(),
+        orgs=["hybrid-org"],
+        targets=[("hybrid-org", "web-app")],
+        since=since,
+        end=now,
+        cfg=cfg_no_hosted,
+        failures=failures_no,
+        job_records_out=job_records_no,
+    )
+    runner_names_no = [r.name for r in runners_no]
+    assert "prod-vm-1" in runner_names_no
+    assert not any("GitHub-Hosted" in n for n in runner_names_no)
+    assert len(job_records_no) == 1
+    assert job_records_no[0].runner_name == "prod-vm-1"
+
 
 
 

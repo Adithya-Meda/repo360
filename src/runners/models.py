@@ -199,5 +199,6 @@ class RunnersConfig:
     timeout_seconds: int = 30
     max_retries: int = 5
     scan_repo_runners: bool = False
+    include_github_hosted: bool = True
     output_dir: str = "./repo360-output"
     file_prefix: str = "repo360_runners"

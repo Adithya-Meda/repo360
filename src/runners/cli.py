@@ -98,11 +98,17 @@ def print_runners_scorecard(
     real_failures = [f for f in (failures or []) if "truncated" not in str(f[0]).lower() and "truncated" not in str(f[1]).lower()]
     fail_count = len(real_failures)
 
+    hosted_count = sum(1 for r in runner_rows if len(r) > 9 and str(r[9]).capitalize() == "Hosted")
+    self_hosted_count = total_runners - hosted_count
+    runners_str = f"{total_runners}"
+    if hosted_count > 0:
+        runners_str += f" ({self_hosted_count} Self-Hosted, {hosted_count} GitHub-Hosted Pools)"
+
     print(f"\n{C}{'=' * 76}{X}")
-    print(f"{B}{C}   REPO360 ACTIONS SELF-HOSTED RUNNER FLEET SCORECARD{X}")
+    print(f"{B}{C}   REPO360 ACTIONS RUNNER FLEET SCORECARD{X}")
     print(f"{C}{'=' * 76}{X}")
     print(f"   {B}Organizations Monitored :{X} {len(org_runner_rows)}")
-    print(f"   {B}Total Runners in Fleet  :{X} {total_runners}")
+    print(f"   {B}Total Runners in Fleet  :{X} {runners_str}")
     print(f"   {B}Online / Operational    :{X} {G}{online_count:<5} Online{X}")
     print(f"   {B}Offline / Unreachable   :{X} {R if offline_count else G}{offline_count:<5} Offline{X}")
     print(f"   {B}Currently Busy (Active) :{X} {Y}{busy_count:<5} Busy{X}")
@@ -145,6 +151,17 @@ def run_runners_cli(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help="Proactively scan repository-level runner registration endpoints (default: false; self-hosted jobs are auto-detected from workflow runs).",
     )
+    parser.add_argument(
+        "--no-github-hosted",
+        action="store_true",
+        help="Exclude GitHub-hosted runners and inspect only self-hosted runners.",
+    )
+    parser.add_argument(
+        "--include-github-hosted",
+        action="store_true",
+        default=True,
+        help="Include GitHub-hosted runners alongside self-hosted runners (default: true).",
+    )
 
     args = parser.parse_args(argv)
     from ..ai import init_ai_engine, resolve_ai_cli_flag
@@ -163,11 +180,13 @@ def run_runners_cli(argv: Optional[List[str]] = None) -> int:
 
     ai_engine = init_ai_engine(enable_ai=ai_enabled, creds=creds, log=logger)
 
+    include_hosted = False if args.no_github_hosted else True
     cfg = RunnersConfig(
         lookback_days=args.lookback_days,
         max_runner_runs_per_repo=args.max_runs,
         max_workers=args.workers,
         scan_repo_runners=args.scan_repo_runners,
+        include_github_hosted=include_hosted,
         output_dir=args.output_dir,
     )
 

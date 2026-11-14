@@ -45,7 +45,7 @@ def write_runners_workbook(
 
     summary = wb.active
     summary.title = "Executive Summary"
-    summary["A1"] = "Repo360 Actions Self-Hosted Runners Performance & Fleet Report"
+    summary["A1"] = "Repo360 Actions Runner Fleet Performance & Utilization Report"
     summary["A1"].font = Font(bold=True, size=16, color=NAVY)
 
     since_local, end_local = since.astimezone(LOCAL_TZ), end.astimezone(LOCAL_TZ)
@@ -176,10 +176,17 @@ def write_runners_workbook(
     real_failures = [f for f in failures if "truncated" not in str(f[0]).lower() and "truncated" not in str(f[1]).lower()]
     all_truncations = list(truncation_notes or []) + [f for f in failures if "truncated" in str(f[0]).lower() or "truncated" in str(f[1]).lower()]
 
+    hosted_pools_count = sum(1 for r in runner_rows if len(r) > 9 and str(r[9]).capitalize() == "Hosted")
+    self_hosted_count = total_runners - hosted_pools_count
+
     kpis = [
         ["Total Duration", duration_str],
         ["Organizations Monitored", len(org_runner_rows)],
-        ["Discovered Self-Hosted Runners", total_runners],
+        ["Discovered Self-Hosted Runners", self_hosted_count],
+    ]
+    if hosted_pools_count > 0:
+        kpis.append(["GitHub-Hosted Runner Pools", hosted_pools_count])
+    kpis.extend([
         ["Online Runners", online_count],
         ["Offline / Dormant Runners", offline_count],
         ["Fleet Availability (%)", availability_display],
@@ -196,7 +203,7 @@ def write_runners_workbook(
         ],
         ["Queue SLA Breaches (>60s wait)", total_sla_breaches],
         ["Unprocessed Items / Errors", len(real_failures)],
-    ]
+    ])
     curr_row = write_table(summary, 4, ("Metric", "Fleet Aggregate"), kpis) + 2
 
     curr_row = section_title(summary, curr_row, advisory_title)
@@ -247,6 +254,9 @@ def write_runners_workbook(
             elif val == "Ephemeral":
                 cell.fill = PatternFill("solid", fgColor="D9E1F2")
                 cell.font = Font(bold=True, color="1F4E78")
+            elif val == "Hosted":
+                cell.fill = PatternFill("solid", fgColor="E2EFDA")
+                cell.font = Font(bold=True, color="375623")
     else:
         write_empty_table(
             runner_ws,

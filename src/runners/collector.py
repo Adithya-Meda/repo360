@@ -45,6 +45,20 @@ def sanitize_api_error(exc: Exception) -> str:
     return err_str[:120]
 
 
+def resolve_hosted_runner_pool(labels: List[Any], job_os: Optional[str] = None) -> Tuple[str, str, str]:
+    """Derive clean hosted pool name, OS, and architecture from GitHub-hosted runner job labels."""
+    for l in labels:
+        l_str = str(l).strip()
+        l_lower = l_str.lower()
+        if any(prefix in l_lower for prefix in ("ubuntu", "windows", "macos")):
+            os_name = "Linux" if "ubuntu" in l_lower else ("Windows" if "windows" in l_lower else "macOS")
+            arch = "arm64" if any(a in l_lower for a in ("arm", "m1", "m2", "m3", "m4")) else "x64"
+            return f"GitHub-Hosted ({l_str})", os_name, arch
+
+    os_name = (job_os or "Linux").capitalize()
+    return f"GitHub-Hosted ({os_name})", os_name, "x64"
+
+
 def collect_runners_and_metrics(
     client: ResilientGitHubClient,
     orgs: List[str],
@@ -243,7 +257,7 @@ def collect_runners_and_metrics(
                 wf_id = run_item.get("workflow_id")
                 head_sha = run_item.get("head_sha")
                 cache_key = (wf_id, head_sha) if (wf_id and head_sha) else None
-                if cache_key is not None and wf_runner_cache.get(cache_key) is False:
+                if not cfg.include_github_hosted and cache_key is not None and wf_runner_cache.get(cache_key) is False:
                     continue
 
                 try:
@@ -276,9 +290,10 @@ def collect_runners_and_metrics(
                         or bool(r_name and r_name.casefold() in loc_known_names)
                         or (bool(job.get("runner_group_name")) and job.get("runner_group_name") != "GitHub Actions")
                     )
-                    if not is_self_hosted:
+                    if not is_self_hosted and not cfg.include_github_hosted:
                         continue
-                    has_self_hosted = True
+                    if is_self_hosted:
+                        has_self_hosted = True
 
                     created_at = parse_ts(job["created_at"]) if job.get("created_at") else None
                     started_at = parse_ts(job["started_at"]) if job.get("started_at") else None
@@ -288,42 +303,67 @@ def collect_runners_and_metrics(
                     duration_sec = max(0.0, (completed_at - started_at).total_seconds()) if (completed_at and started_at) else None
                     job_end = completed_at or started_at
 
-                    matched_name = r_name or f"runner-{r_id}" if r_id else "runner-unknown"
-                    if not r_id and not r_name:
-                        target_buckets: Tuple[RunnerJobMetrics, ...] = (loc_org_metrics[org],)
-                        runner_type = "Ephemeral (Autoscaled)"
-                    else:
-                        if r_id and r_id in loc_id_to_name:
-                            matched_name = loc_id_to_name[r_id]
-                        elif r_name and r_name.casefold() in loc_name_map:
-                            matched_name = loc_name_map[r_name.casefold()]
+                    if is_self_hosted:
+                        matched_name = r_name or f"runner-{r_id}" if r_id else "runner-unknown"
+                        if not r_id and not r_name:
+                            target_buckets: Tuple[RunnerJobMetrics, ...] = (loc_org_metrics[org],)
+                            runner_type = "Ephemeral (Autoscaled)"
                         else:
-                            matched_name = r_name or f"runner-{r_id}"
+                            if r_id and r_id in loc_id_to_name:
+                                matched_name = loc_id_to_name[r_id]
+                            elif r_name and r_name.casefold() in loc_name_map:
+                                matched_name = loc_name_map[r_name.casefold()]
+                            else:
+                                matched_name = r_name or f"runner-{r_id}"
 
+                            if matched_name.casefold() not in loc_known_names:
+                                loc_known_names.add(matched_name.casefold())
+                                loc_name_map[matched_name.casefold()] = matched_name
+                                if r_id:
+                                    loc_known_ids.add(r_id)
+                                    loc_id_to_name[r_id] = matched_name
+                                loc_runners.append(
+                                    RunnerInfo(
+                                        id=r_id or 0,
+                                        name=matched_name,
+                                        os=job.get("os", "Linux"),
+                                        status="Ephemeral",
+                                        busy=False,
+                                        labels=tuple(job.get("labels", ["self-hosted"])),
+                                        runner_group_name=job.get("runner_group_name") or "Default",
+                                        org=org,
+                                        repo=None,
+                                        arch=job.get("arch", "x64"),
+                                        runner_version="Unknown",
+                                        ephemeral=True,
+                                    )
+                                )
+                            target_buckets = (loc_runner_metrics[(org, matched_name)], loc_org_metrics[org])
+                            runner_type = "Ephemeral (Autoscaled)" if (job.get("status") == "Ephemeral" or any(r.name == matched_name and r.ephemeral for r in loc_runners)) else "Persistent (Static VM)"
+                    else:
+                        pool_name, host_os, host_arch = resolve_hosted_runner_pool(job.get("labels", []), job.get("os"))
+                        matched_name = pool_name
+                        runner_type = "GitHub-Hosted (Standard)"
                         if matched_name.casefold() not in loc_known_names:
                             loc_known_names.add(matched_name.casefold())
                             loc_name_map[matched_name.casefold()] = matched_name
-                            if r_id:
-                                loc_known_ids.add(r_id)
-                                loc_id_to_name[r_id] = matched_name
                             loc_runners.append(
                                 RunnerInfo(
-                                    id=r_id or 0,
+                                    id=0,
                                     name=matched_name,
-                                    os=job.get("os", "Linux"),
-                                    status="Ephemeral",
+                                    os=host_os,
+                                    status="Hosted",
                                     busy=False,
-                                    labels=tuple(job.get("labels", ["self-hosted"])),
-                                    runner_group_name=job.get("runner_group_name") or "Default",
+                                    labels=tuple(job.get("labels", [matched_name])),
+                                    runner_group_name="GitHub Actions",
                                     org=org,
                                     repo=None,
-                                    arch=job.get("arch", "x64"),
-                                    runner_version="Unknown",
+                                    arch=host_arch,
+                                    runner_version="GitHub Managed",
                                     ephemeral=True,
                                 )
                             )
                         target_buckets = (loc_runner_metrics[(org, matched_name)], loc_org_metrics[org])
-                        runner_type = "Ephemeral (Autoscaled)" if (job.get("status") == "Ephemeral" or any(r.name == matched_name and r.ephemeral for r in loc_runners)) else "Persistent (Static VM)"
 
                     for target_bucket in target_buckets:
                         target_bucket.total_jobs += 1
@@ -484,7 +524,12 @@ def build_runner_rows(
 
     for r in sorted(runners, key=lambda x: (x.org.casefold(), x.name.casefold())):
         metrics = norm_runner_metrics.get((r.org.casefold(), r.name.casefold()), RunnerJobMetrics())
-        scope = f"Repo: {r.repo}" if r.repo else "Organization"
+        if r.status.casefold() == "hosted":
+            scope = "GitHub-Hosted"
+            prov_type = "GitHub-Hosted (Standard)"
+        else:
+            scope = f"Repo: {r.repo}" if r.repo else "Organization"
+            prov_type = "Ephemeral (Autoscaled)" if r.ephemeral else "Persistent (Static VM)"
         runner_rows.append([
             r.org,
             r.id,
@@ -494,8 +539,8 @@ def build_runner_rows(
             r.os,
             r.arch,
             r.runner_version,
-            "Ephemeral (Autoscaled)" if r.ephemeral else "Persistent (Static VM)",
-            r.status,
+            prov_type,
+            r.status.capitalize(),
             "Busy" if r.busy else "Idle",
             "; ".join(r.labels) if r.labels else "None",
             len(metrics.repos_served),
@@ -531,17 +576,23 @@ def build_runner_rows(
         org_k = org.casefold()
         org_runners = [r for r in runners if r.org.casefold() == org_k]
         total_count = len(org_runners)
-        org_level_count = sum(1 for r in org_runners if not r.repo)
-        repo_level_count = sum(1 for r in org_runners if r.repo)
+        org_level_count = sum(1 for r in org_runners if not r.repo and r.status.casefold() != "hosted")
+        repo_level_count = sum(1 for r in org_runners if r.repo and r.status.casefold() != "hosted")
         online_count = sum(1 for r in org_runners if r.status.casefold() == "online")
         offline_count = sum(1 for r in org_runners if r.status.casefold() == "offline")
         registered_count = online_count + offline_count
         busy_count = sum(1 for r in org_runners if r.busy)
-        ephemeral_count = sum(1 for r in org_runners if r.ephemeral)
+        ephemeral_count = sum(1 for r in org_runners if r.ephemeral and r.status.casefold() != "hosted")
+        hosted_count = sum(1 for r in org_runners if r.status.casefold() == "hosted")
         if registered_count > 0:
             availability: Any = round(online_count / registered_count * 100, 2)
         elif total_count > 0:
-            availability = "N/A (Ephemeral Only)"
+            if hosted_count > 0 and ephemeral_count > 0:
+                availability = "N/A (Ephemeral / Hosted Only)"
+            elif hosted_count > 0:
+                availability = "N/A (Hosted Only)"
+            else:
+                availability = "N/A (Ephemeral Only)"
         else:
             availability = "N/A"
         metrics = norm_org_metrics.get(org_k, RunnerJobMetrics())
