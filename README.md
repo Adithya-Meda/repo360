@@ -15,13 +15,11 @@ Platform governance, compliance, engineering intelligence, and infrastructure me
 
 ---
 
-## Supported Platforms
+## Supported Platform
 
-| Platform | Domain Example | Setup Command |
+| Platform | Domain | Setup Command |
 | :--- | :--- | :--- |
-| **GitHub.com** | `https://github.com` | `repo360 setup --org <your-org>` |
-| **GHE.com** *(Data Residency)* | `https://<enterprise>.ghe.com` | `repo360 setup --org <your-org> --domain https://<enterprise>.ghe.com` |
-| **GHES** *(On-Premises)* | `https://ghe.mycompany.com` | `repo360 setup --org <your-org> --domain https://ghe.mycompany.com` |
+| **GitHub Enterprise Cloud** | `https://github.com` | `repo360 setup --org <your-org>` |
 
 ---
 
@@ -125,9 +123,6 @@ repo360 upgrade
 
 # Install or switch to a specific release tag (upgrades or downgrades)
 repo360 upgrade --tag v1.0.0
-
-# Run a different release tag once without changing your installed version
-pipx run --spec git+https://github.com/Adithya-Meda/repo360.git@v1.0.0 repo360 --help
 ```
 Stored credentials and GitHub App private keys in `~/.repo360/` are automatically preserved across upgrades.
 
@@ -198,16 +193,48 @@ jobs:
       - name: "Run Repo360 Action"
         uses: Adithya-Meda/repo360@main # Pin to a release tag in production (e.g. @v1.0.0)
         with:
-          app_id: ${{ vars.REPO360_APP_ID }} # GitHub App ID for authentication
-          private_key: ${{ secrets.REPO360_APP_PRIVATE_KEY }} # Private key for token exchange
-          require_ai: "no" # Set to "yes" to enable AI remediation & insights (falls back deterministically if offline)
-          ai_api_key: ${{ secrets.AI_API_KEY }} # Optional API key used when require_ai is "yes"
-          collect_activity: "true" # Scrapes contributor commit, PR, review, and issue metrics
-          collect_runners: "true" # Audits self-hosted runner fleet compute, queues, and SLAs
-          collect_finops: "true" # Profiles per-repository storage quotas, artifacts, and caches
-          collect_dora: "true" # Calculates cross-org DORA flow metrics (DF, Lead Time, CFR, MTTR)
-          collect_bypass: "true" # Audits secret scanning push protection & ruleset bypass ledgers
+          app_id: ${{ vars.REPO360_APP_ID }}
+          private_key: ${{ secrets.REPO360_APP_PRIVATE_KEY }}
+          collect_audit: "true"
+          collect_activity: "true"
+          collect_runners: "true"
+          collect_finops: "true"
+          collect_dora: "true"
+          collect_bypass: "true"
+          require_ai: "no"
+          ai_api_key: ${{ secrets.AI_API_KEY }}
 ```
+
+#### 3. Action Inputs Reference (`with:`)
+
+##### Command & Feature Flags
+
+| Input Key | Description | Supported Values | Default |
+| :--- | :--- | :--- | :--- |
+| `collect_audit` | Audit platform governance policies | `"true"`, `"false"` | `"false"` |
+| `collect_activity` | Collect contributor activity telemetry | `"true"`, `"false"` | `"false"` |
+| `collect_runners` | Profile runner fleet metrics | `"true"`, `"false"` | `"false"` |
+| `collect_finops` | Profile storage artifact quotas | `"true"`, `"false"` | `"false"` |
+| `collect_dora` | Calculate DORA flow metrics | `"true"`, `"false"` | `"false"` |
+| `collect_bypass` | Audit security policy bypasses | `"true"`, `"false"` | `"false"` |
+
+##### Configuration Parameters
+
+| Input Key | Description | Supported Values | Default |
+| :--- | :--- | :--- | :--- |
+| `app_id` | Numeric GitHub App ID | String (numeric) | *Required* |
+| `private_key` | App RSA private key | String (`.pem`) | *Required* |
+| `org` | Target organization filter list | String (`"org1,org2"`) | `""` *(All orgs)* |
+| `lookback_days` | Telemetry lookback window days | String / Integer (`"1"`-`"400"`) | `"90"` |
+| `include_archived` | Scan archived repository targets | `"true"`, `"false"` | `"false"` |
+| `workers` | Worker thread concurrency limit | String / Integer (`"0"`-`"32"`) | `"0"` *(Auto)* |
+| `require_ai` | Enable AI advisory insights | `"yes"`, `"no"` | `"no"` |
+| `ai_api_key` | Unified AI API key | String | `""` |
+| `ai_model` | Target AI model identifier | String | `"gemini-3.5-flash"` |
+| `output_dir` | Report output directory path | String | `"./repo360-output"` |
+| `upload_artifact` | Upload workflow report artifact | `"true"`, `"false"` | `"true"` |
+| `artifact_name` | Workflow artifact bundle name | String | `"repo360-audit-reports"` |
+| `artifact_retention_days` | Artifact retention window days | String / Integer (`"1"`-`"90"`) | `"60"` |
 
 ---
 
