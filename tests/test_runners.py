@@ -732,6 +732,89 @@ def test_include_github_hosted_runners(tmp_path):
     assert job_records_no[0].runner_name == "prod-vm-1"
 
 
+def test_runners_workflow_profiling_cache_efficiency(tmp_path):
+    """Verify that multiple runs of a GitHub-hosted workflow profile once, making only 1 /jobs call."""
+    now = datetime(2026, 11, 14, 12, 0, tzinfo=timezone.utc)
+    since = now - timedelta(days=30)
+
+    class _ProfilingTestClient:
+        def __init__(self):
+            self.jobs_call_count = 0
+
+        def paginate_enveloped(self, org, endpoint, key, params=None):
+            if endpoint.endswith("/actions/runner-groups"):
+                return iter([{"id": 1, "name": "Default"}])
+            if endpoint == "/orgs/perf-org/actions/runners":
+                return iter([])
+            if endpoint == "/repos/perf-org/perf-repo/actions/runs":
+                return iter([
+                    {
+                        "id": 9000 + i,
+                        "workflow_id": 444,
+                        "name": "Continuous Integration",
+                        "path": ".github/workflows/ci.yml",
+                        "conclusion": "success" if i % 10 != 0 else "failure",
+                        "created_at": "2026-11-01T10:00:00Z",
+                        "run_started_at": "2026-11-01T10:00:15Z",
+                        "updated_at": "2026-11-01T10:05:15Z",
+                    }
+                    for i in range(50)
+                ])
+            if "/jobs" in endpoint:
+                self.jobs_call_count += 1
+                run_num = int(endpoint.split("/runs/")[1].split("/")[0])
+                c_val = "failure" if (run_num - 9000) % 10 == 0 else "success"
+                return iter([
+                    {
+                        "id": 888001,
+                        "name": "build-and-test",
+                        "runner_id": 0,
+                        "runner_name": "GitHub Actions",
+                        "runner_group_name": "GitHub Actions",
+                        "labels": ["ubuntu-latest"],
+                        "conclusion": c_val,
+                        "created_at": "2026-11-01T10:00:00Z",
+                        "started_at": "2026-11-01T10:00:15Z",
+                        "completed_at": "2026-11-01T10:05:15Z",
+                    }
+                ])
+            return iter([])
+
+    from src.runners.collector import collect_runners_and_metrics
+
+    test_client = _ProfilingTestClient()
+    failures = []
+    job_records = []
+    cfg = RunnersConfig(lookback_days=30, max_runner_runs_per_repo=0, output_dir=str(tmp_path))
+
+    runners, runner_metrics, org_metrics = collect_runners_and_metrics(
+        client=test_client,
+        orgs=["perf-org"],
+        targets=[("perf-org", "perf-repo")],
+        since=since,
+        end=now,
+        cfg=cfg,
+        failures=failures,
+        job_records_out=job_records,
+    )
+
+    # CRITICAL INVARIANT: Exactly 1 call was made to /jobs for 50 runs!
+    assert test_client.jobs_call_count == 1
+    # Full capture: all 50 runs are recorded in job history
+    assert len(job_records) == 50
+    assert all(j.runner_name == "GitHub-Hosted (ubuntu-latest)" for j in job_records)
+    assert all(j.runner_type == "GitHub-Hosted (Standard)" for j in job_records)
+
+    # Check metrics aggregation across all 50 runs
+    metric = runner_metrics[("perf-org", "GitHub-Hosted (ubuntu-latest)")]
+    assert metric.total_jobs == 50
+    assert metric.successful_jobs == 45
+    assert metric.failed_jobs == 5
+    assert metric.avg_queue_seconds == 15.0
+    assert metric.total_duration_seconds == 50 * 300.0  # 5 minutes = 300s
+
+
+
 
 
 

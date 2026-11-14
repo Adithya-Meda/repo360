@@ -226,7 +226,7 @@ def collect_runners_and_metrics(
                 elif status_code != 404:
                     repo_failures.append((f"{org}/{repo} (Repo-level runners)", sanitize_api_error(exc)))
 
-        wf_runner_cache: Dict[Tuple[Any, str], bool] = {}
+        wf_runner_cache: Dict[Any, Dict[str, Any]] = {}
         try:
             runs_checked = 0
             truncated_runs = False
@@ -255,9 +255,132 @@ def collect_runners_and_metrics(
 
                 run_id = run_item.get("id")
                 wf_id = run_item.get("workflow_id")
-                head_sha = run_item.get("head_sha")
-                cache_key = (wf_id, head_sha) if (wf_id and head_sha) else None
-                if not cfg.include_github_hosted and cache_key is not None and wf_runner_cache.get(cache_key) is False:
+                wf_key = wf_id or run_item.get("path") or run_item.get("name")
+                cached_profile = wf_runner_cache.get(wf_key) if wf_key is not None else None
+
+                # Fast-path for profiled GitHub-Hosted workflows: bypass costly /jobs API calls
+                if cached_profile is not None and not cached_profile.get("has_self_hosted"):
+                    if not cfg.include_github_hosted:
+                        continue
+
+                    run_conclusion = str(run_item.get("conclusion") or "other").casefold()
+                    if run_conclusion == "skipped":
+                        continue
+
+                    r_created_str = run_item.get("created_at")
+                    r_started_str = run_item.get("run_started_at") or r_created_str
+                    r_updated_str = run_item.get("updated_at")
+
+                    r_created_at = parse_ts(r_created_str) if r_created_str else None
+                    r_started_at = parse_ts(r_started_str) if r_started_str else None
+                    r_completed_at = parse_ts(r_updated_str) if r_updated_str else None
+
+                    r_queue_sec = max(0.0, (r_started_at - r_created_at).total_seconds()) if (r_started_at and r_created_at) else None
+                    r_duration_sec = max(0.0, (r_completed_at - r_started_at).total_seconds()) if (r_completed_at and r_started_at) else None
+                    r_job_end = r_completed_at or r_started_at
+
+                    cached_jobs = cached_profile.get("jobs") or [
+                        {
+                            "name": run_item.get("name") or "job",
+                            "pool_name": cached_profile.get("pool_name", "GitHub-Hosted (Linux)"),
+                            "os": cached_profile.get("host_os", "Linux"),
+                            "arch": cached_profile.get("host_arch", "x64"),
+                        }
+                    ]
+                    sub_duration = (
+                        (r_duration_sec / len(cached_jobs))
+                        if (r_duration_sec is not None and len(cached_jobs) > 1)
+                        else r_duration_sec
+                    )
+
+                    workflow_name = run_item.get("name") or run_item.get("path") or "Workflow"
+                    actor_name = (
+                        (run_item.get("actor") or {}).get("login")
+                        or (run_item.get("triggering_actor") or {}).get("login")
+                        or "Unknown"
+                    )
+                    run_html_url = run_item.get("html_url") or f"https://github.com/{org}/{repo}/actions/runs/{run_id}"
+
+                    for c_job in cached_jobs:
+                        p_name = c_job.get("pool_name", "GitHub-Hosted (Linux)")
+                        h_os = c_job.get("os", "Linux")
+                        h_arch = c_job.get("arch", "x64")
+                        j_name = c_job.get("name", "job")
+                        runner_type = "GitHub-Hosted (Standard)"
+
+                        if p_name.casefold() not in loc_known_names:
+                            loc_known_names.add(p_name.casefold())
+                            loc_name_map[p_name.casefold()] = p_name
+                            loc_runners.append(
+                                RunnerInfo(
+                                    id=0,
+                                    name=p_name,
+                                    os=h_os,
+                                    status="Hosted",
+                                    busy=False,
+                                    labels=tuple([p_name]),
+                                    runner_group_name="GitHub Actions",
+                                    org=org,
+                                    repo=None,
+                                    arch=h_arch,
+                                    runner_version="GitHub Managed",
+                                    ephemeral=True,
+                                )
+                            )
+
+                        target_buckets = (loc_runner_metrics[(org, p_name)], loc_org_metrics[org])
+                        for target_bucket in target_buckets:
+                            target_bucket.total_jobs += 1
+                            target_bucket.repos_served.add(repo)
+                            if run_conclusion == "success":
+                                target_bucket.successful_jobs += 1
+                            elif run_conclusion == "failure":
+                                target_bucket.failed_jobs += 1
+                            elif run_conclusion == "timed_out":
+                                target_bucket.timed_out_jobs += 1
+                            elif run_conclusion == "cancelled":
+                                target_bucket.cancelled_jobs += 1
+                            else:
+                                target_bucket.other_jobs += 1
+
+                            if sub_duration is not None:
+                                target_bucket.total_duration_seconds += sub_duration
+                                target_bucket.job_durations.append(sub_duration)
+                            if r_queue_sec is not None:
+                                target_bucket.total_queue_seconds += r_queue_sec
+                                target_bucket.queue_durations.append(r_queue_sec)
+                            if r_started_at:
+                                target_bucket.first_job_time = (
+                                    min(target_bucket.first_job_time, r_started_at)
+                                    if target_bucket.first_job_time else r_started_at
+                                )
+                            if r_job_end:
+                                target_bucket.last_job_time = (
+                                    max(target_bucket.last_job_time, r_job_end)
+                                    if target_bucket.last_job_time else r_job_end
+                                )
+
+                        loc_jobs.append(
+                            RunnerJobRecord(
+                                org=org,
+                                repo=repo,
+                                workflow_name=workflow_name,
+                                run_id=run_id or 0,
+                                job_id=run_id or 0,
+                                job_name=j_name,
+                                runner_id=0,
+                                runner_name=p_name,
+                                runner_type=runner_type,
+                                conclusion=run_conclusion.capitalize(),
+                                duration_seconds=sub_duration,
+                                queue_seconds=r_queue_sec,
+                                sla_breached=bool(r_queue_sec is not None and r_queue_sec > 60.0),
+                                started_at=r_started_at,
+                                completed_at=r_completed_at,
+                                actor=actor_name,
+                                html_url=run_html_url,
+                            )
+                        )
                     continue
 
                 try:
@@ -272,6 +395,11 @@ def collect_runners_and_metrics(
 
                 has_self_hosted = False
                 non_skipped_jobs = 0
+                discovered_jobs_template: List[Dict[str, Any]] = []
+                primary_hosted_pool = "GitHub-Hosted (Linux)"
+                primary_hosted_os = "Linux"
+                primary_hosted_arch = "x64"
+
                 for job in jobs:
                     if not isinstance(job, dict):
                         continue
@@ -294,6 +422,15 @@ def collect_runners_and_metrics(
                         continue
                     if is_self_hosted:
                         has_self_hosted = True
+                    else:
+                        pool_name, host_os, host_arch = resolve_hosted_runner_pool(job.get("labels", []), job.get("os"))
+                        primary_hosted_pool, primary_hosted_os, primary_hosted_arch = pool_name, host_os, host_arch
+                        discovered_jobs_template.append({
+                            "name": job.get("name") or "job",
+                            "pool_name": pool_name,
+                            "os": host_os,
+                            "arch": host_arch,
+                        })
 
                     created_at = parse_ts(job["created_at"]) if job.get("created_at") else None
                     started_at = parse_ts(job["started_at"]) if job.get("started_at") else None
@@ -426,8 +563,24 @@ def collect_runners_and_metrics(
                         )
                     )
 
-                if cache_key is not None and non_skipped_jobs > 0:
-                    wf_runner_cache[cache_key] = has_self_hosted
+                if wf_key is not None and cached_profile is None and non_skipped_jobs > 0:
+                    if has_self_hosted:
+                        wf_runner_cache[wf_key] = {"has_self_hosted": True}
+                    else:
+                        wf_runner_cache[wf_key] = {
+                            "has_self_hosted": False,
+                            "pool_name": primary_hosted_pool,
+                            "host_os": primary_hosted_os,
+                            "host_arch": primary_hosted_arch,
+                            "jobs": discovered_jobs_template or [
+                                {
+                                    "name": "job",
+                                    "pool_name": primary_hosted_pool,
+                                    "os": primary_hosted_os,
+                                    "arch": primary_hosted_arch,
+                                }
+                            ],
+                        }
 
             if truncated_runs:
                 loc_truncations.append(
