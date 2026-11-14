@@ -23,6 +23,7 @@ import requests
 
 from . import __version__ as PACKAGE_VERSION
 from .common.interrupts import run_interruptible_subprocess
+from .common.text import pluralize
 from .credentials import get_credentials_path, get_secrets_dir
 
 logger = logging.getLogger("repo360.upgrade")
@@ -810,7 +811,7 @@ def get_installation_details() -> Dict[str, Any]:
                         stale_file_count = len(mismatched)
                         local_repo_head = git_info.get("commit")
                         commit_source = (
-                            f"STALE local snapshot ({stale_file_count} file(s) out of sync with {local_repo})"
+                            f"STALE local snapshot ({pluralize(stale_file_count, 'file', include_count=True)} out of sync with {local_repo})"
                         )
                     elif git_info.get("commit"):
                         commit_sha = git_info["commit"]
@@ -1028,7 +1029,7 @@ def _invalidate_package_bytecache() -> None:
         pass
 
     if removed:
-        logger.debug("Invalidated %d __pycache__ director(ies) after upgrade.", len(removed))
+        logger.debug("Invalidated %s after upgrade.", pluralize(len(removed), "__pycache__ directory", "__pycache__ directories", include_count=True))
 
 
 def execute_upgrade(candidates: List[Tuple[str, List[str]]], dry_run: bool = False) -> UpgradeResult:
@@ -1130,7 +1131,7 @@ def verify_local_state() -> None:
         print(f"  Configuration file : \033[93m[NOTICE]\033[0m Not configured yet (run 'repo360 setup')")
 
     if pem_count > 0:
-        print(f"  GitHub App keys    : \033[92m[OK]\033[0m {pem_count} private key(s) detected in {secrets_dir}")
+        print(f"  GitHub App keys    : \033[92m[OK]\033[0m {pluralize(pem_count, 'private key', include_count=True)} detected in {secrets_dir}")
     else:
         print(f"  GitHub App keys    : \033[93m[NOTICE]\033[0m No stored private keys found in {secrets_dir}")
 

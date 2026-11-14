@@ -30,7 +30,7 @@ parse_positive_int = make_bounded_int_parser(1)
 parse_workers_arg = make_bounded_int_parser(0, 32)
 parse_days_in_year_arg = make_bounded_int_parser(1, 365)
 parse_lookback_arg = make_bounded_int_parser(0)
-parse_max_runs_arg = make_bounded_int_parser(1, 1000)
+parse_max_runs_arg = make_bounded_int_parser(0, 1000)
 
 
 def add_common_scan_arguments(

@@ -20,6 +20,7 @@ from ..common.inventory import (
     discover_app_repositories,
     resolve_scan_targets,
 )
+from ..common.text import pluralize
 from ..credentials import resolve_runtime_credentials
 from .collector import build_runner_rows, collect_runners_and_metrics
 from .models import ORG_RUNNER_HEADERS, RUNNER_HEADERS, RunnersConfig
@@ -135,9 +136,9 @@ def run_runners_cli(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--max-runs",
         type=parse_max_runs_arg,
-        default=50,
+        default=0,
         metavar="N",
-        help="Max workflow runs per repo (1-1000; default: 50).",
+        help="Max workflow runs per repo to inspect (0 for unlimited full lookback capture, or 1-1000; default: 0).",
     )
     parser.add_argument(
         "--scan-repo-runners",
@@ -188,11 +189,12 @@ def run_runners_cli(argv: Optional[List[str]] = None) -> int:
     org_filter = [o.strip() for o in args.org.split(",") if o.strip()] if args.org else None
     discovered_orgs = discover_app_organizations(auth=auth, org_filter=org_filter)
     if not discovered_orgs:
-        print("\033[91m[FAIL] No active GitHub App installations found for the specified organization(s).\033[0m\n")
+        target_noun = "organization" if (org_filter and len(org_filter) == 1) else "organizations"
+        print(f"\033[91m[FAIL] No active GitHub App installations found for the specified {target_noun}.\033[0m\n")
         return 1
 
     org_list_str = ", ".join(discovered_orgs)
-    print(f"\033[96m[INFO]\033[0m Discovered {len(discovered_orgs)} organization(s) with GitHub App installed: {org_list_str}")
+    print(f"\033[96m[INFO]\033[0m Discovered {pluralize(len(discovered_orgs), 'organization', include_count=True)} with GitHub App installed: {org_list_str}")
     repos_file_arg = getattr(args, "repos_file", "") or ("repos.csv" if os.path.isfile("repos.csv") else "")
     if repos_file_arg:
         print(f"\033[96m[INFO]\033[0m Resolving repositories from inventory {repos_file_arg}...")
@@ -212,7 +214,7 @@ def run_runners_cli(argv: Optional[List[str]] = None) -> int:
         print("\033[91m[FAIL] No repositories or organizations discovered to analyze.\033[0m\n")
         return 1
 
-    print(f"\033[96m[INFO]\033[0m Inspecting Actions runner fleet across {len(orgs)} organization(s)...")
+    print(f"\033[96m[INFO]\033[0m Inspecting Actions runner fleet across {pluralize(len(orgs), 'organization', include_count=True)}...")
 
     for org_name in orgs:
         perms = auth.get_installation_permissions(org_name)

@@ -9,6 +9,7 @@ import requests
 from ._helpers import get_permission_gap, is_http_forbidden, make_permission_skipped_result
 from .base import BaseCheck, CheckResult, CheckSeverity, CheckStatus, Persona
 from ..collector.repo_inspector import RepoInspector
+from ..common.text import pluralize
 
 
 class CodeownersCheck(BaseCheck):
@@ -164,7 +165,7 @@ class BranchRulesetsCheck(BaseCheck):
                     org_name=org,
                     repo_name=repo,
                     current_state=(
-                        f"Branch '{default_branch}' only has {len(evaluate_rulesets)} ruleset(s) in 'evaluate' "
+                        f"Branch '{default_branch}' only has {pluralize(len(evaluate_rulesets), 'ruleset', include_count=True)} in 'evaluate' "
                         "(dry-run) mode and no active enforcement or branch protection."
                     ),
                     recommended_state=f"Enable 'Active' enforcement on rulesets targeting '{default_branch}' with {required_approvals} approvals.",
@@ -394,7 +395,7 @@ class EnvironmentProtectionGatesCheck(BaseCheck):
             severity=self.severity,
             org_name=org,
             repo_name=repo,
-            current_state=f"All {len(envs)} deployment environment(s) enforce protection rules or branch policies.",
+            current_state=f"All {pluralize(len(envs), 'deployment environment', include_count=True)} enforce protection rules or branch policies.",
             recommended_state="Maintain reviewer approvals and branch restrictions on deployment environments.",
             explanation="Deployment environments restrict secrets and release approvals to authorized reviewers and branches.",
             documentation_url=doc_url,

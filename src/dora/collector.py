@@ -23,6 +23,7 @@ from ..common.concurrency import (
     resolve_worker_count,
     run_concurrent_ai,
 )
+from ..common.text import pluralize
 from .models import (
     DORAConfig,
     DeploymentRecord,
@@ -1284,7 +1285,7 @@ def build_dora_rows(
 
         if m.total_deploys == 0:
             flow_advisory = (
-                f"Stalled: {m.stalled_deploys_count} deployment(s) IN_PROGRESS >24h without completion."
+                f"Stalled: {pluralize(m.stalled_deploys_count, 'deployment', include_count=True)} IN_PROGRESS >24h without completion."
                 if m.stalled_deploys_count > 0
                 else "-"
             )
@@ -1300,10 +1301,10 @@ def build_dora_rows(
                 elif rework_tier in ("Low", "Medium"):
                     flow_advisory = "High deployment rework rate from hotfixes/reverts. Enforce stricter PR validation and staged rollouts."
                 elif m.open_incidents_count > 0:
-                    flow_advisory = f"{m.open_incidents_count} open recovery incident(s) detected. Prioritize service restoration and automated rollback verification."
+                    flow_advisory = f"{pluralize(m.open_incidents_count, 'open recovery incident', include_count=True)} detected. Prioritize service restoration and automated rollback verification."
                 elif m.code_change_deploys == 0 and m.no_op_deploys > 0:
                     flow_advisory = (
-                        f"Only same-SHA/zero-diff rebuilds observed ({m.no_op_deploys} no-op redeploy(s)); "
+                        f"Only same-SHA/zero-diff rebuilds observed ({pluralize(m.no_op_deploys, 'no-op redeploy', include_count=True)}); "
                         "no new production code changes shipped in window."
                     )
                 elif lttc_tier in ("Low", "Medium"):
@@ -1317,7 +1318,7 @@ def build_dora_rows(
                 and "stalled" not in flow_advisory.lower()
                 and "in_progress" not in flow_advisory.lower()
             ):
-                flow_advisory = f"{flow_advisory} ({m.stalled_deploys_count} stalled IN_PROGRESS deploy(s) >24h.)"
+                flow_advisory = f"{flow_advisory} ({pluralize(m.stalled_deploys_count, 'stalled IN_PROGRESS deploy', include_count=True)} >24h.)"
         m.flow_advisory = flow_advisory
 
         repo_rows.append([

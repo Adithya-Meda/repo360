@@ -20,6 +20,7 @@ from ..common.inventory import (
     discover_app_repositories,
     resolve_scan_targets,
 )
+from ..common.text import pluralize
 from ..credentials import resolve_runtime_credentials
 from .collector import build_billing_rows, build_finops_rows, collect_finops_data
 from .models import FinOpsConfig, OrgBillingSummary, _round_mb
@@ -108,13 +109,13 @@ def print_finops_scorecard(
     print(f"   {B}Total Storage Footprint        :{X} {B}{total_footprint_mb:,.2f} MB{X}")
     print(f"   {B}Est. Inefficient Storage Waste :{X} {waste_color}{total_waste_mb:,.2f} MB{X}")
     if unaudited_count > 0:
-        print(f"   {B}Collection / Permission Gaps   :{X} {Y}{unaudited_count} signal check(s) skipped (403/API error){X}")
+        print(f"   {B}Collection / Permission Gaps   :{X} {Y}{pluralize(unaudited_count, 'signal check', include_count=True)} skipped (403/API error){X}")
     print(f"   {B}AI Advisory Engine             :{X} {format_ai_scorecard_status(ai_engine)}")
     print(f"   {B}Duration                       :{X} {elapsed_str}")
     print(f"{C}{'-' * 76}{X}")
     print(f"   {B}Executive FinOps Workbook (XLSX):{X} {xlsx_path}")
     print(f"{C}{'=' * 76}{X}")
-    print(f"{G}{B}   [SUCCESS] FinOps profiling completed across {total_repos} repos in {elapsed_str}.{X}\n")
+    print(f"{G}{B}   [SUCCESS] FinOps profiling completed across {pluralize(total_repos, 'repository', 'repositories', include_count=True)} in {elapsed_str}.{X}\n")
 
 
 def run_finops_cli(argv: Optional[List[str]] = None) -> int:
@@ -165,11 +166,12 @@ def run_finops_cli(argv: Optional[List[str]] = None) -> int:
     org_filter = [o.strip() for o in args.org.split(",") if o.strip()] if args.org else None
     discovered_orgs = discover_app_organizations(auth=auth, org_filter=org_filter)
     if not discovered_orgs:
-        print("\033[91m[FAIL] No active GitHub App installations found for the specified organization(s).\033[0m\n")
+        target_noun = "organization" if (org_filter and len(org_filter) == 1) else "organizations"
+        print(f"\033[91m[FAIL] No active GitHub App installations found for the specified {target_noun}.\033[0m\n")
         return 1
 
     org_list_str = ", ".join(discovered_orgs)
-    print(f"\033[96m[INFO]\033[0m Discovered {len(discovered_orgs)} organization(s) with GitHub App installed: {org_list_str}")
+    print(f"\033[96m[INFO]\033[0m Discovered {pluralize(len(discovered_orgs), 'organization', include_count=True)} with GitHub App installed: {org_list_str}")
     repos_file_arg = getattr(args, "repos_file", "") or ("repos.csv" if os.path.isfile("repos.csv") else "")
     if repos_file_arg:
         print(f"\033[96m[INFO]\033[0m Resolving repositories from inventory {repos_file_arg}...")
@@ -204,7 +206,7 @@ def run_finops_cli(argv: Optional[List[str]] = None) -> int:
                 f"       Workflow artifact and cache profiling requires 'actions: read' permission.\n"
             )
 
-    print(f"\033[96m[INFO]\033[0m Profiling repository storage, workflow artifacts, and caches across {len(orgs)} organization(s)...")
+    print(f"\033[96m[INFO]\033[0m Profiling repository storage, workflow artifacts, and caches across {pluralize(len(orgs), 'organization', include_count=True)}...")
 
     failures: List[Tuple[str, str]] = []
     org_billing: Dict[str, OrgBillingSummary] = {}

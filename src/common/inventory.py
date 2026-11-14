@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .concurrency import map_concurrent
+from .text import pluralize
 
 logger = logging.getLogger("repo360.inventory")
 
@@ -307,7 +308,11 @@ def resolve_scan_targets(
                 metadata_cache.update(disc_meta)
 
             if targets:
-                logger.info("Loaded %d target repository(ies) from %s.", len(targets), csv_path)
+                logger.info(
+                    "Loaded %s from %s.",
+                    pluralize(len(targets), "target repository", "target repositories", include_count=True),
+                    csv_path,
+                )
                 return targets, metadata_cache
         except Exception as err:
             logger.warning("Failed to load inventory from %s: %s. Falling back to auto-discovery.", csv_path, err)

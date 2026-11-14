@@ -1199,7 +1199,7 @@ def test_build_dora_rows_passes_grounded_ai_context_and_stalled_suffix():
     assert seen_kwargs[0]["stalled_deploys"] == 1
     assert seen_kwargs[0]["collapsed_retries"] == 1
     assert seen_kwargs[0]["total_deploys"] == 2
-    assert "1 stalled IN_PROGRESS deploy(s) >24h." in repo_rows[0][14]
+    assert "1 stalled IN_PROGRESS deploy >24h." in repo_rows[0][14]
 
 
 def test_incident_issue_resolved_within_lookback_window():

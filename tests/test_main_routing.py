@@ -581,7 +581,7 @@ def test_subcommand_clis_pass_workers_flag_to_config(monkeypatch, tmp_path) -> N
 @pytest.mark.parametrize(
     "argv",
     [
-        ["runners", "--max-runs", "0"],
+        ["runners", "--max-runs", "-1"],
         ["runners", "--max-runs", "1001"],
         ["activity", "--active-min-days", "366"],
         ["activity", "--moderate-min-days", "0"],

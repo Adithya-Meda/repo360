@@ -21,6 +21,7 @@ from ..activity.reporter import (
     write_table,
 )
 from ..common.concurrency import AI_NOT_ENABLED_MESSAGE, is_ai_disabled, is_ai_live
+from ..common.text import pluralize
 from .models import ORG_RUNNER_HEADERS, RUNNER_HEADERS, RUNNER_JOB_HEADERS, RunnerInfo, RunnersConfig
 
 
@@ -215,7 +216,7 @@ def write_runners_workbook(
         curr_row = section_title(summary, curr_row, "Operational Notes / Run History Limits")
         note_summary = [
             [
-                f"{len(all_truncations)} Repositories Reached Inspection Limit",
+                f"{pluralize(len(all_truncations), 'Repository', 'Repositories', include_count=True)} Reached Inspection Limit",
                 f"Inspected latest {cfg.max_runner_runs_per_repo} runs per repo; earlier runs exist in window (increase --max-runs for full capture).",
             ]
         ]

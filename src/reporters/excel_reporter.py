@@ -12,6 +12,7 @@ from openpyxl.utils import get_column_letter
 from .base_reporter import BaseReporter
 from ..checks.base import CheckResult, CheckSeverity, CheckStatus, Persona
 from ..common.concurrency import AI_NOT_ENABLED_MESSAGE
+from ..common.text import pluralize
 
 
 class ExcelReporter(BaseReporter):
@@ -467,7 +468,7 @@ class ExcelReporter(BaseReporter):
                 c["severity"].value,
                 self.sanitize_spreadsheet_value(c["detected_stack"]),
                 self.sanitize_spreadsheet_value(c["target_file"]),
-                f"{c['affected_count']} repo(s)",
+                pluralize(c["affected_count"], "repository", "repositories", include_count=True),
                 self.sanitize_spreadsheet_value(repos_str),
                 self.sanitize_spreadsheet_value(c["remediation_code"]),
                 self.sanitize_spreadsheet_value(c["documentation_url"]),

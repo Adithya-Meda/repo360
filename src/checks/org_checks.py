@@ -8,6 +8,7 @@ import requests
 from ._helpers import get_permission_gap, is_http_forbidden, make_permission_skipped_result
 from .base import BaseCheck, CheckResult, CheckSeverity, CheckStatus, Persona
 from ..collector.repo_inspector import RepoInspector
+from ..common.text import pluralize
 
 
 class OrgRulesetsCheck(BaseCheck):
@@ -47,7 +48,7 @@ class OrgRulesetsCheck(BaseCheck):
                 severity=self.severity,
                 org_name=org,
                 repo_name="Organization-Wide",
-                current_state=f"{len(active_rulesets)} actively enforced organization ruleset(s) detected.",
+                current_state=f"{pluralize(len(active_rulesets), 'actively enforced organization ruleset', include_count=True)} detected.",
                 recommended_state="Enforce centralized organization rulesets across all repositories.",
                 explanation="Organization rulesets centrally protect default branches and prevent unauthorized policy bypasses.",
                 documentation_url=doc_url,
@@ -63,7 +64,7 @@ class OrgRulesetsCheck(BaseCheck):
                 severity=CheckSeverity.MEDIUM,
                 org_name=org,
                 repo_name="Organization-Wide",
-                current_state=f"{len(evaluate_rulesets)} organization ruleset(s) found in 'evaluate' (dry-run) mode; none actively enforced.",
+                current_state=f"{pluralize(len(evaluate_rulesets), 'organization ruleset', include_count=True)} found in 'evaluate' (dry-run) mode; none actively enforced.",
                 recommended_state="Switch tested organization rulesets from 'Evaluate' to 'Active' enforcement.",
                 explanation="Rulesets in evaluate mode log policy matches without blocking non-compliant pushes or merges.",
                 remediation_snippet_before="Enforcement status: Evaluate (non-blocking)",

@@ -20,6 +20,7 @@ from ..common.inventory import (
     discover_app_repositories,
     resolve_scan_targets,
 )
+from ..common.text import pluralize
 from ..credentials import resolve_runtime_credentials
 from .collector import build_bypass_rows, collect_bypass_data, collapse_plan_limitations
 from .models import BypassConfig, classify_bypass_risk, is_plan_limitation
@@ -85,15 +86,15 @@ def print_bypass_scorecard(
     print(f"   {B}Total Policy Bypass Incidents  :{X} {incident_color}{B}{total_incidents}{X}")
     print(f"   {B}Unique Bypassing Actors        :{X} {unique_actors}")
     if unaudited_count > 0:
-        print(f"   {B}Unaudited / Permission Gaps    :{X} {Y}{unaudited_count} signal check(s) skipped (403/missing permission){X}")
+        print(f"   {B}Unaudited / Permission Gaps    :{X} {Y}{pluralize(unaudited_count, 'signal check', include_count=True)} skipped (403/missing permission){X}")
     if plan_limitation_count > 0:
-        print(f"   {B}GitHub Plan Limitations        :{X} {C}{plan_limitation_count} org-scoped plan restriction(s) (requires Team/GHEC){X}")
+        print(f"   {B}GitHub Plan Limitations        :{X} {C}{pluralize(plan_limitation_count, 'org-scoped plan restriction', include_count=True)} (requires Team/GHEC){X}")
     print(f"   {B}AI Advisory Engine             :{X} {format_ai_scorecard_status(ai_engine)}")
     print(f"   {B}Duration                       :{X} {elapsed_str}")
     print(f"{C}{'-' * 76}{X}")
     print(f"   {B}Executive Compliance Ledger    :{X} {xlsx_path}")
     print(f"{C}{'=' * 76}{X}")
-    print(f"{G}{B}   [SUCCESS] Bypass ledger generated across {len(org_rows)} orgs in {elapsed_str}.{X}\n")
+    print(f"{G}{B}   [SUCCESS] Bypass ledger generated across {pluralize(len(org_rows), 'organization', include_count=True)} in {elapsed_str}.{X}\n")
 
 
 def run_bypass_cli(argv: Optional[List[str]] = None) -> int:
@@ -157,11 +158,12 @@ def run_bypass_cli(argv: Optional[List[str]] = None) -> int:
     org_filter = [o.strip() for o in args.org.split(",") if o.strip()] if args.org else None
     discovered_orgs = discover_app_organizations(auth=auth, org_filter=org_filter)
     if not discovered_orgs:
-        print("\033[91m[FAIL] No active GitHub App installations found for the specified organization(s).\033[0m\n")
+        target_noun = "organization" if (org_filter and len(org_filter) == 1) else "organizations"
+        print(f"\033[91m[FAIL] No active GitHub App installations found for the specified {target_noun}.\033[0m\n")
         return 1
 
     org_list_str = ", ".join(discovered_orgs)
-    print(f"\033[96m[INFO]\033[0m Discovered {len(discovered_orgs)} organization(s) with GitHub App installed: {org_list_str}")
+    print(f"\033[96m[INFO]\033[0m Discovered {pluralize(len(discovered_orgs), 'organization', include_count=True)} with GitHub App installed: {org_list_str}")
     repos_file_arg = getattr(args, "repos_file", "") or ("repos.csv" if os.path.isfile("repos.csv") else "")
     if repos_file_arg:
         print(f"\033[96m[INFO]\033[0m Resolving repositories from inventory {repos_file_arg}...")
@@ -191,7 +193,7 @@ def run_bypass_cli(argv: Optional[List[str]] = None) -> int:
                 f"       2. Accept updated permissions at: https://github.com/organizations/{org_name}/settings/installations\n"
             )
 
-    print(f"\033[96m[INFO]\033[0m Auditing push protection exemptions and branch ruleset overrides across {len(orgs)} org(s)...")
+    print(f"\033[96m[INFO]\033[0m Auditing push protection exemptions and branch ruleset overrides across {pluralize(len(orgs), 'organization', include_count=True)}...")
 
     profiles = collect_bypass_data(client, orgs, targets, since, cfg, metadata_cache, ai_engine=ai_engine)
     profiles, failures = collapse_plan_limitations(profiles)

@@ -51,6 +51,7 @@ class ResilientGitHubClient:
         self._org_last_request_time: Dict[str, float] = {}
         self._last_request_time: float = 0.0
         self._last_rate_limit_warn_time: Dict[str, float] = {}
+        self._last_rate_limit_heartbeat_time: Dict[str, float] = {}
 
     def _http(self) -> requests.Session:
         """Thread-local session instance with connection retry pooling."""
@@ -125,7 +126,14 @@ class ResilientGitHubClient:
                                 self._org_reset.pop(org_key, None)
 
                 if pause_wait > 0.0:
-                    pass
+                    hb_key = org_key or "__global__"
+                    if pause_wait > 5.0 and now - self._last_rate_limit_heartbeat_time.get(hb_key, 0.0) >= 25.0:
+                        self._last_rate_limit_heartbeat_time[hb_key] = now
+                        logger.info(
+                            "Rate limit pause active for %s: %.0fs remaining until automatic resumption...",
+                            org or "all endpoints",
+                            pause_wait,
+                        )
                 else:
                     scope_key = org_key or "__global__"
                     if self.inter_request_delay_seconds > 0.0:
@@ -261,7 +269,26 @@ class ResilientGitHubClient:
                             org, resp.status_code, actual_wait, attempt + 1, self.max_retries
                         )
 
-            interruptible_sleep(actual_wait, sleep_fn=time.sleep)
+            deadline = time.time() + actual_wait
+            hb_scope = org or "__global__"
+            while time.time() < deadline:
+                if is_shutting_down():
+                    raise KeyboardInterrupt
+                rem_wait = deadline - time.time()
+                if rem_wait <= 0:
+                    break
+                interruptible_sleep(min(rem_wait, 5.0), sleep_fn=time.sleep)
+                now_check = time.time()
+                rem_after = max(0.0, deadline - now_check)
+                if rem_after > 5.0:
+                    with self._rate_limit_lock:
+                        if now_check - self._last_rate_limit_heartbeat_time.get(hb_scope, 0.0) >= 25.0:
+                            self._last_rate_limit_heartbeat_time[hb_scope] = now_check
+                            logger.info(
+                                "Rate limit pause active for %s: %.0fs remaining until automatic resumption...",
+                                hb_scope,
+                                rem_after,
+                            )
 
         resp.raise_for_status()
         return resp

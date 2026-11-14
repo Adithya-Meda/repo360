@@ -19,6 +19,7 @@ from ..common.inventory import (
     discover_app_repositories,
     resolve_scan_targets,
 )
+from ..common.text import pluralize
 from ..credentials import resolve_runtime_credentials
 from .collector import build_dora_rows, collect_dora_data
 from .models import DORAConfig, compute_fleet_dora_summary
@@ -120,10 +121,12 @@ def print_dora_scorecard(
         f"({total_successful:,} successful, {code_change_deploys:,} code-change)"
     )
     if no_op_deploys > 0 or collapsed_retries > 0:
-        print(
-            f"   {B}Normalized Signal Adjustments  :{X} "
-            f"{no_op_deploys} no-op redeploy(s), {collapsed_retries} collapsed failure retry(s)"
-        )
+        adjustments = []
+        if no_op_deploys > 0:
+            adjustments.append(pluralize(no_op_deploys, "no-op redeploy", include_count=True))
+        if collapsed_retries > 0:
+            adjustments.append(pluralize(collapsed_retries, "collapsed failure retry", "collapsed failure retries", include_count=True))
+        print(f"   {B}Normalized Signal Adjustments  :{X} {', '.join(adjustments)}")
     print(f"   {B}Deployment Frequency (Median)  :{X} {df_str}")
     print(f"   {B}Median Lead Time (LTTC)        :{X} {lttc_str}")
     print(f"   {B}Change Failure Rate (CFR)      :{X} {cfr_str}")
@@ -134,21 +137,21 @@ def print_dora_scorecard(
     print(f"   {B}Duration                       :{X} {elapsed_str}")
     if stalled_deploys > 0:
         print(
-            f"   {Y}{B}[WARN]{X} {stalled_deploys} deployment(s) stalled IN_PROGRESS >24h."
+            f"   {Y}{B}[WARN]{X} {pluralize(stalled_deploys, 'deployment', include_count=True)} stalled IN_PROGRESS >24h."
         )
     if permission_gap_repos > 0:
         print(
-            f"   {Y}{B}[WARN]{X} {permission_gap_repos} repo(s) lacked GitHub App "
+            f"   {Y}{B}[WARN]{X} {pluralize(permission_gap_repos, 'repository', 'repositories', include_count=True)} lacked GitHub App "
             "'deployments: read' permission (403); run 'repo360 setup' to update manifest."
         )
     if failures:
         print(
-            f"   {Y}{B}[WARN]{X} {len(failures)} collection/permission issue(s) recorded in Executive Summary."
+            f"   {Y}{B}[WARN]{X} {pluralize(len(failures), 'collection/permission issue', include_count=True)} recorded in Executive Summary."
         )
     print(f"{C}{'-' * 76}{X}")
     print(f"   {B}Executive DORA Workbook (XLSX) :{X} {xlsx_path}")
     print(f"{C}{'=' * 76}{X}")
-    print(f"{G}{B}   [SUCCESS] DORA flow analysis completed across {total_repos} repos in {elapsed_str}.{X}\n")
+    print(f"{G}{B}   [SUCCESS] DORA flow analysis completed across {pluralize(total_repos, 'repository', 'repositories', include_count=True)} in {elapsed_str}.{X}\n")
 
 
 def run_dora_cli(argv: Optional[List[str]] = None) -> int:
@@ -229,11 +232,12 @@ def run_dora_cli(argv: Optional[List[str]] = None) -> int:
     org_filter = [o.strip() for o in args.org.split(",") if o.strip()] if args.org else None
     discovered_orgs = discover_app_organizations(auth=auth, org_filter=org_filter)
     if not discovered_orgs:
-        print("\033[91m[FAIL] No active GitHub App installations found for the specified organization(s).\033[0m\n")
+        target_noun = "organization" if (org_filter and len(org_filter) == 1) else "organizations"
+        print(f"\033[91m[FAIL] No active GitHub App installations found for the specified {target_noun}.\033[0m\n")
         return 1
 
     org_list_str = ", ".join(discovered_orgs)
-    print(f"\033[96m[INFO]\033[0m Discovered {len(discovered_orgs)} organization(s) with GitHub App installed: {org_list_str}")
+    print(f"\033[96m[INFO]\033[0m Discovered {pluralize(len(discovered_orgs), 'organization', include_count=True)} with GitHub App installed: {org_list_str}")
     repos_file_arg = getattr(args, "repos_file", "") or ("repos.csv" if os.path.isfile("repos.csv") else "")
     if repos_file_arg:
         print(f"\033[96m[INFO]\033[0m Resolving repositories from inventory {repos_file_arg}...")
@@ -253,7 +257,7 @@ def run_dora_cli(argv: Optional[List[str]] = None) -> int:
         print("\033[91m[FAIL] No repositories or organizations discovered to analyze.\033[0m\n")
         return 1
 
-    print(f"\033[96m[INFO]\033[0m Measuring DORA flow metrics & recovery cadence across {len(orgs)} organization(s)...")
+    print(f"\033[96m[INFO]\033[0m Measuring DORA flow metrics & recovery cadence across {pluralize(len(orgs), 'organization', include_count=True)}...")
 
     metrics_list = collect_dora_data(client, orgs, targets, since, end, cfg, metadata_cache)
     repo_rows, org_rows, deployment_rows, recovery_rows = build_dora_rows(metrics_list, orgs, cfg.lookback_days, ai_engine=ai_engine)

@@ -21,6 +21,7 @@ from ..activity.reporter import (
     write_table,
 )
 from ..common.concurrency import AI_NOT_ENABLED_MESSAGE, is_ai_disabled
+from ..common.text import pluralize
 from .models import (
     BYPASS_ACTOR_HEADERS,
     BYPASS_ORG_HEADERS,
@@ -95,7 +96,7 @@ def write_bypass_workbook(
     elif risk_tier == "Medium":
         compliance_posture = "Review Required (Moderate Bypasses)"
     elif real_failures:
-        compliance_posture = f"Partial Coverage ({len(real_failures)} Unaudited / Permission Gap(s))"
+        compliance_posture = f"Partial Coverage ({pluralize(len(real_failures), 'Unaudited / Permission Gap', include_count=True)})"
     elif total_incidents > 0:
         compliance_posture = "Low Risk (Minor Policy Overrides Detected)"
     elif plan_limitations:

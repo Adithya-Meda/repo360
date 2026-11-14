@@ -94,7 +94,7 @@ def test_verify_local_state(capsys, tmp_path):
             captured = capsys.readouterr()
             assert "[VERIFY]" in captured.out
             assert "Configuration file" in captured.out
-            assert "1 private key(s) detected" in captured.out
+            assert "1 private key detected" in captured.out
 
 
 def test_prepare_and_restore_windows_binaries(tmp_path):

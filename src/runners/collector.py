@@ -6,12 +6,13 @@ import logging
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..activity.models import fmt_timestamp, parse_ts
 from ..common.client import ResilientGitHubClient
 from ..common.concurrency import is_dormant_repo, map_concurrent, resolve_worker_count
+from ..common.text import pluralize
 from .models import RunnerInfo, RunnerJobMetrics, RunnerJobRecord, RunnersConfig
 
 logger = logging.getLogger("repo360.runners")
@@ -113,7 +114,11 @@ def collect_runners_and_metrics(
                     )
                 )
 
-            logger.info("Discovered %d organization runner(s) for %s", len(org_runners), org)
+            logger.info(
+                "Discovered %s for %s",
+                pluralize(len(org_runners), "organization runner", include_count=True),
+                org,
+            )
             return org_runners, None
         except Exception as exc:
             status_code = getattr(getattr(exc, "response", None), "status_code", None)
@@ -207,6 +212,7 @@ def collect_runners_and_metrics(
                 elif status_code != 404:
                     repo_failures.append((f"{org}/{repo} (Repo-level runners)", sanitize_api_error(exc)))
 
+        wf_runner_cache: Dict[Tuple[Any, str], bool] = {}
         try:
             runs_checked = 0
             truncated_runs = False
@@ -229,11 +235,17 @@ def collect_runners_and_metrics(
                     continue
 
                 runs_checked += 1
-                if runs_checked > cfg.max_runner_runs_per_repo:
+                if cfg.max_runner_runs_per_repo > 0 and runs_checked > cfg.max_runner_runs_per_repo:
                     truncated_runs = True
                     break
 
                 run_id = run_item.get("id")
+                wf_id = run_item.get("workflow_id")
+                head_sha = run_item.get("head_sha")
+                cache_key = (wf_id, head_sha) if (wf_id and head_sha) else None
+                if cache_key is not None and wf_runner_cache.get(cache_key) is False:
+                    continue
+
                 try:
                     jobs = list(client.paginate_enveloped(org, f"/repos/{org}/{repo}/actions/runs/{run_id}/jobs", "jobs"))
                 except Exception as exc:
@@ -244,12 +256,15 @@ def collect_runners_and_metrics(
                             jobs_error_recorded = True
                     continue
 
+                has_self_hosted = False
+                non_skipped_jobs = 0
                 for job in jobs:
                     if not isinstance(job, dict):
                         continue
                     conclusion = str(job.get("conclusion") or "other").casefold()
                     if conclusion == "skipped":
                         continue
+                    non_skipped_jobs += 1
 
                     labels = [str(l).casefold() for l in job.get("labels", []) if isinstance(l, str)]
                     r_id = job.get("runner_id")
@@ -263,6 +278,7 @@ def collect_runners_and_metrics(
                     )
                     if not is_self_hosted:
                         continue
+                    has_self_hosted = True
 
                     created_at = parse_ts(job["created_at"]) if job.get("created_at") else None
                     started_at = parse_ts(job["started_at"]) if job.get("started_at") else None
@@ -370,6 +386,9 @@ def collect_runners_and_metrics(
                         )
                     )
 
+                if cache_key is not None and non_skipped_jobs > 0:
+                    wf_runner_cache[cache_key] = has_self_hosted
+
             if truncated_runs:
                 loc_truncations.append(
                     (
@@ -388,11 +407,11 @@ def collect_runners_and_metrics(
     if not active_targets:
         return runners, runner_metrics, org_runner_metrics
 
-    workers = resolve_worker_count(cfg.max_workers, len(active_targets), max_cap=6)
+    workers = resolve_worker_count(cfg.max_workers, len(active_targets), max_cap=32)
     logger.info(
-        "Scanning %d active repository(ies) for Actions workflow runs across %d concurrent worker(s)...",
-        len(active_targets),
-        workers,
+        "Scanning %s for Actions workflow runs across %s...",
+        pluralize(len(active_targets), "active repository", "active repositories", include_count=True),
+        pluralize(workers, "concurrent worker", include_count=True),
     )
     total_targets = len(active_targets)
     completed_targets = 0
@@ -409,9 +428,9 @@ def collect_runners_and_metrics(
                 last_log_time = now
                 pct = (completed_targets / total_targets) * 100
                 logger.info(
-                    "Actions runner audit progress: %d/%d repositories processed (%.1f%%)...",
-                    completed_targets,
-                    total_targets,
+                    "Actions runner audit progress: %s of %s processed (%.1f%%)...",
+                    pluralize(completed_targets, "repository", "repositories", include_count=True),
+                    pluralize(total_targets, "repository", "repositories", include_count=True),
                     pct,
                 )
             if repo_fails:
@@ -558,7 +577,8 @@ def build_runner_rows(
 def build_runner_job_rows(jobs: List[RunnerJobRecord]) -> List[list]:
     """Compile formatted tabular records for individual workflow job executions."""
     rows: List[list] = []
-    for j in sorted(jobs, key=lambda x: (x.started_at or datetime.min, x.org, x.repo), reverse=True):
+    min_aware_dt = datetime.min.replace(tzinfo=timezone.utc)
+    for j in sorted(jobs, key=lambda x: (x.started_at or min_aware_dt, x.org.casefold(), x.repo.casefold()), reverse=True):
         dur_mins = round(j.duration_seconds / 60.0, 2) if j.duration_seconds is not None else "N/A"
         q_sec = round(j.queue_seconds, 2) if j.queue_seconds is not None else "N/A"
         rows.append([

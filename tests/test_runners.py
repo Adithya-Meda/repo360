@@ -538,4 +538,97 @@ def test_runners_skip_repo_runners_by_default(tmp_path):
     assert not failures
 
 
+def test_parse_max_runs_arg():
+    """Verify parse_max_runs_arg allows 0 (unlimited) and rejects negative values."""
+    from src.common.cli import parse_max_runs_arg
+    import argparse
+
+    assert parse_max_runs_arg("0") == 0
+    assert parse_max_runs_arg("50") == 50
+    assert parse_max_runs_arg("1000") == 1000
+
+    with pytest.raises(argparse.ArgumentTypeError):
+        parse_max_runs_arg("-1")
+
+    with pytest.raises(argparse.ArgumentTypeError):
+        parse_max_runs_arg("not-a-number")
+
+
+def test_runner_headers_alignment():
+    """Verify RUNNER_HEADERS has unique headers and aligns with ORG_RUNNER_HEADERS."""
+    assert "Active Repos" in RUNNER_HEADERS
+    assert "Active Repositories" in RUNNER_HEADERS
+    # Ensure no duplicates in headers
+    assert len(RUNNER_HEADERS) == len(set(RUNNER_HEADERS))
+    assert len(ORG_RUNNER_HEADERS) == len(set(ORG_RUNNER_HEADERS))
+
+
+def test_build_runner_job_rows_timezone_aware_sorting():
+    """Verify sorting handles jobs with None started_at alongside timezone-aware datetimes."""
+    from src.runners.models import RunnerJobRecord
+    from src.runners.collector import build_runner_job_rows
+
+    j1 = RunnerJobRecord(
+        org="org-1", repo="repo-a", workflow_name="CI", run_id=1, job_id=10, job_name="test",
+        runner_id=100, runner_name="r1", runner_type="Persistent (Static VM)", conclusion="success",
+        started_at=datetime(2026, 11, 14, 10, 0, tzinfo=timezone.utc),
+    )
+    j2 = RunnerJobRecord(
+        org="org-1", repo="repo-b", workflow_name="CI", run_id=2, job_id=20, job_name="test",
+        runner_id=100, runner_name="r1", runner_type="Persistent (Static VM)", conclusion="success",
+        started_at=None,
+    )
+    j3 = RunnerJobRecord(
+        org="org-1", repo="repo-c", workflow_name="CI", run_id=3, job_id=30, job_name="test",
+        runner_id=100, runner_name="r1", runner_type="Persistent (Static VM)", conclusion="success",
+        started_at=datetime(2026, 11, 14, 12, 0, tzinfo=timezone.utc),
+    )
+
+    rows = build_runner_job_rows([j1, j2, j3])
+    assert len(rows) == 3
+    # j3 is newest, then j1, then j2 with None started_at
+    assert rows[0][1] == "repo-c"
+    assert rows[1][1] == "repo-a"
+    assert rows[2][1] == "repo-b"
+
+
+def test_runners_unlimited_runs_no_truncation(tmp_path):
+    """Verify that when max_runner_runs_per_repo is 0, all runs are processed without truncation."""
+    now = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
+    since = now - timedelta(days=7)
+
+    class _ManyRunsClient:
+        def paginate_enveloped(self, org, endpoint, key, params=None):
+            if endpoint.endswith("/actions/runner-groups"):
+                return iter([{"id": 1, "name": "Default"}])
+            if endpoint == "/orgs/corp/actions/runners":
+                return iter([{"id": 10, "name": "runner-1", "os": "Linux", "status": "online", "busy": False, "labels": []}])
+            if endpoint == "/repos/corp/big-repo/actions/runs":
+                # Return 75 runs
+                return iter([
+                    {"id": 2000 + i, "name": f"Run-{i}", "created_at": "2026-10-18T10:00:00Z", "run_started_at": "2026-10-18T10:00:00Z"}
+                    for i in range(75)
+                ])
+            if "/jobs" in endpoint:
+                return iter([])
+            return iter([])
+
+    from src.runners.collector import collect_runners_and_metrics
+
+    failures = []
+    cfg = RunnersConfig(lookback_days=7, max_runner_runs_per_repo=0, scan_repo_runners=False, output_dir=str(tmp_path))
+    runners, runner_metrics, org_metrics = collect_runners_and_metrics(
+        client=_ManyRunsClient(),
+        orgs=["corp"],
+        targets=[("corp", "big-repo")],
+        since=since,
+        end=now,
+        cfg=cfg,
+        failures=failures,
+    )
+    # Check that failures and truncations do not have truncation entries
+    assert len(failures) == 0
+
+
+
 

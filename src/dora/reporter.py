@@ -19,6 +19,7 @@ from ..activity.reporter import (
     write_table,
 )
 from ..common.concurrency import AI_NOT_ENABLED_MESSAGE, is_ai_disabled
+from ..common.text import pluralize
 from .models import (
     DORA_DEPLOYMENT_HEADERS,
     DORA_ORG_HEADERS,
@@ -216,7 +217,7 @@ def write_dora_workbook(
             [
                 "Permission Gap Notice",
                 (
-                    f"{summary_data['permission_gap_repos']} repository(ies) returned 403 on /deployments; "
+                    f"{pluralize(summary_data['permission_gap_repos'], 'repository', 'repositories', include_count=True)} returned 403 on /deployments; "
                     "grant GitHub App 'deployments: read' permission via 'repo360 setup' for full deployment signals."
                 ),
             ]

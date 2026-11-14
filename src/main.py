@@ -42,6 +42,7 @@ from .checks import (
 from .collector.client import Repo360Client
 from .collector.repo_inspector import RepoInspector
 from .common.cli import add_common_scan_arguments
+from .common.text import pluralize
 from .common.concurrency import (
     format_ai_scorecard_status,
     is_ai_disabled,
@@ -544,9 +545,10 @@ def run_audit(
                         still_running = [f for f in unfinished if not f.done() and not f.cancelled()]
                         if still_running:
                             concurrent.futures.wait(still_running, timeout=5.0)
+                        task_noun = pluralize(len(unfinished), "background AI remediation task", include_count=True)
                         logger.warning(
-                            "%d background AI remediation task(s) did not complete within %ds; deterministic templates preserved.",
-                            len(unfinished),
+                            "%s did not complete within %ds; deterministic templates preserved.",
+                            task_noun,
                             int(wait_budget),
                         )
         finally:
@@ -771,7 +773,11 @@ def _run_cli() -> int:
                 filter_orgs = {o.strip().lower() for o in args.org.split(",") if o.strip()}
                 targets = [t for t in targets if t.org_name.lower() in filter_orgs]
             if targets:
-                logger.info("Loaded %d target repository(ies) from %s.", len(targets), repos_csv_path)
+                logger.info(
+                    "Loaded %s from %s.",
+                    pluralize(len(targets), "target repository", "target repositories", include_count=True),
+                    repos_csv_path,
+                )
             else:
                 logger.warning("No matching enabled repositories found in %s for requested scope.", repos_csv_path)
         except Exception as err:
@@ -889,10 +895,11 @@ def _run_cli() -> int:
                         ", ".join(sorted(missing_orgs)),
                     )
                 if not active_installations:
+                    target_org_noun = "organization" if len(filter_orgs) == 1 else "organizations"
                     logger.error("None of the specified organizations (%s) have the GitHub App installed.", requested_orgs_raw)
                     _print_failure_banner(
                         f"None of the specified organizations ({requested_orgs_raw}) have the GitHub App installed.\n"
-                        "  Action: Install the GitHub App in the specified organization(s) or adjust the --org parameter."
+                        f"  Action: Install the GitHub App in the specified {target_org_noun} or adjust the --org parameter."
                     )
                     return 1
             else:
@@ -910,8 +917,8 @@ def _run_cli() -> int:
 
             if not targets:
                 logger.info(
-                    "Discovering accessible repositories across %d GitHub organization(s)...",
-                    len(active_installations),
+                    "Discovering accessible repositories across %s...",
+                    pluralize(len(active_installations), "GitHub organization", include_count=True),
                 )
                 valid_installs = [inst for inst in active_installations if inst.get("id")]
 
@@ -960,10 +967,12 @@ def _run_cli() -> int:
                                 )
                             )
                 if skipped_archived or skipped_empty:
+                    total_skipped = skipped_archived + skipped_empty
                     logger.info(
-                        "Filtered out %d archived and %d empty repository(ies) during discovery.",
+                        "Filtered out %d archived and %d empty %s during discovery.",
                         skipped_archived,
                         skipped_empty,
+                        pluralize(total_skipped, "repository", "repositories"),
                     )
 
                 installed_org_logins = [
@@ -972,12 +981,13 @@ def _run_cli() -> int:
                     if inst.get("account", {}).get("login")
                 ]
                 unique_discovered_orgs = sorted(set(installed_org_logins) | {t.org_name for t in targets})
-                repo_noun = "repository" if len(targets) == 1 else "repositories"
+                repo_noun = pluralize(len(targets), "repository", "repositories")
+                org_count_str = pluralize(len(unique_discovered_orgs), "organization", include_count=True)
                 logger.info(
-                    "Auto-discovered %d accessible %s across %d organization(s): %s.",
+                    "Auto-discovered %d accessible %s across %s: %s.",
                     len(targets),
                     repo_noun,
-                    len(unique_discovered_orgs),
+                    org_count_str,
                     ", ".join(unique_discovered_orgs),
                 )
             else:

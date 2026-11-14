@@ -30,6 +30,7 @@ warnings.filterwarnings("ignore", message=".*invalid escape sequence.*")
 warnings.filterwarnings("ignore", message=".*automatic function calling.*")
 
 from ..checks.base import CheckResult, CheckStatus
+from ..common.text import pluralize
 
 logger = logging.getLogger(__name__)
 
@@ -1079,7 +1080,7 @@ ADVISORY: <1 concise sentence specifying verification action for SecOps>"""
 
         stalled_addressed = False
         if cfr_pct > 15.0 or cfr_tier in ("Low", "Medium"):
-            retry_note = f" ({collapsed_retries} duplicate retry run(s) collapsed)" if collapsed_retries > 0 else ""
+            retry_note = f" ({pluralize(collapsed_retries, 'duplicate retry run', include_count=True)} collapsed)" if collapsed_retries > 0 else ""
             default_rec = (
                 f"Elevated change failure rate ({cfr_pct:.1f}%{retry_note}). "
                 "Strengthen automated regression gates, pre-deploy checks, and rollback verification."
@@ -1087,7 +1088,7 @@ ADVISORY: <1 concise sentence specifying verification action for SecOps>"""
         elif stalled_deploys > 0 and (total_deploys == 0 or (code_change_deploys == 0 and no_op_deploys == 0)):
             stalled_addressed = True
             default_rec = (
-                f"{stalled_deploys} deployment(s) remained IN_PROGRESS >24h without finalizing status. "
+                f"{pluralize(stalled_deploys, 'deployment', include_count=True)} remained IN_PROGRESS >24h without finalizing status. "
                 "Configure workflow timeout-minutes and explicit GitHub Deployment completion/failure callbacks."
             )
         elif (rework_pct is not None and rework_pct > 8.0) or rework_tier in ("Low", "Medium"):
@@ -1097,12 +1098,12 @@ ADVISORY: <1 concise sentence specifying verification action for SecOps>"""
             )
         elif open_incidents > 0:
             default_rec = (
-                f"{open_incidents} open recovery incident(s) pending resolution. "
+                f"{pluralize(open_incidents, 'open recovery incident', include_count=True)} pending resolution. "
                 "Prioritize automated rollback verification and incident triage."
             )
         elif code_change_deploys == 0 and no_op_deploys > 0:
             default_rec = (
-                f"All {no_op_deploys} successful pipeline run(s) were same-SHA rebuilds with zero new code changes. "
+                f"All {pluralize(no_op_deploys, 'successful pipeline run', include_count=True)} were same-SHA rebuilds with zero new code changes. "
                 "Trigger production releases from code commits or release tags rather than scheduled rebuilds alone."
             )
         elif (lead_time_hours is not None and lead_time_hours > 168.0) or lttc_tier in ("Low", "Medium"):
@@ -1112,7 +1113,7 @@ ADVISORY: <1 concise sentence specifying verification action for SecOps>"""
             )
         elif df_weekly < 1.0 or df_tier in ("Low", "Medium"):
             noop_note = (
-                f" (excluding {no_op_deploys} same-SHA no-op rebuild(s))"
+                f" (excluding {pluralize(no_op_deploys, 'same-SHA no-op rebuild', include_count=True)})"
                 if no_op_deploys > 0
                 else ""
             )
@@ -1126,7 +1127,7 @@ ADVISORY: <1 concise sentence specifying verification action for SecOps>"""
             default_rec = "Balanced engineering flow. Continue monitoring pull request review turnaround and test pipeline duration."
 
         if stalled_deploys > 0 and not stalled_addressed:
-            default_rec = f"{default_rec} Also resolve {stalled_deploys} stalled IN_PROGRESS deployment(s) stuck >24h."
+            default_rec = f"{default_rec} Also resolve {pluralize(stalled_deploys, 'stalled IN_PROGRESS deployment', include_count=True)} stuck >24h."
 
         if not self.is_available():
             return default_rec
