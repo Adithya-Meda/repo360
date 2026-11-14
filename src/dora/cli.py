@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -19,6 +18,8 @@ from ..common.inventory import (
     discover_app_repositories,
     resolve_scan_targets,
 )
+
+__all__ = ["run_dora_cli", "discover_app_repositories"]
 from ..common.text import pluralize
 from ..credentials import resolve_runtime_credentials
 from .collector import build_dora_rows, collect_dora_data
@@ -238,15 +239,10 @@ def run_dora_cli(argv: Optional[List[str]] = None) -> int:
 
     org_list_str = ", ".join(discovered_orgs)
     print(f"\033[96m[INFO]\033[0m Discovered {pluralize(len(discovered_orgs), 'organization', include_count=True)} with GitHub App installed: {org_list_str}")
-    repos_file_arg = getattr(args, "repos_file", "") or ("repos.csv" if os.path.isfile("repos.csv") else "")
-    if repos_file_arg:
-        print(f"\033[96m[INFO]\033[0m Resolving repositories from inventory {repos_file_arg}...")
-    else:
-        print("\033[96m[INFO]\033[0m Auto-discovering repositories directly from GitHub App installations...")
+    print("\033[96m[INFO]\033[0m Auto-discovering repositories directly from GitHub App installations...")
     targets, metadata_cache = resolve_scan_targets(
         auth=auth,
         client=client,
-        repos_file=repos_file_arg or None,
         org_filter=org_filter,
         include_archived=args.include_archived,
         include_forks=True,

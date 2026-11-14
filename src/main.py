@@ -765,25 +765,6 @@ def _run_cli() -> int:
     advisory_config = ConfigValidator.get_default_advisory_config()
     targets: List[RepoTarget] = []
 
-    repos_csv_path = getattr(args, "repos_file", "") or ("repos.csv" if os.path.isfile("repos.csv") else "")
-    if repos_csv_path:
-        try:
-            targets = ConfigValidator.load_and_validate_repos_csv(repos_csv_path, optional=False)
-            if getattr(args, "org", "").strip():
-                filter_orgs = {o.strip().lower() for o in args.org.split(",") if o.strip()}
-                targets = [t for t in targets if t.org_name.lower() in filter_orgs]
-            if targets:
-                logger.info(
-                    "Loaded %s from %s.",
-                    pluralize(len(targets), "target repository", "target repositories", include_count=True),
-                    repos_csv_path,
-                )
-            else:
-                logger.warning("No matching enabled repositories found in %s for requested scope.", repos_csv_path)
-        except Exception as err:
-            logger.error("Failed to load inventory from %s: %s", repos_csv_path, err)
-            return 1
-
     output_dir = args.output_dir or app_config.get("reporting", {}).get("output_directory", "./repo360-output")
     os.makedirs(output_dir, exist_ok=True)
 

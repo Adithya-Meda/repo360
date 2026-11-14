@@ -12,8 +12,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import platform
-import subprocess
 import time
 from typing import Any, Dict, Optional
 

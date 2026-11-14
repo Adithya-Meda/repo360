@@ -1,64 +1,37 @@
-"""Tests for flexible repository inventory parser."""
+"""Tests for dynamic repository and organization discovery engine."""
 
-import os
-import pytest
-from src.common.inventory import RepoEntry, load_flexible_repo_entries
-
-
-def test_load_flexible_inventory_standard(tmp_path):
-    csv_file = tmp_path / "repos.csv"
-    csv_file.write_text("org,repo,enabled\nmy-org,repo-a,true\nmy-org,repo-b,false\n", encoding="utf-8")
-
-    entries = load_flexible_repo_entries(csv_file)
-    assert len(entries) == 2
-    assert entries[0] == RepoEntry("my-org", "repo-a", True)
-    assert entries[1] == RepoEntry("my-org", "repo-b", False)
+from unittest.mock import MagicMock
+from src.common.inventory import (
+    discover_app_organizations,
+    discover_app_repositories,
+    resolve_scan_targets,
+)
 
 
-def test_load_flexible_inventory_aliases(tmp_path):
-    csv_file = tmp_path / "repos.csv"
-    csv_file.write_text("org_name,repo_name\nplatform-team,infra-service\n", encoding="utf-8")
+def test_discover_app_organizations():
+    mock_auth = MagicMock()
+    mock_auth.discover_installations.return_value = [
+        {"id": 101, "account": {"login": "TestOrg-10"}},
+        {"id": 102, "account": {"login": "DefaultOrg24"}},
+    ]
 
-    entries = load_flexible_repo_entries(csv_file)
-    assert len(entries) == 1
-    assert entries[0] == RepoEntry("platform-team", "infra-service", True)
+    orgs = discover_app_organizations(auth=mock_auth)
+    assert sorted(orgs, key=str.lower) == ["DefaultOrg24", "TestOrg-10"]
 
+    filtered = discover_app_organizations(auth=mock_auth, org_filter=["TestOrg-10"])
+    assert filtered == ["TestOrg-10"]
 
-def test_load_flexible_inventory_wildcard(tmp_path):
-    csv_file = tmp_path / "repos.csv"
-    csv_file.write_text("# Comment line\norganization,repository,active\n# Another comment\nenterprise,*,yes\n", encoding="utf-8")
-
-    entries = load_flexible_repo_entries(csv_file)
-    assert len(entries) == 1
-    assert entries[0].repo == "*"
-    assert entries[0].enabled is True
+    none_found = discover_app_organizations(auth=mock_auth, org_filter=["non-existent"])
+    assert none_found == []
 
 
-def test_load_flexible_inventory_missing_file():
-    with pytest.raises(FileNotFoundError):
-        load_flexible_repo_entries("non_existent_inventory.csv")
-
-
-def test_load_flexible_inventory_invalid_org(tmp_path):
-    csv_file = tmp_path / "repos.csv"
-    csv_file.write_text("org,repo\n-invalid-org-,repo1\n", encoding="utf-8")
-
-    with pytest.raises(ValueError, match="validation failed"):
-        load_flexible_repo_entries(csv_file)
-
-
-def test_load_flexible_inventory_no_enabled(tmp_path):
-    csv_file = tmp_path / "repos.csv"
-    csv_file.write_text("org,repo,enabled\nmy-org,repo1,false\n", encoding="utf-8")
-
-    with pytest.raises(ValueError, match="contains no enabled repositories"):
-        load_flexible_repo_entries(csv_file)
+def test_discover_app_organizations_empty():
+    mock_auth = MagicMock()
+    mock_auth.discover_installations.return_value = []
+    assert discover_app_organizations(auth=mock_auth) == []
 
 
 def test_discover_app_repositories_direct():
-    from unittest.mock import MagicMock
-    from src.common.inventory import discover_app_repositories
-
     mock_auth = MagicMock()
     mock_auth.discover_installations.return_value = [
         {"id": 101, "account": {"login": "fintech-core"}},
@@ -91,40 +64,20 @@ def test_discover_app_repositories_direct():
     assert ("fintech-core", "fintech-core-repo-2") in targets_filtered
 
 
-def test_discover_app_organizations():
-    from unittest.mock import MagicMock
-    from src.common.inventory import discover_app_organizations
-
+def test_resolve_scan_targets_delegates():
     mock_auth = MagicMock()
     mock_auth.discover_installations.return_value = [
-        {"id": 101, "account": {"login": "TestOrg-10"}},
-        {"id": 102, "account": {"login": "DefaultOrg24"}},
+        {"id": 101, "account": {"login": "my-org"}},
+    ]
+    mock_client = MagicMock()
+    mock_client.paginate_enveloped.return_value = [
+        {"name": "service-a", "archived": False, "fork": False},
     ]
 
-    orgs = discover_app_organizations(auth=mock_auth)
-    assert orgs == ["defaultorg24", "testorg-10"] or orgs == ["DefaultOrg24", "TestOrg-10"]
-
-    filtered = discover_app_organizations(auth=mock_auth, org_filter=["TestOrg-10"])
-    assert filtered == ["TestOrg-10"]
-
-    none_found = discover_app_organizations(auth=mock_auth, org_filter=["non-existent"])
-    assert none_found == []
-
-
-def test_resolve_scan_targets_from_csv(tmp_path):
-    from unittest.mock import MagicMock
-    from src.common.inventory import resolve_scan_targets
-
-    csv_file = tmp_path / "custom_repos.csv"
-    csv_file.write_text("org,repo,enabled\ncustom-org,service-1,true\ncustom-org,service-2,false\n", encoding="utf-8")
-
-    mock_auth = MagicMock()
-    mock_client = MagicMock()
-
-    targets, _ = resolve_scan_targets(
+    targets, meta = resolve_scan_targets(
         auth=mock_auth,
         client=mock_client,
-        repos_file=str(csv_file),
+        org_filter=["my-org"],
     )
     assert len(targets) == 1
-    assert targets[0] == ("custom-org", "service-1")
+    assert targets[0] == ("my-org", "service-a")

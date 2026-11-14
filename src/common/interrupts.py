@@ -523,7 +523,6 @@ class InterruptController:
         except Exception:
             pass
         self.exit_fn(code)
-        return code
 
     def reset(self) -> None:
         """Reset state cleanly (intended for unit tests)."""

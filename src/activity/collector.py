@@ -12,28 +12,22 @@ from urllib.parse import quote
 
 from ..common.client import ResilientGitHubClient
 from ..common.concurrency import map_concurrent, resolve_worker_count
-from ..common.inventory import RepoEntry
+from ..common.timezones import fmt_timestamp, parse_ts
 from .models import (
-    DATE_FMT,
-    IST,
     LOCAL_TZ,
     LOCAL_TZ_NAME,
     METRIC_KEYS,
     METRIC_LABELS,
-    METRICS,
     MGMT_KPI_HEADERS,
     REPO_INVENTORY_HEADERS,
     STATUS_IDX,
     STATUS_ORDER,
-    STATUSES,
     TOP_REPOS_HEADERS,
     TOTAL_IDX,
     Activity,
     ActivityConfig,
     RepositoryReport,
-    fmt_timestamp,
     is_bot,
-    parse_ts,
 )
 
 logger = logging.getLogger("repo360.activity")
@@ -41,13 +35,12 @@ logger = logging.getLogger("repo360.activity")
 
 def resolve_activity_targets(
     client: ResilientGitHubClient,
-    entries: List[RepoEntry],
+    entries: List[Tuple[str, str]],
     cfg: ActivityConfig,
 ) -> Tuple[List[Tuple[str, str]], List[Tuple[str, str]], Dict[Tuple[str, str], Dict[str, Any]]]:
     """Resolve and expand target repositories (including '*' wildcard) with metadata cache."""
-    enabled_entries = [e for e in entries if e.enabled]
-    org_wildcards = {e.org.lower(): e.org for e in enabled_entries if e.repo == "*"}
-    specific_repos = [(e.org, e.repo) for e in enabled_entries if e.repo != "*"]
+    org_wildcards = {org.lower(): org for org, repo in entries if repo == "*"}
+    specific_repos = [(org, repo) for org, repo in entries if repo != "*"]
 
     targets: List[Tuple[str, str]] = []
     failures: List[Tuple[str, str]] = []

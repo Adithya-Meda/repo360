@@ -49,6 +49,14 @@ inputs:
     description: "Optional AI model identifier (e.g. 'gemini-3.5-flash', 'gpt-4o', 'claude-3-5-sonnet-20241022'). Provider is auto-detected from model name."
     required: false
     default: "gemini-3.5-flash"
+  collect_audit:
+    description: "Run platform security and governance compliance audit ('true' or 'false')"
+    required: false
+    default: "false"
+  run_audit:
+    description: "Alias for collect_audit ('true' or 'false')"
+    required: false
+    default: "false"
   collect_activity:
     description: "Collect user activity and contributor metrics ('true' or 'false')"
     required: false
@@ -73,6 +81,14 @@ inputs:
     description: "Lookback window in days for user activity and runner metrics"
     required: false
     default: "90"
+  include_archived:
+    description: "Include archived repositories in analysis ('true' or 'false')"
+    required: false
+    default: "false"
+  workers:
+    description: "Concurrent worker thread pool count (0 for auto, 1-32)"
+    required: false
+    default: "0"
   gemini_api_key:
     description: "Legacy alias for ai_api_key"
     required: false
@@ -98,6 +114,11 @@ inputs:
     required: false
     default: ""
 
+outputs:
+  output_dir:
+    description: "Directory containing generated audit workbooks (.xlsx)"
+    value: ${{ inputs.output_dir }}
+
 runs:
   using: "composite"
   steps:
@@ -112,7 +133,7 @@ runs:
         python -m pip install --upgrade pip
         pip install "${{ github.action_path }}"
 
-    - name: "Execute Repo360 Audit"
+    - name: "Execute Repo360 Telemetry"
       shell: bash
       env:
         REPO360_APP_ID: ${{ inputs.app_id }}
@@ -126,11 +147,15 @@ runs:
         INPUT_OUTPUT_DIR: ${{ inputs.output_dir }}
         INPUT_LOOKBACK_DAYS: ${{ inputs.lookback_days }}
         INPUT_REQUIRE_AI: ${{ inputs.require_ai }}
+        INPUT_COLLECT_AUDIT: ${{ inputs.collect_audit }}
+        INPUT_RUN_AUDIT: ${{ inputs.run_audit }}
         INPUT_COLLECT_ACTIVITY: ${{ inputs.collect_activity }}
         INPUT_COLLECT_RUNNERS: ${{ inputs.collect_runners }}
         INPUT_COLLECT_FINOPS: ${{ inputs.collect_finops }}
         INPUT_COLLECT_DORA: ${{ inputs.collect_dora }}
         INPUT_COLLECT_BYPASS: ${{ inputs.collect_bypass }}
+        INPUT_INCLUDE_ARCHIVED: ${{ inputs.include_archived }}
+        INPUT_WORKERS: ${{ inputs.workers }}
       run: |
         REQUIRE_AI_VAL="$(printf '%s' "${INPUT_REQUIRE_AI:-no}" | tr '[:upper:]' '[:lower:]')"
         case "$REQUIRE_AI_VAL" in
@@ -145,27 +170,47 @@ runs:
         if [ -n "$INPUT_ORG" ]; then
           COMMON_ARGS+=(--org "$INPUT_ORG")
         fi
+        if [ "$INPUT_INCLUDE_ARCHIVED" = "true" ]; then
+          COMMON_ARGS+=(--include-archived)
+        fi
+        if [ -n "$INPUT_WORKERS" ] && [ "$INPUT_WORKERS" != "0" ]; then
+          COMMON_ARGS+=(--workers "$INPUT_WORKERS")
+        fi
 
-        repo360 audit "${COMMON_ARGS[@]}"
+        FEATURE_COUNT=0
+
+        if [ "$INPUT_COLLECT_AUDIT" = "true" ] || [ "$INPUT_RUN_AUDIT" = "true" ]; then
+          FEATURE_COUNT=$((FEATURE_COUNT + 1))
+          repo360 audit "${COMMON_ARGS[@]}"
+        fi
 
         if [ "$INPUT_COLLECT_ACTIVITY" = "true" ]; then
+          FEATURE_COUNT=$((FEATURE_COUNT + 1))
           repo360 activity "${COMMON_ARGS[@]}" --lookback-days "$INPUT_LOOKBACK_DAYS"
         fi
 
         if [ "$INPUT_COLLECT_RUNNERS" = "true" ]; then
+          FEATURE_COUNT=$((FEATURE_COUNT + 1))
           repo360 runners "${COMMON_ARGS[@]}" --lookback-days "$INPUT_LOOKBACK_DAYS"
         fi
 
         if [ "$INPUT_COLLECT_FINOPS" = "true" ]; then
+          FEATURE_COUNT=$((FEATURE_COUNT + 1))
           repo360 finops "${COMMON_ARGS[@]}"
         fi
 
         if [ "$INPUT_COLLECT_DORA" = "true" ]; then
+          FEATURE_COUNT=$((FEATURE_COUNT + 1))
           repo360 dora "${COMMON_ARGS[@]}" --lookback-days "$INPUT_LOOKBACK_DAYS"
         fi
 
         if [ "$INPUT_COLLECT_BYPASS" = "true" ]; then
+          FEATURE_COUNT=$((FEATURE_COUNT + 1))
           repo360 bypass "${COMMON_ARGS[@]}" --lookback-days "$INPUT_LOOKBACK_DAYS"
+        fi
+
+        if [ "$FEATURE_COUNT" -eq 0 ]; then
+          echo "INFO: No collection features enabled. Set at least one feature flag to 'true' (e.g. collect_audit: 'true')."
         fi
 
     - name: "Publish Audit Reports Artifact"

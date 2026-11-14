@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -16,11 +15,9 @@ from openpyxl.utils import get_column_letter
 from ..common.concurrency import AI_NOT_ENABLED_MESSAGE, is_ai_disabled, is_ai_live
 from .models import (
     DATE_FMT,
-    IST,
     LOCAL_TZ,
     LOCAL_TZ_NAME,
     METRIC_LABELS,
-    METRICS,
     ORG_HEADERS,
     REPO_HEADERS,
     STATUS_IDX,

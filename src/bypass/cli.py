@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
-import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, List, Optional
 
 from ..auth.github_app_auth import GitHubAppAuth
 from ..common.cli import add_common_scan_arguments
@@ -17,7 +15,6 @@ from ..common.client import ResilientGitHubClient
 from ..common.concurrency import format_ai_scorecard_status
 from ..common.inventory import (
     discover_app_organizations,
-    discover_app_repositories,
     resolve_scan_targets,
 )
 from ..common.text import pluralize
@@ -164,15 +161,10 @@ def run_bypass_cli(argv: Optional[List[str]] = None) -> int:
 
     org_list_str = ", ".join(discovered_orgs)
     print(f"\033[96m[INFO]\033[0m Discovered {pluralize(len(discovered_orgs), 'organization', include_count=True)} with GitHub App installed: {org_list_str}")
-    repos_file_arg = getattr(args, "repos_file", "") or ("repos.csv" if os.path.isfile("repos.csv") else "")
-    if repos_file_arg:
-        print(f"\033[96m[INFO]\033[0m Resolving repositories from inventory {repos_file_arg}...")
-    else:
-        print("\033[96m[INFO]\033[0m Auto-discovering repositories directly from GitHub App installations...")
+    print("\033[96m[INFO]\033[0m Auto-discovering repositories directly from GitHub App installations...")
     targets, metadata_cache = resolve_scan_targets(
         auth=auth,
         client=client,
-        repos_file=repos_file_arg or None,
         org_filter=org_filter,
         include_archived=args.include_archived,
         include_forks=True,

@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 
-from ..common.timezones import DATE_FMT, IST, LOCAL_TZ, LOCAL_TZ_NAME
+from ..common.timezones import DATE_FMT, LOCAL_TZ, LOCAL_TZ_NAME
 from ..activity.reporter import (
     NAVY,
     autofit,

@@ -7,22 +7,20 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-from openpyxl.utils import get_column_letter
+from openpyxl.styles import Font, PatternFill
 
-from ..common.timezones import DATE_FMT, IST, LOCAL_TZ, LOCAL_TZ_NAME
+from ..common.timezones import DATE_FMT, LOCAL_TZ, LOCAL_TZ_NAME
 from ..activity.reporter import (
     NAVY,
     autofit,
     finalize_sheet,
-    safe_cell,
     section_title,
     write_empty_table,
     write_table,
 )
 from ..common.concurrency import AI_NOT_ENABLED_MESSAGE, is_ai_disabled, is_ai_live
 from ..common.text import pluralize
-from .models import ORG_RUNNER_HEADERS, RUNNER_HEADERS, RUNNER_JOB_HEADERS, RunnerInfo, RunnersConfig
+from .models import ORG_RUNNER_HEADERS, RUNNER_HEADERS, RUNNER_JOB_HEADERS, RunnersConfig
 
 
 def write_runners_workbook(

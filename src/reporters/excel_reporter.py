@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 from typing import Any, Dict, List, Optional
-import openpyxl
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
