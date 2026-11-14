@@ -249,7 +249,7 @@ def test_runners_hardened_isolation_ephemeral_and_pooled_metrics(tmp_path):
     from src.runners.collector import collect_runners_and_metrics
 
     failures = []
-    cfg = RunnersConfig(lookback_days=30, max_runner_runs_per_repo=20, output_dir=str(tmp_path))
+    cfg = RunnersConfig(lookback_days=30, max_runner_runs_per_repo=20, scan_repo_runners=True, output_dir=str(tmp_path))
     runners, runner_metrics, org_metrics = collect_runners_and_metrics(
         client=_FakeClient(),
         orgs=["org-a", "org-b"],
@@ -347,7 +347,7 @@ def test_runner_group_self_hosted_detection(tmp_path):
     from src.runners.collector import collect_runners_and_metrics
 
     failures = []
-    cfg = RunnersConfig(lookback_days=7, max_runner_runs_per_repo=10, output_dir=str(tmp_path))
+    cfg = RunnersConfig(lookback_days=7, max_runner_runs_per_repo=10, scan_repo_runners=True, output_dir=str(tmp_path))
     runners, runner_metrics, org_metrics = collect_runners_and_metrics(
         client=mock_client,
         orgs=["corp-org"],
@@ -477,5 +477,65 @@ def test_runners_job_history_and_truncation_separation(tmp_path):
     assert job_ws.cell(2, 7).value == "k8s-scale-set-worker"
     assert job_ws.cell(2, 9).value == "Success"
     assert job_ws.cell(2, 12).value == "Yes"  # Queue SLA breached
+
+
+def test_runners_skip_repo_runners_by_default(tmp_path):
+    """Verify that when scan_repo_runners is False (default), repo-level runner queries are skipped."""
+    now = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
+    since = now - timedelta(days=7)
+
+    called_endpoints = []
+
+    class _TrackingClient:
+        def paginate_enveloped(self, org, endpoint, key, params=None):
+            called_endpoints.append(endpoint)
+            if endpoint.endswith("/actions/runner-groups"):
+                return iter([{"id": 1, "name": "Default"}])
+            if endpoint == "/orgs/org-xyz/actions/runners":
+                return iter([{"id": 55, "name": "org-runner-1", "os": "Linux", "status": "online", "busy": False, "labels": []}])
+            if endpoint == "/repos/org-xyz/repo-abc/actions/runners":
+                raise AssertionError("Should NOT call repo-level runners endpoint when scan_repo_runners is False!")
+            if endpoint == "/repos/org-xyz/repo-abc/actions/runs":
+                return iter([
+                    {"id": 888, "name": "Build", "created_at": "2026-10-18T10:00:00Z", "run_started_at": "2026-10-18T10:00:00Z"}
+                ])
+            if "/actions/runs/888/jobs" in endpoint:
+                return iter([
+                    {
+                        "id": 9991,
+                        "runner_id": 55,
+                        "runner_name": "org-runner-1",
+                        "labels": ["self-hosted"],
+                        "conclusion": "success",
+                        "created_at": "2026-10-18T10:00:00Z",
+                        "started_at": "2026-10-18T10:00:10Z",
+                        "completed_at": "2026-10-18T10:01:10Z",
+                    }
+                ])
+            return iter([])
+
+    from src.runners.collector import collect_runners_and_metrics
+
+    cfg = RunnersConfig(lookback_days=7, max_runner_runs_per_repo=10, scan_repo_runners=False, output_dir=str(tmp_path))
+    failures = []
+    job_records = []
+    runners, runner_metrics, org_metrics = collect_runners_and_metrics(
+        client=_TrackingClient(),
+        orgs=["org-xyz"],
+        targets=[("org-xyz", "repo-abc")],
+        since=since,
+        end=now,
+        cfg=cfg,
+        failures=failures,
+        job_records_out=job_records,
+    )
+
+    assert not any("/repos/org-xyz/repo-abc/actions/runners" in ep for ep in called_endpoints)
+    assert len(runners) == 1
+    assert runners[0].name == "org-runner-1"
+    assert len(job_records) == 1
+    assert job_records[0].job_id == 9991
+    assert not failures
+
 
 

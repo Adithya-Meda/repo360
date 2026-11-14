@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -388,12 +389,31 @@ def collect_runners_and_metrics(
         return runners, runner_metrics, org_runner_metrics
 
     workers = resolve_worker_count(cfg.max_workers, len(active_targets), max_cap=6)
+    logger.info(
+        "Scanning %d active repository(ies) for Actions workflow runs across %d concurrent worker(s)...",
+        len(active_targets),
+        workers,
+    )
+    total_targets = len(active_targets)
+    completed_targets = 0
+    last_log_time = time.time()
     from ..common.interrupts import iter_completed
     pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="runner-pool")
     try:
         futures = {pool.submit(_scan_repo_runs, target): target for target in active_targets}
         for fut in iter_completed(futures):
             loc_r, loc_rm, loc_om, repo_fails, loc_jobs, loc_truncs = fut.result()
+            completed_targets += 1
+            now = time.time()
+            if completed_targets == 1 or completed_targets % 25 == 0 or completed_targets == total_targets or (now - last_log_time >= 10.0):
+                last_log_time = now
+                pct = (completed_targets / total_targets) * 100
+                logger.info(
+                    "Actions runner audit progress: %d/%d repositories processed (%.1f%%)...",
+                    completed_targets,
+                    total_targets,
+                    pct,
+                )
             if repo_fails:
                 failures.extend(repo_fails)
             if job_records_out is not None and loc_jobs:

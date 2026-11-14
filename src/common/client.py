@@ -145,10 +145,13 @@ class ResilientGitHubClient:
 
                     if delay > 0.0:
                         last_ts = self._org_last_request_time.get(scope_key, 0.0)
-                        target = max(now, last_ts + delay)
-                        self._org_last_request_time[scope_key] = target
-                        self._last_request_time = target
-                        pacing_wait = target - now
+                        if now < last_ts + delay:
+                            pacing_wait = min((last_ts + delay) - now, delay)
+                            self._org_last_request_time[scope_key] = now + pacing_wait
+                        else:
+                            pacing_wait = 0.0
+                            self._org_last_request_time[scope_key] = now
+                        self._last_request_time = self._org_last_request_time[scope_key]
                     else:
                         pacing_wait = 0.0
                     break

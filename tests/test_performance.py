@@ -356,3 +356,25 @@ def test_build_finops_and_dora_concurrent_ai():
 
     dora_rows, _, _, _ = build_dora_rows(dora_metrics, ["org"], window_days=90, ai_engine=mock_ai)
     assert [r[14] for r in dora_rows] == ["AI DORA for org/svc-1", "AI DORA for org/svc-2"]
+
+
+def test_client_pacing_wait_is_bounded_and_does_not_accumulate():
+    """Verify that concurrent pacing requests do not accumulate into multi-minute sleeps."""
+    mock_auth = MagicMock()
+    mock_auth.api_base_url = "https://api.github.com"
+    client = ResilientGitHubClient(auth=mock_auth)
+
+    org = "test-org"
+    client._org_remaining[org.lower()] = 800  # Sets delay to 0.15s
+
+    import time
+    with patch("src.common.client.interruptible_sleep") as mock_sleep:
+        # Simulate 20 rapid calls
+        for _ in range(20):
+            client._coordinate_rate_limit(org)
+
+        # Ensure no sleep call exceeded the 0.15s pacing delay threshold!
+        for call_args in mock_sleep.call_args_list:
+            slept_duration = call_args[0][0]
+            assert slept_duration <= 0.16, f"Pacing wait accumulated to {slept_duration}s, exceeding bounded delay!"
+
