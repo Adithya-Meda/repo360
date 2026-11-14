@@ -132,7 +132,7 @@ def run_runners_cli(argv: Optional[List[str]] = None) -> int:
     """Entry point for 'repo360 runners' subcommand."""
     parser = argparse.ArgumentParser(
         prog="repo360 runners",
-        description="Inspect Actions self-hosted runner fleet usage, compute hours, and queue wait times.",
+        description="Inspect Actions runner fleet usage, compute hours, and queue wait times.",
     )
     add_common_scan_arguments(
         parser,
@@ -149,18 +149,18 @@ def run_runners_cli(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--scan-repo-runners",
         action="store_true",
-        help="Proactively scan repository-level runner registration endpoints (default: false; self-hosted jobs are auto-detected from workflow runs).",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--no-github-hosted",
         action="store_true",
-        help="Exclude GitHub-hosted runners and inspect only self-hosted runners.",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--include-github-hosted",
         action="store_true",
         default=True,
-        help="Include GitHub-hosted runners alongside self-hosted runners (default: true).",
+        help=argparse.SUPPRESS,
     )
 
     args = parser.parse_args(argv)
