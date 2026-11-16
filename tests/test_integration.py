@@ -1,17 +1,17 @@
-"""End-to-end integration tests for Repo360 CLI execution."""
+﻿"""End-to-end integration tests for Repo360 CLI execution."""
 
 import os
 import sys
 import tempfile
 from unittest.mock import patch
 
-from src.main import main, run_audit_cli
+from repo360.main import main, run_audit_cli
 
 
 def test_bare_repo360_shows_help_without_executing_audit(capsys) -> None:
     """Verify that bare 'repo360' prints available commands and does NOT execute any audit."""
     with patch("sys.argv", ["repo360"]):
-        with patch("src.main._run_cli") as mock_run:
+        with patch("repo360.main._run_cli") as mock_run:
             exit_code = main()
             assert exit_code == 0
             mock_run.assert_not_called()
@@ -25,7 +25,7 @@ def test_bare_repo360_shows_help_without_executing_audit(capsys) -> None:
 def test_unknown_subcommand_returns_error(capsys) -> None:
     """Verify that an invalid subcommand prints an error message and exits with code 1."""
     with patch("sys.argv", ["repo360", "invalid-cmd"]):
-        with patch("src.main._run_cli") as mock_run:
+        with patch("repo360.main._run_cli") as mock_run:
             exit_code = main()
             assert exit_code == 1
             mock_run.assert_not_called()
@@ -89,7 +89,7 @@ def test_main_keyboard_interrupt_clean_exit() -> None:
     test_args = ["repo360", "audit", "--mock-mode"]
 
     with patch("sys.argv", test_args):
-        with patch("src.main._run_cli", side_effect=KeyboardInterrupt):
+        with patch("repo360.main._run_cli", side_effect=KeyboardInterrupt):
             exit_code = main()
             assert exit_code == 130
 
@@ -143,7 +143,7 @@ def test_multi_org_live_filtering() -> None:
         ]
 
         with patch("sys.argv", test_args):
-            with patch("src.credentials.resolve_runtime_credentials") as mock_creds:
+            with patch("repo360.credentials.resolve_runtime_credentials") as mock_creds:
                 mock_creds.return_value = {
                     "app_id": "12345",
                     "installation_id": None,
@@ -154,14 +154,14 @@ def test_multi_org_live_filtering() -> None:
                     "llm_api_key": "",
                     "llm_enabled": False,
                 }
-                with patch("src.auth.github_app_auth.GitHubAppAuth._load_private_key", return_value="dummy_key"):
-                    with patch("src.auth.github_app_auth.GitHubAppAuth.discover_installations", return_value=mock_installations):
-                        with patch("src.collector.repo_inspector.RepoInspector.list_installation_repositories") as mock_list_repos:
+                with patch("repo360.auth.github_app_auth.GitHubAppAuth._load_private_key", return_value="dummy_key"):
+                    with patch("repo360.auth.github_app_auth.GitHubAppAuth.discover_installations", return_value=mock_installations):
+                        with patch("repo360.collector.repo_inspector.RepoInspector.list_installation_repositories") as mock_list_repos:
                             mock_list_repos.side_effect = [
                                 [{"name": "repo-a", "owner": {"login": "OrgAlpha"}, "default_branch": "main"}],
                                 [{"name": "repo-b", "owner": {"login": "OrgBeta"}, "default_branch": "main"}],
                             ]
-                            with patch("src.main.run_audit", return_value=[]):
+                            with patch("repo360.main.run_audit", return_value=[]):
                                 exit_code = main()
                                 assert exit_code == 0
                                 assert mock_list_repos.call_count == 2

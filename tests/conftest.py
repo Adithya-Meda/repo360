@@ -1,4 +1,4 @@
-"""Pytest fixtures and mock generation helpers."""
+﻿"""Pytest fixtures and mock generation helpers."""
 
 from __future__ import annotations
 
@@ -8,9 +8,9 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from src.checks.base import CheckResult, CheckSeverity, CheckStatus, Persona
-from src.validator import RepoTarget
-from src.mock_generator import create_mock_results
+from repo360.checks.base import CheckResult, CheckSeverity, CheckStatus, Persona
+from repo360.validator import RepoTarget
+from repo360.mock_generator import create_mock_results
 
 
 @pytest.fixture(scope="session")

@@ -1,4 +1,4 @@
-"""Unit tests for Repo360 upgrade module."""
+﻿"""Unit tests for Repo360 upgrade module."""
 
 import json
 from pathlib import Path
@@ -6,7 +6,7 @@ import sys
 from unittest.mock import MagicMock, patch
 import pytest
 
-from src.upgrade import (
+from repo360.upgrade import (
     ReleaseTarget,
     UpgradeResult,
     _build_target_spec,
@@ -36,7 +36,7 @@ from src.upgrade import (
 
 def test_detect_installer_pipx():
     with patch.object(sys, "prefix", "C:\\Users\\test\\AppData\\Local\\pipx\\venvs\\repo360"):
-        with patch("src.upgrade.find_pipx_executable", return_value="C:\\bin\\pipx.exe"):
+        with patch("repo360.upgrade.find_pipx_executable", return_value="C:\\bin\\pipx.exe"):
             installer, cmd = detect_installer()
             assert installer == "pipx"
             assert cmd == ["C:\\bin\\pipx.exe", "runpip", "repo360", "install", "--upgrade"]
@@ -88,8 +88,8 @@ def test_verify_local_state(capsys, tmp_path):
     secrets_dir.mkdir()
     (secrets_dir / "key.pem").write_text("dummy", encoding="utf-8")
 
-    with patch("src.upgrade.get_credentials_path", return_value=str(config_file)):
-        with patch("src.upgrade.get_secrets_dir", return_value=str(secrets_dir)):
+    with patch("repo360.upgrade.get_credentials_path", return_value=str(config_file)):
+        with patch("repo360.upgrade.get_secrets_dir", return_value=str(secrets_dir)):
             verify_local_state()
             captured = capsys.readouterr()
             assert "[VERIFY]" in captured.out
@@ -98,7 +98,7 @@ def test_verify_local_state(capsys, tmp_path):
 
 
 def test_prepare_and_restore_windows_binaries(tmp_path):
-    from src.upgrade import _prepare_windows_binaries, _restore_windows_binaries
+    from repo360.upgrade import _prepare_windows_binaries, _restore_windows_binaries
 
     exe = tmp_path / "repo360.exe"
     exe.write_text("mock binary", encoding="utf-8")
@@ -189,8 +189,8 @@ def test_run_upgrade_cli_already_up_to_date_via_preflight(capsys):
         "is_stale_snapshot": False,
     }
     target = ReleaseTarget(tag="v1.0.0", commit="abcdef123456", source="github-release")
-    with patch("src.upgrade.get_installation_details", return_value=local_details), \
-         patch("src.upgrade.resolve_release_target", return_value=target) as mock_res:
+    with patch("repo360.upgrade.get_installation_details", return_value=local_details), \
+         patch("repo360.upgrade.resolve_release_target", return_value=target) as mock_res:
         ret = run_upgrade_cli([])
         assert ret == 0
         mock_res.assert_called_once_with("https://github.com/Adithya-Meda/repo360.git", requested_tag=None)
@@ -207,9 +207,9 @@ def test_run_upgrade_cli_already_up_to_date_via_installer(capsys):
     }
     target = ReleaseTarget(tag="v1.0.0", commit="abcdef123456", source="github-release")
     up_to_date_result = UpgradeResult(0, already_up_to_date=True, version="v1.0.0", commit="abcdef12")
-    with patch("src.upgrade.get_installation_details", return_value=local_details), \
-         patch("src.upgrade.resolve_release_target", return_value=target), \
-         patch("src.upgrade.execute_upgrade", return_value=up_to_date_result):
+    with patch("repo360.upgrade.get_installation_details", return_value=local_details), \
+         patch("repo360.upgrade.resolve_release_target", return_value=target), \
+         patch("repo360.upgrade.execute_upgrade", return_value=up_to_date_result):
         ret = run_upgrade_cli([])
         assert ret == 0
         captured = capsys.readouterr().out
@@ -225,9 +225,9 @@ def test_run_upgrade_cli_fresh_upgrade(capsys):
     }
     target = ReleaseTarget(tag="v1.1.0", commit="fedcba987654", source="github-release")
     fresh_result = UpgradeResult(0, already_up_to_date=False, version="v1.1.0", commit="fedcba98")
-    with patch("src.upgrade.get_installation_details", return_value=local_details), \
-         patch("src.upgrade.resolve_release_target", return_value=target), \
-         patch("src.upgrade.execute_upgrade", return_value=fresh_result):
+    with patch("repo360.upgrade.get_installation_details", return_value=local_details), \
+         patch("repo360.upgrade.resolve_release_target", return_value=target), \
+         patch("repo360.upgrade.execute_upgrade", return_value=fresh_result):
         ret = run_upgrade_cli([])
         assert ret == 0
         captured = capsys.readouterr().out
@@ -244,9 +244,9 @@ def test_run_upgrade_cli_does_not_downgrade_when_ahead_of_release(capsys):
         "is_stale_snapshot": False,
     }
     target = ReleaseTarget(tag="v1.0.0", commit="12805b0d15f9", source="github-release")
-    with patch("src.upgrade.get_installation_details", return_value=local_details), \
-         patch("src.upgrade.resolve_release_target", return_value=target), \
-         patch("src.upgrade.execute_upgrade") as mock_exec:
+    with patch("repo360.upgrade.get_installation_details", return_value=local_details), \
+         patch("repo360.upgrade.resolve_release_target", return_value=target), \
+         patch("repo360.upgrade.execute_upgrade") as mock_exec:
         ret = run_upgrade_cli([])
         assert ret == 0
         mock_exec.assert_not_called()
@@ -256,7 +256,7 @@ def test_run_upgrade_cli_does_not_downgrade_when_ahead_of_release(capsys):
 
 def test_is_output_already_up_to_date_uv_markers() -> None:
     """uv package install output containing '+ repo360' must not be misclassified as up-to-date."""
-    from src.upgrade import is_output_already_up_to_date
+    from repo360.upgrade import is_output_already_up_to_date
 
     assert is_output_already_up_to_date("", "+ repo360==1.0.0\nInstalled 1 package in 18ms\n") is False
     assert is_output_already_up_to_date("", "Prepared 1 package in 1.2s\nInstalled 1 package in 15ms\n+ repo360==1.0.0\n") is False
@@ -266,13 +266,13 @@ def test_is_output_already_up_to_date_uv_markers() -> None:
 def test_get_installation_details_and_force_commands() -> None:
     """Verify installation metadata inspection and --force command generation."""
     from unittest.mock import patch
-    from src.upgrade import get_installation_details, get_upgrade_commands
+    from repo360.upgrade import get_installation_details, get_upgrade_commands
 
     details = get_installation_details()
     for key in ("version", "commit", "commit_short", "commit_source", "installer", "source_url", "package_path"):
         assert key in details
 
-    with patch("src.upgrade.get_installation_details", return_value={"installer": "uv"}):
+    with patch("repo360.upgrade.get_installation_details", return_value={"installer": "uv"}):
         cmds = get_upgrade_commands(installer_override="pipx", force=True)
         joined = " ".join(cmds[0][1])
         assert "--reinstall-package=repo360" in joined
@@ -284,11 +284,11 @@ def test_get_installation_details_and_force_commands() -> None:
 def test_compare_installed_tree_and_stale_local_snapshot(tmp_path) -> None:
     """Verify stale non-editable local installs are flagged instead of reporting repo HEAD."""
     import json
-    from src.upgrade import _compare_installed_tree_to_source, get_installation_details
+    from repo360.upgrade import _compare_installed_tree_to_source, get_installation_details
 
-    installed_pkg = tmp_path / "site-packages" / "src"
+    installed_pkg = tmp_path / "site-packages" / "repo360"
     source_repo = tmp_path / "checkout"
-    source_pkg = source_repo / "src"
+    source_pkg = source_repo / "src" / "repo360"
     installed_pkg.mkdir(parents=True)
     source_pkg.mkdir(parents=True)
 
@@ -316,9 +316,9 @@ def test_compare_installed_tree_and_stale_local_snapshot(tmp_path) -> None:
         "branch": "main",
         "is_dirty": False,
     }
-    with patch("src.upgrade.Path.resolve", side_effect=[installed_pkg, installed_pkg, source_pkg]), \
+    with patch("repo360.upgrade.Path.resolve", side_effect=[installed_pkg, installed_pkg, source_pkg]), \
          patch("importlib.metadata.distribution", return_value=mock_dist), \
-         patch("src.upgrade._get_git_commit_details", return_value=fake_git):
+         patch("repo360.upgrade._get_git_commit_details", return_value=fake_git):
         details_stale = get_installation_details()
         assert details_stale["is_stale_snapshot"] is True
         assert details_stale["commit"] is None
@@ -334,8 +334,8 @@ def test_run_version_cli_minimal_standard_output_without_network(capsys) -> None
         "commit": "79098e85192fdb486d4dc6c6c55e7540f374612a",
         "is_stale_snapshot": False,
     }
-    with patch("src.upgrade.get_installation_details", return_value=details_vcs), \
-         patch("src.upgrade.resolve_release_target") as mock_release, \
+    with patch("repo360.upgrade.get_installation_details", return_value=details_vcs), \
+         patch("repo360.upgrade.resolve_release_target") as mock_release, \
          patch("requests.get") as mock_get:
         assert run_version_cli([]) == 0
         assert capsys.readouterr().out.strip() == "repo360 1.0.0 (79098e8)"
@@ -377,10 +377,10 @@ def test_run_upgrade_cli_forces_reinstall_when_stale_or_outdated() -> None:
     }
     target = ReleaseTarget(tag="v1.1.0", commit="79098e85", source="github-release")
     fresh_result = UpgradeResult(0, already_up_to_date=False, version="v1.1.0", commit="79098e85")
-    with patch("src.upgrade.get_installation_details", return_value=local_details), \
-         patch("src.upgrade.get_upgrade_commands", return_value=[("uv", ["uv", "pip", "install", "--reinstall-package", "repo360"])]) as mock_cmds, \
-         patch("src.upgrade.execute_upgrade", return_value=fresh_result), \
-         patch("src.upgrade.resolve_release_target", return_value=target):
+    with patch("repo360.upgrade.get_installation_details", return_value=local_details), \
+         patch("repo360.upgrade.get_upgrade_commands", return_value=[("uv", ["uv", "pip", "install", "--reinstall-package", "repo360"])]) as mock_cmds, \
+         patch("repo360.upgrade.execute_upgrade", return_value=fresh_result), \
+         patch("repo360.upgrade.resolve_release_target", return_value=target):
         rc = run_upgrade_cli([])
         assert rc == 0
         mock_cmds.assert_called_once()
@@ -416,7 +416,7 @@ def test_pipx_metadata_backend_and_venv_name_detection(tmp_path: Path) -> None:
     with patch.object(sys, "prefix", str(venv_dir)):
         assert _detect_pipx_venv_name() == "repo360-dev"
         # pipx_metadata.json takes precedence over INSTALLER metadata
-        with patch("src.upgrade.get_installation_details", return_value=("pip", "1.0.0", "git://...", "1234")):
+        with patch("repo360.upgrade.get_installation_details", return_value=("pip", "1.0.0", "git://...", "1234")):
             assert _detect_pipx_backend() == "uv"
 
     with patch.object(sys, "prefix", "C:\\Python312"):
@@ -428,16 +428,16 @@ def test_find_uv_executable_discovers_bundled_uv(tmp_path: Path) -> None:
     bundled_uv.write_text("stub", encoding="utf-8")
     fake_uv_module = MagicMock()
     fake_uv_module.find_uv_bin.return_value = str(bundled_uv)
-    with patch("src.upgrade.shutil.which", return_value=None), \
+    with patch("repo360.upgrade.shutil.which", return_value=None), \
          patch.dict(sys.modules, {"uv": fake_uv_module}):
         assert find_uv_executable() == str(bundled_uv)
 
 
 def test_get_upgrade_commands_strategies_for_pipx_uv_and_uv_tool() -> None:
-    with patch("src.upgrade._is_uv_tool_install", return_value=True), \
+    with patch("repo360.upgrade._is_uv_tool_install", return_value=True), \
          patch.object(sys, "prefix", "C:\\uv\\tools\\repo360"), \
-         patch("src.upgrade.find_uv_executable", return_value="C:\\bin\\uv.exe"), \
-         patch("src.upgrade.find_pipx_executable", return_value=None):
+         patch("repo360.upgrade.find_uv_executable", return_value="C:\\bin\\uv.exe"), \
+         patch("repo360.upgrade.find_pipx_executable", return_value=None):
         cmds = get_upgrade_commands(
             repo_url="https://github.com/Adithya-Meda/repo360.git",
             force=True,
@@ -449,13 +449,13 @@ def test_get_upgrade_commands_strategies_for_pipx_uv_and_uv_tool() -> None:
         assert "tool" in uv_tool_cmd
         assert any("deadbeef" in arg for arg in uv_tool_cmd)
 
-    with patch("src.upgrade._is_uv_tool_install", return_value=False), \
+    with patch("repo360.upgrade._is_uv_tool_install", return_value=False), \
          patch.object(sys, "prefix", "C:\\Users\\test\\pipx\\venvs\\repo360-alt"), \
-         patch("src.upgrade.find_pipx_executable", return_value="C:\\bin\\pipx.exe"), \
-         patch("src.upgrade._detect_pipx_venv_name", return_value="repo360-alt"), \
-         patch("src.upgrade._detect_pipx_backend", return_value="uv"), \
-         patch("src.upgrade._pip_available_for_python", return_value=False), \
-         patch("src.upgrade.find_uv_executable", return_value="C:\\bin\\uv.exe"):
+         patch("repo360.upgrade.find_pipx_executable", return_value="C:\\bin\\pipx.exe"), \
+         patch("repo360.upgrade._detect_pipx_venv_name", return_value="repo360-alt"), \
+         patch("repo360.upgrade._detect_pipx_backend", return_value="uv"), \
+         patch("repo360.upgrade._pip_available_for_python", return_value=False), \
+         patch("repo360.upgrade.find_uv_executable", return_value="C:\\bin\\uv.exe"):
         cmds = get_upgrade_commands(
             repo_url="https://github.com/Adithya-Meda/repo360.git",
             force=True,
@@ -475,13 +475,13 @@ def test_get_upgrade_commands_strategies_for_pipx_uv_and_uv_tool() -> None:
         )
         assert any("cafebabe" in arg for arg in pipx_cmd)
 
-    with patch("src.upgrade._is_uv_tool_install", return_value=False), \
+    with patch("repo360.upgrade._is_uv_tool_install", return_value=False), \
          patch.object(sys, "prefix", "C:\\Users\\test\\pipx\\venvs\\repo360"), \
-         patch("src.upgrade.find_pipx_executable", return_value="C:\\bin\\pipx.exe"), \
-         patch("src.upgrade._detect_pipx_venv_name", return_value="repo360"), \
-         patch("src.upgrade._detect_pipx_backend", return_value="pip"), \
-         patch("src.upgrade._pip_available_for_python", return_value=True), \
-         patch("src.upgrade.find_uv_executable", return_value=None):
+         patch("repo360.upgrade.find_pipx_executable", return_value="C:\\bin\\pipx.exe"), \
+         patch("repo360.upgrade._detect_pipx_venv_name", return_value="repo360"), \
+         patch("repo360.upgrade._detect_pipx_backend", return_value="pip"), \
+         patch("repo360.upgrade._pip_available_for_python", return_value=True), \
+         patch("repo360.upgrade.find_uv_executable", return_value=None):
         cmds = get_upgrade_commands(
             repo_url="https://github.com/Adithya-Meda/repo360.git",
             force=True,
@@ -494,10 +494,10 @@ def test_get_upgrade_commands_strategies_for_pipx_uv_and_uv_tool() -> None:
 
 
 def test_get_upgrade_commands_pip_includes_isolated_fallback() -> None:
-    with patch("src.upgrade._is_uv_tool_install", return_value=False), \
+    with patch("repo360.upgrade._is_uv_tool_install", return_value=False), \
          patch.object(sys, "prefix", "C:\\Python312"), \
-         patch("src.upgrade._pip_available_for_python", return_value=True), \
-         patch("src.upgrade.find_uv_executable", return_value=None):
+         patch("repo360.upgrade._pip_available_for_python", return_value=True), \
+         patch("repo360.upgrade.find_uv_executable", return_value=None):
         cmds = get_upgrade_commands(
             repo_url="https://github.com/Adithya-Meda/repo360.git",
             force=True,
@@ -555,10 +555,10 @@ def test_execute_upgrade_preserves_primary_error_and_invalidates_caches(capsys) 
     primary_fail = MagicMock(returncode=1, stdout="", stderr="Git clone failed: connection refused")
     secondary_no_pip = MagicMock(returncode=1, stdout="", stderr="No module named pip")
 
-    with patch("src.upgrade.get_local_version_info", return_value=("v1.0.0", "11223344")), \
-         patch("src.upgrade.run_interruptible_subprocess", side_effect=[primary_fail, secondary_no_pip]), \
-         patch("src.upgrade._prepare_windows_binaries", return_value=[]), \
-         patch("src.upgrade._restore_windows_binaries"):
+    with patch("repo360.upgrade.get_local_version_info", return_value=("v1.0.0", "11223344")), \
+         patch("repo360.upgrade.run_interruptible_subprocess", side_effect=[primary_fail, secondary_no_pip]), \
+         patch("repo360.upgrade._prepare_windows_binaries", return_value=[]), \
+         patch("repo360.upgrade._restore_windows_binaries"):
         res = execute_upgrade([("pipx", ["pipx", "runpip", "..."]), ("pip", ["python", "-m", "pip", "..."])])
         assert int(res) != 0
         out = capsys.readouterr().out
@@ -566,11 +566,11 @@ def test_execute_upgrade_preserves_primary_error_and_invalidates_caches(capsys) 
         assert "No module named pip" not in out
 
     uv_ok = MagicMock(returncode=0, stdout="Audited 1 package in 5ms", stderr=" + repo360==1.0.0")
-    with patch("src.upgrade.get_local_version_info", return_value=("v1.0.0", "abcd1234")), \
-         patch("src.upgrade.run_interruptible_subprocess", return_value=uv_ok), \
-         patch("src.upgrade._prepare_windows_binaries", return_value=[]), \
-         patch("src.upgrade._restore_windows_binaries"), \
-         patch("src.upgrade.importlib.invalidate_caches") as mock_invalidate:
+    with patch("repo360.upgrade.get_local_version_info", return_value=("v1.0.0", "abcd1234")), \
+         patch("repo360.upgrade.run_interruptible_subprocess", return_value=uv_ok), \
+         patch("repo360.upgrade._prepare_windows_binaries", return_value=[]), \
+         patch("repo360.upgrade._restore_windows_binaries"), \
+         patch("repo360.upgrade.importlib.invalidate_caches") as mock_invalidate:
         res = execute_upgrade([("pipx", ["pipx", "runpip", "..."])])
         assert int(res) == 0
         mock_invalidate.assert_called()
@@ -585,10 +585,10 @@ def test_run_upgrade_cli_forces_when_tag_commit_sha_unavailable() -> None:
     }
     target = ReleaseTarget(tag="v1.1.0", commit=None, source="github-release")
     fresh_result = UpgradeResult(0, already_up_to_date=False, version="v1.1.0", commit="99887766")
-    with patch("src.upgrade.get_installation_details", return_value=local_details), \
-         patch("src.upgrade.resolve_release_target", return_value=target), \
-         patch("src.upgrade.get_upgrade_commands", return_value=[("pip", ["pip", "install"])]) as mock_cmds, \
-         patch("src.upgrade.execute_upgrade", return_value=fresh_result):
+    with patch("repo360.upgrade.get_installation_details", return_value=local_details), \
+         patch("repo360.upgrade.resolve_release_target", return_value=target), \
+         patch("repo360.upgrade.get_upgrade_commands", return_value=[("pip", ["pip", "install"])]) as mock_cmds, \
+         patch("repo360.upgrade.execute_upgrade", return_value=fresh_result):
         rc = run_upgrade_cli([])
         assert rc == 0
         assert mock_cmds.call_args.kwargs.get("force") is True
@@ -617,7 +617,7 @@ def test_list_remote_tags_dereferences_annotated_tags() -> None:
         "bbbbbbb222222222222222222222222222222222\trefs/tags/v1.1.0\n"
     )
     mock_proc = MagicMock(returncode=0, stdout=ls_out)
-    with patch("src.upgrade.run_interruptible_subprocess", return_value=mock_proc) as mock_sub:
+    with patch("repo360.upgrade.run_interruptible_subprocess", return_value=mock_proc) as mock_sub:
         tags = _list_remote_tags("https://github.com/Adithya-Meda/repo360.git")
         assert tags == {
             "v1.0.0": "aaaaaaa111111111111111111111111111111111",
@@ -633,7 +633,7 @@ def test_resolve_release_target_latest_and_specific_tag() -> None:
     api_ok = MagicMock(status_code=200)
     api_ok.json.return_value = {"tag_name": "v1.2.0", "draft": False, "prerelease": False}
     with patch("requests.get", return_value=api_ok), \
-         patch("src.upgrade._list_remote_tags", return_value={"v1.2.0": "ccc123456789"}):
+         patch("repo360.upgrade._list_remote_tags", return_value={"v1.2.0": "ccc123456789"}):
         res = resolve_release_target("https://github.com/Adithya-Meda/repo360.git")
         assert res == ReleaseTarget(tag="v1.2.0", commit="ccc123456789", source="github-release")
 
@@ -645,28 +645,28 @@ def test_resolve_release_target_latest_and_specific_tag() -> None:
         "latest": "shalatest",
     }
     with patch("requests.get", return_value=api_403), \
-         patch("src.upgrade._list_remote_tags", return_value=tags_map):
+         patch("repo360.upgrade._list_remote_tags", return_value=tags_map):
         res = resolve_release_target("https://github.com/Adithya-Meda/repo360.git")
         assert res == ReleaseTarget(tag="v1.10.0", commit="sha1100", source="semver-tag")
 
     api_404 = MagicMock(status_code=404)
     with patch("requests.get", return_value=api_404), \
-         patch("src.upgrade._list_remote_tags", return_value={}):
+         patch("repo360.upgrade._list_remote_tags", return_value={}):
         res = resolve_release_target("https://github.com/Adithya-Meda/repo360.git")
         assert res == ReleaseTarget(tag=None, commit=None, source="no-releases")
 
-    with patch("src.upgrade._list_remote_tags", return_value={"v1.0.0": "sha100"}):
+    with patch("repo360.upgrade._list_remote_tags", return_value={"v1.0.0": "sha100"}):
         res = resolve_release_target("https://github.com/Adithya-Meda/repo360.git", requested_tag="1.0.0")
         assert res == ReleaseTarget(tag="v1.0.0", commit="sha100", source="git-tag")
 
-    with patch("src.upgrade._list_remote_tags", return_value={}):
+    with patch("repo360.upgrade._list_remote_tags", return_value={}):
         res = resolve_release_target("https://github.com/Adithya-Meda/repo360.git", requested_tag="v9.9.9")
         assert res == ReleaseTarget(tag=None, commit=None, source="tag-not-found")
 
     rel_ok = MagicMock(status_code=200)
-    with patch("src.upgrade._list_remote_tags", return_value=None), \
+    with patch("repo360.upgrade._list_remote_tags", return_value=None), \
          patch("requests.get", return_value=rel_ok), \
-         patch("src.upgrade._fetch_commit_summary", return_value={"sha": "apisha123"}):
+         patch("repo360.upgrade._fetch_commit_summary", return_value={"sha": "apisha123"}):
         res = resolve_release_target("https://github.com/Adithya-Meda/repo360.git", requested_tag="v1.0.0")
         assert res == ReleaseTarget(tag="v1.0.0", commit="apisha123", source="github-release")
 
@@ -681,10 +681,10 @@ def test_run_upgrade_cli_specific_tag_and_error_cases(capsys) -> None:
     target_v1 = ReleaseTarget(tag="v1.0.0", commit="aaa11111", source="git-tag")
     switched_result = UpgradeResult(0, already_up_to_date=False, version="v1.0.0", commit="aaa11111")
 
-    with patch("src.upgrade.get_installation_details", return_value=local_details), \
-         patch("src.upgrade.resolve_release_target", return_value=target_v1) as mock_res, \
-         patch("src.upgrade.get_upgrade_commands", return_value=[("pip", ["pip", "install"])]) as mock_cmds, \
-         patch("src.upgrade.execute_upgrade", return_value=switched_result):
+    with patch("repo360.upgrade.get_installation_details", return_value=local_details), \
+         patch("repo360.upgrade.resolve_release_target", return_value=target_v1) as mock_res, \
+         patch("repo360.upgrade.get_upgrade_commands", return_value=[("pip", ["pip", "install"])]) as mock_cmds, \
+         patch("repo360.upgrade.execute_upgrade", return_value=switched_result):
         rc = run_upgrade_cli(["--tag", "v1.0.0"])
         assert rc == 0
         mock_res.assert_called_once_with("https://github.com/Adithya-Meda/repo360.git", requested_tag="v1.0.0")
@@ -694,8 +694,8 @@ def test_run_upgrade_cli_specific_tag_and_error_cases(capsys) -> None:
         assert "Installing Repo360 v1.0.0..." in out
         assert "Repo360 1.0.0 (aaa1111) installed (v1.0.0)." in out
 
-    with patch("src.upgrade.get_installation_details", return_value=local_details), \
-         patch("src.upgrade.resolve_release_target", return_value=ReleaseTarget(tag=None, commit=None, source="no-releases")):
+    with patch("repo360.upgrade.get_installation_details", return_value=local_details), \
+         patch("repo360.upgrade.resolve_release_target", return_value=ReleaseTarget(tag=None, commit=None, source="no-releases")):
         rc = run_upgrade_cli([])
         assert rc == 1
         assert "No published releases found" in capsys.readouterr().out
@@ -715,7 +715,7 @@ def test_get_installation_details_trusts_dist_version_even_when_1_0_0() -> None:
     }.get(name)
 
     with patch("importlib.metadata.distribution", return_value=mock_dist), \
-         patch("src.upgrade.PACKAGE_VERSION", "1.2.0"):
+         patch("repo360.upgrade.PACKAGE_VERSION", "1.2.0"):
         details = get_installation_details()
         assert details["version"] == "v1.0.0"
         assert details["branch"] == "v1.0.0"
@@ -723,7 +723,7 @@ def test_get_installation_details_trusts_dist_version_even_when_1_0_0() -> None:
 
 def test_posix_tool_discovery_falls_back_to_user_and_cargo_bins(tmp_path: Path) -> None:
     """POSIX pipx and uv discovery check user local and Cargo bin dirs when omitted from PATH."""
-    from src.upgrade import find_pipx_executable
+    from repo360.upgrade import find_pipx_executable
 
     local_bin = tmp_path / ".local" / "bin"
     cargo_bin = tmp_path / ".cargo" / "bin"
@@ -734,9 +734,9 @@ def test_posix_tool_discovery_falls_back_to_user_and_cargo_bins(tmp_path: Path) 
     pipx_bin.write_text("#!/bin/sh\n", encoding="utf-8")
     uv_bin.write_text("#!/bin/sh\n", encoding="utf-8")
 
-    with patch("src.upgrade.sys.platform", "linux"), \
-         patch("src.upgrade.shutil.which", return_value=None), \
-         patch("src.upgrade.os.path.expanduser", return_value=str(tmp_path)), \
+    with patch("repo360.upgrade.sys.platform", "linux"), \
+         patch("repo360.upgrade.shutil.which", return_value=None), \
+         patch("repo360.upgrade.os.path.expanduser", return_value=str(tmp_path)), \
          patch.dict(sys.modules, {"uv": None}):
         assert find_pipx_executable() == str(pipx_bin)
         assert find_uv_executable() == str(uv_bin)
@@ -744,7 +744,7 @@ def test_posix_tool_discovery_falls_back_to_user_and_cargo_bins(tmp_path: Path) 
 
 def test_resolve_commit_target_head_branch_and_sha() -> None:
     head_proc = MagicMock(returncode=0, stdout="deadbeef1234567890abcdef1234567890abcdef\tHEAD\n")
-    with patch("src.upgrade.run_interruptible_subprocess", return_value=head_proc):
+    with patch("repo360.upgrade.run_interruptible_subprocess", return_value=head_proc):
         res = resolve_commit_target("https://github.com/Adithya-Meda/repo360.git")
         assert res == ReleaseTarget(
             tag="HEAD",
@@ -753,7 +753,7 @@ def test_resolve_commit_target_head_branch_and_sha() -> None:
         )
 
     branch_proc = MagicMock(returncode=0, stdout="cafebabe1234567890abcdef1234567890abcdef\trefs/heads/main\n")
-    with patch("src.upgrade.run_interruptible_subprocess", return_value=branch_proc):
+    with patch("repo360.upgrade.run_interruptible_subprocess", return_value=branch_proc):
         res = resolve_commit_target("https://github.com/Adithya-Meda/repo360.git", requested_ref="main")
         assert res == ReleaseTarget(
             tag="main",
@@ -761,7 +761,7 @@ def test_resolve_commit_target_head_branch_and_sha() -> None:
             source="git-branch",
         )
 
-    with patch("src.upgrade._fetch_commit_summary", return_value={"sha": "12805b0d15f995f8ced59b4b8c576f875f65cf71"}):
+    with patch("repo360.upgrade._fetch_commit_summary", return_value={"sha": "12805b0d15f995f8ced59b4b8c576f875f65cf71"}):
         res = resolve_commit_target("https://github.com/Adithya-Meda/repo360.git", requested_ref="12805b0")
         assert res == ReleaseTarget(
             tag="12805b0",
@@ -769,7 +769,7 @@ def test_resolve_commit_target_head_branch_and_sha() -> None:
             source="github-commit",
         )
 
-    with patch("src.upgrade._fetch_commit_summary", return_value=None):
+    with patch("repo360.upgrade._fetch_commit_summary", return_value=None):
         res = resolve_commit_target("https://github.com/Adithya-Meda/repo360.git", requested_ref="12805b0")
         assert res == ReleaseTarget(tag=None, commit=None, source="ref-not-found")
 
@@ -784,10 +784,10 @@ def test_run_upgrade_cli_latest_commit_and_ref_modes(capsys) -> None:
     head_target = ReleaseTarget(tag="HEAD", commit="abcdef1234567890", source="git-head")
     ok_res = UpgradeResult(0, already_up_to_date=False, version="v1.0.0", commit="abcdef1234567890")
 
-    with patch("src.upgrade.get_installation_details", return_value=local_details), \
-         patch("src.upgrade.resolve_commit_target", return_value=head_target) as mock_res, \
-         patch("src.upgrade.get_upgrade_commands", return_value=[("pip", ["pip", "install"])]) as mock_cmds, \
-         patch("src.upgrade.execute_upgrade", return_value=ok_res):
+    with patch("repo360.upgrade.get_installation_details", return_value=local_details), \
+         patch("repo360.upgrade.resolve_commit_target", return_value=head_target) as mock_res, \
+         patch("repo360.upgrade.get_upgrade_commands", return_value=[("pip", ["pip", "install"])]) as mock_cmds, \
+         patch("repo360.upgrade.execute_upgrade", return_value=ok_res):
         rc = run_upgrade_cli(["--latest-commit"])
         assert rc == 0
         mock_res.assert_called_once_with("https://github.com/Adithya-Meda/repo360.git", requested_ref=None)

@@ -800,7 +800,11 @@ def get_installation_details() -> Dict[str, Any]:
                     dir_info = data.get("dir_info") or {}
                     editable = bool(dir_info.get("editable", False))
                     git_info = _get_git_commit_details(local_repo)
-                    source_pkg_dir = local_repo / "src"
+                    source_pkg_dir = (
+                        (local_repo / "src" / "repo360")
+                        if (local_repo / "src" / "repo360").is_dir()
+                        else (local_repo / "src")
+                    )
                     in_sync = True
                     mismatched: List[str] = []
                     if not editable and source_pkg_dir.is_dir():

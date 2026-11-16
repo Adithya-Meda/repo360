@@ -1,11 +1,11 @@
-"""Unit tests for configuration and repository inventory validator."""
+﻿"""Unit tests for configuration and repository inventory validator."""
 
 import json
 import os
 import tempfile
 import pytest
 
-from src.validator import ConfigValidator, RepoTarget
+from repo360.validator import ConfigValidator, RepoTarget
 
 
 def test_substitute_env_vars() -> None:

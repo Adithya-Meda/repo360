@@ -1,4 +1,4 @@
-"""Unit tests for cross-platform Ctrl+C fast termination & bounded watchdog guarantees."""
+﻿"""Unit tests for cross-platform Ctrl+C fast termination & bounded watchdog guarantees."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.common.interrupts import (
+from repo360.common.interrupts import (
     InterruptController,
     SHUTDOWN_EVENT,
     interruptible_input,
@@ -128,7 +128,7 @@ def test_handle_python_signal_consumes_expected_os_interrupt() -> None:
     exit_calls = []
     ctrl = InterruptController(grace_seconds=1.0, exit_fn=lambda code: exit_calls.append(code))
     try:
-        with patch("src.common.interrupts._thread.interrupt_main") as mock_interrupt_main:
+        with patch("repo360.common.interrupts._thread.interrupt_main") as mock_interrupt_main:
             ctrl.trigger(signum=2, from_os_thread=True)
             mock_interrupt_main.assert_called_once()
 
@@ -208,7 +208,7 @@ def test_interrupt_controller_is_silent_and_suppresses_duplicate_teardown_signal
     exit_calls = []
     ctrl = InterruptController(grace_seconds=1.0, exit_fn=lambda code: exit_calls.append(code))
     try:
-        with patch("src.common.interrupts._thread.interrupt_main"):
+        with patch("repo360.common.interrupts._thread.interrupt_main"):
             ctrl.trigger(signum=2, from_os_thread=True)
 
         ctrl.note_manual_interrupt()
@@ -223,7 +223,7 @@ def test_interrupt_controller_is_silent_and_suppresses_duplicate_teardown_signal
         ctrl.reset()
         exit_calls.clear()
         ctrl.grace_seconds = 0.08
-        with patch("src.common.interrupts._thread.interrupt_main"):
+        with patch("repo360.common.interrupts._thread.interrupt_main"):
             ctrl.trigger(signum=2, from_os_thread=False)
         time.sleep(0.2)
         assert exit_calls == [130]
@@ -237,7 +237,7 @@ def test_interrupt_controller_is_silent_and_suppresses_duplicate_teardown_signal
 
 def test_silent_interrupt_excepthook_suppresses_keyboard_interrupt_traceback(capsys) -> None:
     """Uncaught KeyboardInterrupt exits via silent excepthook without traceback noise."""
-    from src.common import interrupts as int_mod
+    from repo360.common import interrupts as int_mod
 
     orig_calls = []
     with patch.object(int_mod, "_ORIG_EXCEPTHOOK", side_effect=lambda *args: orig_calls.append(args[0])):

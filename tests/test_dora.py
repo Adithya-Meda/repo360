@@ -1,11 +1,11 @@
-"""Unit and integration tests for Repo360 DORA & Flow Metrics."""
+﻿"""Unit and integration tests for Repo360 DORA & Flow Metrics."""
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import pytest
 from openpyxl import load_workbook
 
-from src.dora.models import (
+from repo360.dora.models import (
     DORAConfig,
     DeploymentRecord,
     RecoveryIncident,
@@ -16,11 +16,11 @@ from src.dora.models import (
     get_lttc_tier,
     get_mttr_tier,
 )
-from src.dora.collector import (
+from repo360.dora.collector import (
     build_dora_rows,
     calculate_recovery_incidents,
 )
-from src.dora.reporter import write_dora_workbook
+from repo360.dora.reporter import write_dora_workbook
 
 
 def test_dora_tier_classifiers():
@@ -229,13 +229,13 @@ def test_write_dora_workbook(tmp_path: Path):
 from unittest.mock import MagicMock
 import requests
 
-from src.dora.models import (
+from repo360.dora.models import (
     compute_composite_tier,
     compute_fleet_dora_summary,
     get_lttc_tier,
     get_rework_tier,
 )
-from src.dora.collector import (
+from repo360.dora.collector import (
     _apply_native_incident_and_rework_signals,
     _deduplicate_release_and_workflow_events,
     _enrich_lead_times_from_commits,
@@ -244,7 +244,7 @@ from src.dora.collector import (
     collect_repo_deployments,
     profile_repo_dora,
 )
-from src.dora.cli import print_dora_scorecard
+from repo360.dora.cli import print_dora_scorecard
 
 
 def test_inactive_repos_are_na_and_stability_guardrails():
@@ -649,7 +649,7 @@ def test_org_median_df_dedup_permission_gap_and_workbook(tmp_path: Path):
 
 
 def test_run_dora_cli_passes_production_scope_flags(monkeypatch, tmp_path: Path):
-    import src.dora.cli as dora_cli
+    import repo360.dora.cli as dora_cli
 
     captured = {}
 
@@ -1128,16 +1128,16 @@ def test_squash_merge_single_commit_pr_lead_time_and_url_quoting():
 
 
 def test_run_dora_cli_forwards_permission_and_api_failures(monkeypatch, tmp_path: Path):
-    from src.dora.cli import run_dora_cli
+    from repo360.dora.cli import run_dora_cli
 
     now = datetime(2026, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
     captured = {}
 
-    monkeypatch.setattr("src.dora.cli.resolve_runtime_credentials", lambda: {"app_id": "123", "private_key": "pem"})
-    monkeypatch.setattr("src.dora.cli.GitHubAppAuth", lambda **kw: MagicMock())
-    monkeypatch.setattr("src.dora.cli.ResilientGitHubClient", lambda **kw: MagicMock())
-    monkeypatch.setattr("src.dora.cli.discover_app_organizations", lambda **kw: ["acme"])
-    monkeypatch.setattr("src.dora.cli.discover_app_repositories", lambda **kw: ([("acme", "locked")], {}))
+    monkeypatch.setattr("repo360.dora.cli.resolve_runtime_credentials", lambda: {"app_id": "123", "private_key": "pem"})
+    monkeypatch.setattr("repo360.dora.cli.GitHubAppAuth", lambda **kw: MagicMock())
+    monkeypatch.setattr("repo360.dora.cli.ResilientGitHubClient", lambda **kw: MagicMock())
+    monkeypatch.setattr("repo360.dora.cli.discover_app_organizations", lambda **kw: ["acme"])
+    monkeypatch.setattr("repo360.dora.cli.discover_app_repositories", lambda **kw: ([("acme", "locked")], {}))
 
     sample_metric = RepoDORAMetrics(
         org="acme",
@@ -1150,7 +1150,7 @@ def test_run_dora_cli_forwards_permission_and_api_failures(monkeypatch, tmp_path
         ],
         stalled_deploys_count=1,
     )
-    monkeypatch.setattr("src.dora.cli.collect_dora_data", lambda *a, **kw: [sample_metric])
+    monkeypatch.setattr("repo360.dora.cli.collect_dora_data", lambda *a, **kw: [sample_metric])
 
     orig_write = write_dora_workbook
 
@@ -1159,7 +1159,7 @@ def test_run_dora_cli_forwards_permission_and_api_failures(monkeypatch, tmp_path
         captured["path"] = kwargs["path"]
         return orig_write(**kwargs)
 
-    monkeypatch.setattr("src.dora.cli.write_dora_workbook", _spy_write)
+    monkeypatch.setattr("repo360.dora.cli.write_dora_workbook", _spy_write)
     rc = run_dora_cli(["--output-dir", str(tmp_path), "--lookback-days", "30", "--require-ai", "no"])
     assert rc == 0
     assert len(captured["failures"]) == 2
@@ -1204,8 +1204,8 @@ def test_build_dora_rows_passes_grounded_ai_context_and_stalled_suffix():
 
 def test_incident_issue_resolved_within_lookback_window():
     """Verify incident issues created before lookback window but resolved within lookback are counted."""
-    from src.dora.collector import _collect_incident_issues
-    from src.dora.models import DORAConfig
+    from repo360.dora.collector import _collect_incident_issues
+    from repo360.dora.models import DORAConfig
 
     now = datetime(2026, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
     since = now - timedelta(days=30)  # 2026-10-11

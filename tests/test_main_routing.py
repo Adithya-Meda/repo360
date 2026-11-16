@@ -1,9 +1,9 @@
-"""Tests for main CLI subcommand routing."""
+﻿"""Tests for main CLI subcommand routing."""
 
 import sys
 from unittest.mock import MagicMock, patch
 import pytest
-from src.main import _print_root_help, main
+from repo360.main import _print_root_help, main
 
 
 def test_print_root_help(capsys):
@@ -35,7 +35,7 @@ def test_main_help_flag(capsys):
 
 def test_main_route_activity():
     with patch.object(sys, "argv", ["repo360", "activity", "--help"]):
-        with patch("src.activity.cli.run_activity_cli", return_value=0) as mock_act:
+        with patch("repo360.activity.cli.run_activity_cli", return_value=0) as mock_act:
             ret = main()
             assert ret == 0
             assert mock_act.called
@@ -43,7 +43,7 @@ def test_main_route_activity():
 
 def test_main_route_runners():
     with patch.object(sys, "argv", ["repo360", "runners", "--help"]):
-        with patch("src.runners.cli.run_runners_cli", return_value=0) as mock_run:
+        with patch("repo360.runners.cli.run_runners_cli", return_value=0) as mock_run:
             ret = main()
             assert ret == 0
             assert mock_run.called
@@ -51,7 +51,7 @@ def test_main_route_runners():
 
 def test_main_route_finops():
     with patch.object(sys, "argv", ["repo360", "finops", "--help"]):
-        with patch("src.finops.cli.run_finops_cli", return_value=0) as mock_fin:
+        with patch("repo360.finops.cli.run_finops_cli", return_value=0) as mock_fin:
             ret = main()
             assert ret == 0
             assert mock_fin.called
@@ -59,7 +59,7 @@ def test_main_route_finops():
 
 def test_main_route_dora():
     with patch.object(sys, "argv", ["repo360", "dora", "--help"]):
-        with patch("src.dora.cli.run_dora_cli", return_value=0) as mock_dor:
+        with patch("repo360.dora.cli.run_dora_cli", return_value=0) as mock_dor:
             ret = main()
             assert ret == 0
             assert mock_dor.called
@@ -67,7 +67,7 @@ def test_main_route_dora():
 
 def test_main_route_bypass():
     with patch.object(sys, "argv", ["repo360", "bypass", "--help"]):
-        with patch("src.bypass.cli.run_bypass_cli", return_value=0) as mock_byp:
+        with patch("repo360.bypass.cli.run_bypass_cli", return_value=0) as mock_byp:
             ret = main()
             assert ret == 0
             assert mock_byp.called
@@ -75,7 +75,7 @@ def test_main_route_bypass():
 
 def test_main_route_upgrade():
     with patch.object(sys, "argv", ["repo360", "upgrade"]):
-        with patch("src.upgrade.run_upgrade_cli", return_value=0) as mock_up:
+        with patch("repo360.upgrade.run_upgrade_cli", return_value=0) as mock_up:
             ret = main()
             assert ret == 0
             assert mock_up.called
@@ -87,10 +87,10 @@ def test_main_route_upgrade():
 
 def test_main_route_health(capsys):
     with patch.object(sys, "argv", ["repo360", "health"]):
-        with patch("src.credentials.resolve_runtime_credentials", return_value={"app_id": 12345, "private_key": "dummy", "api_base_url": "https://api.github.com"}):
-            with patch("src.auth.github_app_auth.GitHubAppAuth._load_private_key", return_value="mock-pem"):
-                with patch("src.auth.github_app_auth.GitHubAppAuth.discover_installations", return_value=[{"id": 1}]):
-                    with patch("src.ai.init_ai_engine") as mock_ai:
+        with patch("repo360.credentials.resolve_runtime_credentials", return_value={"app_id": 12345, "private_key": "dummy", "api_base_url": "https://api.github.com"}):
+            with patch("repo360.auth.github_app_auth.GitHubAppAuth._load_private_key", return_value="mock-pem"):
+                with patch("repo360.auth.github_app_auth.GitHubAppAuth.discover_installations", return_value=[{"id": 1}]):
+                    with patch("repo360.ai.init_ai_engine") as mock_ai:
                         mock_ai.return_value.is_available.return_value = True
                         ret = main()
                         assert ret == 0
@@ -108,8 +108,8 @@ def test_main_unknown_command(capsys):
 
 def test_run_audit_concurrent_execution():
     """Verify that run_audit executes across multiple repositories concurrently and prefetches trees."""
-    from src.main import run_audit
-    from src.validator import RepoTarget
+    from repo360.main import run_audit
+    from repo360.validator import RepoTarget
 
     mock_inspector = MagicMock()
     mock_inspector.detect_tech_stack.return_value = {"languages": ["Python"]}
@@ -140,8 +140,8 @@ def test_run_audit_concurrent_execution():
 
 def test_run_audit_keyboard_interrupt_stops_immediately():
     """Verify that KeyboardInterrupt during run_audit cancels executor and raises cleanly."""
-    from src.main import run_audit
-    from src.validator import RepoTarget
+    from repo360.main import run_audit
+    from repo360.validator import RepoTarget
 
     mock_inspector = MagicMock()
     mock_inspector.prefetch_repo_tree.side_effect = KeyboardInterrupt()
@@ -163,8 +163,8 @@ def test_run_audit_keyboard_interrupt_stops_immediately():
 def test_log_repo_banner_advances_smoothly():
     """Verify that _log_repo_banner dynamically advances bar indicator and percentage without freezing."""
     import re
-    from src.main import _log_repo_banner, logger
-    from src.validator import RepoTarget
+    from repo360.main import _log_repo_banner, logger
+    from repo360.validator import RepoTarget
 
     ansi_re = re.compile(r"\x1b\[[0-9;]*m")
     logged_messages = []
@@ -191,7 +191,7 @@ def test_log_repo_banner_advances_smoothly():
 
 def test_repo_inspector_seed_repo_metadata():
     """Verify that seed_repo_metadata eliminates network round trips for repository metadata."""
-    from src.collector.repo_inspector import RepoInspector
+    from repo360.collector.repo_inspector import RepoInspector
 
     mock_client = MagicMock()
     inspector = RepoInspector(client=mock_client)
@@ -206,7 +206,7 @@ def test_repo_inspector_seed_repo_metadata():
 
 def test_client_rate_limit_adaptive_delay_healthy():
     """Verify that client executes with zero delay when rate limit quota is healthy (>=1000)."""
-    from src.collector.client import Repo360Client
+    from repo360.collector.client import Repo360Client
 
     mock_auth = MagicMock()
     mock_auth.api_base_url = "https://api.github.com"
@@ -226,9 +226,9 @@ def test_client_rate_limit_adaptive_delay_healthy():
 
 def test_run_audit_parallel_ai_enrichment_decoupled():
     """Verify that AI recommendations are dispatched and synthesized asynchronously without blocking repo audits."""
-    from src.main import run_audit
-    from src.validator import RepoTarget
-    from src.checks.base import CheckResult, CheckStatus
+    from repo360.main import run_audit
+    from repo360.validator import RepoTarget
+    from repo360.checks.base import CheckResult, CheckStatus
 
     mock_inspector = MagicMock()
     mock_inspector.detect_tech_stack.return_value = {"languages": ["Python"]}
@@ -276,11 +276,11 @@ def test_run_audit_parallel_ai_enrichment_decoupled():
 def test_main_route_version_and_reject_aliases(monkeypatch, capsys) -> None:
     """Verify only canonical commands are accepted and extra aliases/flags are rejected."""
     from unittest.mock import MagicMock
-    from src import main as main_mod
+    from repo360 import main as main_mod
 
     monkeypatch.setattr(sys, "argv", ["repo360", "version"])
     mock_version = MagicMock(return_value=0)
-    monkeypatch.setattr("src.upgrade.run_version_cli", mock_version)
+    monkeypatch.setattr("repo360.upgrade.run_version_cli", mock_version)
     assert main_mod.main() == 0
     assert mock_version.called
 
@@ -312,7 +312,7 @@ def test_main_route_version_and_reject_aliases(monkeypatch, capsys) -> None:
 
 def test_main_route_health_help(monkeypatch) -> None:
     """Verify 'repo360 health --help' displays help and exits cleanly."""
-    from src import main as main_mod
+    from repo360 import main as main_mod
 
     monkeypatch.setattr(sys, "argv", ["repo360", "health", "--help"])
     with pytest.raises(SystemExit) as exc:
@@ -324,13 +324,13 @@ def test_main_route_health_includes_commit_metadata(monkeypatch, capsys) -> None
     """Verify 'repo360 health' output includes installed version and commit metadata."""
     import json
     from unittest.mock import MagicMock
-    from src import main as main_mod
+    from repo360 import main as main_mod
 
     monkeypatch.setattr(sys, "argv", ["repo360", "health"])
-    monkeypatch.setattr("src.credentials.resolve_runtime_credentials", lambda: {"app_id": "123", "private_key": "pem"})
-    monkeypatch.setattr("src.auth.github_app_auth.GitHubAppAuth", lambda **kw: MagicMock(discover_installations=lambda: [{"id": 1}]))
-    monkeypatch.setattr("src.ai.init_ai_engine", lambda: MagicMock(is_available=lambda: True))
-    monkeypatch.setattr("src.upgrade.get_installation_details", lambda: {
+    monkeypatch.setattr("repo360.credentials.resolve_runtime_credentials", lambda: {"app_id": "123", "private_key": "pem"})
+    monkeypatch.setattr("repo360.auth.github_app_auth.GitHubAppAuth", lambda **kw: MagicMock(discover_installations=lambda: [{"id": 1}]))
+    monkeypatch.setattr("repo360.ai.init_ai_engine", lambda: MagicMock(is_available=lambda: True))
+    monkeypatch.setattr("repo360.upgrade.get_installation_details", lambda: {
         "version": "1.0.0",
         "commit_short": "cdfeb814",
         "commit_source": "direct_url.json",
@@ -348,11 +348,11 @@ def test_main_route_health_includes_commit_metadata(monkeypatch, capsys) -> None
 def test_main_route_uninstall_only(monkeypatch) -> None:
     """Verify 'uninstall' routes cleanly to run_uninstall_cli while 'remove' is rejected."""
     from unittest.mock import MagicMock
-    from src import main as main_mod
+    from repo360 import main as main_mod
 
     monkeypatch.setattr(sys, "argv", ["repo360", "uninstall", "--dry-run"])
     mock_uninstall = MagicMock(return_value=0)
-    monkeypatch.setattr("src.uninstall.run_uninstall_cli", mock_uninstall)
+    monkeypatch.setattr("repo360.uninstall.run_uninstall_cli", mock_uninstall)
     assert main_mod.main() == 0
     assert mock_uninstall.called
 
@@ -363,11 +363,11 @@ def test_main_route_uninstall_only(monkeypatch) -> None:
 @pytest.mark.parametrize(
     "module_path,fn_name",
     [
-        ("src.activity.cli", "run_activity_cli"),
-        ("src.runners.cli", "run_runners_cli"),
-        ("src.finops.cli", "run_finops_cli"),
-        ("src.dora.cli", "run_dora_cli"),
-        ("src.bypass.cli", "run_bypass_cli"),
+        ("repo360.activity.cli", "run_activity_cli"),
+        ("repo360.runners.cli", "run_runners_cli"),
+        ("repo360.finops.cli", "run_finops_cli"),
+        ("repo360.dora.cli", "run_dora_cli"),
+        ("repo360.bypass.cli", "run_bypass_cli"),
     ],
 )
 @pytest.mark.parametrize(
@@ -411,7 +411,7 @@ def test_subcommand_clis_support_require_ai_yes_no_default_no(
     )
     monkeypatch.setattr(cli_mod, "ResilientGitHubClient", lambda **kw: MagicMock())
     monkeypatch.setattr(cli_mod, "discover_app_organizations", lambda **kw: [])
-    monkeypatch.setattr("src.ai.init_ai_engine", _fake_init_ai_engine)
+    monkeypatch.setattr("repo360.ai.init_ai_engine", _fake_init_ai_engine)
 
     rc = runner(cli_args)
     assert rc == 1
@@ -434,7 +434,7 @@ def test_audit_cli_supports_require_ai_yes_no_default_no(
     expected_enable_ai: bool,
 ) -> None:
     """Verify 'repo360 audit' defaults --require-ai to 'no' and honors 'yes'/'no'."""
-    from src import main as main_mod
+    from repo360 import main as main_mod
 
     captured = {}
 
@@ -449,7 +449,7 @@ def test_audit_cli_supports_require_ai_yes_no_default_no(
 
     monkeypatch.setattr(sys, "argv", [*cli_args, "--output-dir", str(tmp_path)])
     monkeypatch.setattr(
-        "src.credentials.resolve_runtime_credentials",
+        "repo360.credentials.resolve_runtime_credentials",
         lambda: {
             "app_id": "",
             "installation_id": "",
@@ -461,7 +461,7 @@ def test_audit_cli_supports_require_ai_yes_no_default_no(
             "llm_enabled": True,
         },
     )
-    monkeypatch.setattr("src.ai.init_ai_engine", _fake_init_ai_engine)
+    monkeypatch.setattr("repo360.ai.init_ai_engine", _fake_init_ai_engine)
 
     rc = main_mod.main()
     assert rc == 0
@@ -471,7 +471,7 @@ def test_audit_cli_supports_require_ai_yes_no_default_no(
 
 def test_audit_cli_rejects_invalid_require_ai_value(monkeypatch) -> None:
     """Verify 'repo360 audit --require-ai invalid' fails fast with parser exit code 2."""
-    from src import main as main_mod
+    from repo360 import main as main_mod
 
     monkeypatch.setattr(sys, "argv", ["repo360", "audit", "--require-ai", "invalid"])
     with pytest.raises(SystemExit) as exc:
@@ -506,7 +506,7 @@ def test_all_scan_commands_share_consistent_flags_and_reject_max_workers(
     monkeypatch, capsys, subcmd: str, has_lookback: bool
 ) -> None:
     """Verify all scan commands expose unified --workers wording and reject legacy --max-workers."""
-    from src import main as main_mod
+    from repo360 import main as main_mod
 
     monkeypatch.setattr(sys, "argv", ["repo360", subcmd, "--help"])
     with pytest.raises(SystemExit) as exc_help:
@@ -543,11 +543,11 @@ def test_subcommand_clis_pass_workers_flag_to_config(monkeypatch, tmp_path) -> N
     import importlib
 
     cases = [
-        ("src.activity.cli", "run_activity_cli", []),
-        ("src.runners.cli", "run_runners_cli", []),
-        ("src.finops.cli", "run_finops_cli", []),
-        ("src.dora.cli", "run_dora_cli", []),
-        ("src.bypass.cli", "run_bypass_cli", []),
+        ("repo360.activity.cli", "run_activity_cli", []),
+        ("repo360.runners.cli", "run_runners_cli", []),
+        ("repo360.finops.cli", "run_finops_cli", []),
+        ("repo360.dora.cli", "run_dora_cli", []),
+        ("repo360.bypass.cli", "run_bypass_cli", []),
     ]
     for module_path, fn_name, extra in cases:
         cli_mod = importlib.import_module(module_path)
@@ -564,7 +564,7 @@ def test_subcommand_clis_pass_workers_flag_to_config(monkeypatch, tmp_path) -> N
         )
         monkeypatch.setattr(cli_mod, "ResilientGitHubClient", lambda **kw: MagicMock())
         monkeypatch.setattr(cli_mod, "discover_app_organizations", lambda **kw: [])
-        monkeypatch.setattr("src.ai.init_ai_engine", lambda **kw: MagicMock(enabled=False, is_available=lambda: False))
+        monkeypatch.setattr("repo360.ai.init_ai_engine", lambda **kw: MagicMock(enabled=False, is_available=lambda: False))
         rc = runner([*extra, "--workers", "4", "--output-dir", str(tmp_path)])
         assert rc == 1
 
@@ -593,7 +593,7 @@ def test_bounded_cli_flag_limits_and_cross_field_validation(
     monkeypatch, argv: list[str]
 ) -> None:
     """Verify out-of-range flag values and inconsistent thresholds exit cleanly with code 2."""
-    from src import main as main_mod
+    from repo360 import main as main_mod
 
     monkeypatch.setattr(sys, "argv", ["repo360", *argv])
     with pytest.raises(SystemExit) as exc:
@@ -604,24 +604,24 @@ def test_bounded_cli_flag_limits_and_cross_field_validation(
 @pytest.mark.parametrize(
     "subcmd,target_attr",
     [
-        ("audit", "src.main._run_cli"),
-        ("setup", "src.setup_app.main"),
-        ("version", "src.upgrade.run_version_cli"),
-        ("upgrade", "src.upgrade.run_upgrade_cli"),
-        ("uninstall", "src.uninstall.run_uninstall_cli"),
-        ("health", "src.main._run_health_cli"),
-        ("activity", "src.activity.cli.run_activity_cli"),
-        ("runners", "src.runners.cli.run_runners_cli"),
-        ("finops", "src.finops.cli.run_finops_cli"),
-        ("dora", "src.dora.cli.run_dora_cli"),
-        ("bypass", "src.bypass.cli.run_bypass_cli"),
+        ("audit", "repo360.main._run_cli"),
+        ("setup", "repo360.setup_app.main"),
+        ("version", "repo360.upgrade.run_version_cli"),
+        ("upgrade", "repo360.upgrade.run_upgrade_cli"),
+        ("uninstall", "repo360.uninstall.run_uninstall_cli"),
+        ("health", "repo360.main._run_health_cli"),
+        ("activity", "repo360.activity.cli.run_activity_cli"),
+        ("runners", "repo360.runners.cli.run_runners_cli"),
+        ("finops", "repo360.finops.cli.run_finops_cli"),
+        ("dora", "repo360.dora.cli.run_dora_cli"),
+        ("bypass", "repo360.bypass.cli.run_bypass_cli"),
     ],
 )
 def test_ctrl_c_exits_silently_with_130_across_all_subcommands(
     monkeypatch, capsys, subcmd: str, target_attr: str
 ) -> None:
     """Verify Ctrl+C exits silently with code 130 and zero banners across all commands."""
-    from src import main as main_mod
+    from repo360 import main as main_mod
 
     monkeypatch.setattr(target_attr, MagicMock(side_effect=KeyboardInterrupt))
     monkeypatch.setattr(sys, "argv", ["repo360", subcmd])

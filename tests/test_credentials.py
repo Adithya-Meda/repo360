@@ -1,11 +1,11 @@
-"""Unit tests for user credentials and configuration manager."""
+﻿"""Unit tests for user credentials and configuration manager."""
 
 import json
 import os
 import tempfile
 import pytest
 
-from src.credentials import (
+from repo360.credentials import (
     find_private_key,
     get_credentials_path,
     get_secrets_dir,
@@ -132,8 +132,8 @@ def test_posix_directory_and_file_permissions(tmp_path) -> None:
 
     cfg_dir = tmp_path / ".repo360"
     with patch.dict(os.environ, {"REPO360_CONFIG_DIR": str(cfg_dir)}), \
-         patch("src.credentials.os.name", "posix"), \
-         patch("src.credentials.os.chmod") as mock_chmod:
+         patch("repo360.credentials.os.name", "posix"), \
+         patch("repo360.credentials.os.chmod") as mock_chmod:
         key_path = save_private_key("PRIVATE_KEY", app_slug="demo")
         cfg_path = save_user_credentials(app_id=123, private_key_path=key_path)
 

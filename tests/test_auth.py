@@ -1,11 +1,11 @@
-"""Unit tests for GitHub App authentication and token management."""
+﻿"""Unit tests for GitHub App authentication and token management."""
 
 import time
 from unittest.mock import MagicMock, patch
 import jwt
 import pytest
 
-from src.auth.github_app_auth import GitHubAppAuth
+from repo360.auth.github_app_auth import GitHubAppAuth
 
 
 def test_auth_init_valid(test_rsa_key_pem: str) -> None:
@@ -212,7 +212,7 @@ def test_get_installation_permissions(mock_get: MagicMock, test_rsa_key_pem: str
     assert auth.get_installation_permissions("UnknownOrg") == {}
 
 
-@patch("src.auth.github_app_auth.time.sleep")
+@patch("repo360.auth.github_app_auth.time.sleep")
 @patch("requests.get")
 def test_discover_installations_recovers_on_transient_connection_error(
     mock_get: MagicMock,

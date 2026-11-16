@@ -1,4 +1,4 @@
-"""Unit and integration tests for Repo360 FinOps storage & artifact profiling."""
+﻿"""Unit and integration tests for Repo360 FinOps storage & artifact profiling."""
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -7,7 +7,7 @@ import pytest
 import requests
 from openpyxl import load_workbook
 
-from src.finops.models import (
+from repo360.finops.models import (
     ArtifactRecord,
     CacheRecord,
     FinOpsConfig,
@@ -16,14 +16,14 @@ from src.finops.models import (
     format_bytes_to_gb,
     format_bytes_to_mb,
 )
-from src.finops.collector import (
+from repo360.finops.collector import (
     build_finops_rows,
     collect_org_packages,
     collect_repo_artifacts,
     collect_repo_caches,
     profile_single_repo,
 )
-from src.finops.reporter import write_finops_workbook
+from repo360.finops.reporter import write_finops_workbook
 
 
 def test_byte_formatters():
@@ -325,13 +325,13 @@ def test_finops_hardened_packages_pagination_and_reconciliation(tmp_path: Path):
 def test_finops_retention_rounding_precision_lfs_and_billing(tmp_path: Path):
     """Verify off-by-one retention rounding, sub-0.01 MB precision, package type disambiguation, LFS, and billing."""
     import base64
-    from src.finops.collector import (
+    from repo360.finops.collector import (
         build_billing_rows,
         collect_finops_data,
         collect_org_billing,
         collect_org_lfs_usage,
     )
-    from src.finops.models import format_kb_to_mb
+    from repo360.finops.models import format_kb_to_mb
 
     created = datetime(2026, 11, 12, 8, 44, 11, tzinfo=timezone.utc)
     expires_60 = datetime(2027, 1, 11, 8, 44, 10, tzinfo=timezone.utc)

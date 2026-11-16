@@ -1,9 +1,9 @@
-"""Unit tests for GitHub App setup wizard."""
+﻿"""Unit tests for GitHub App setup wizard."""
 
 from unittest.mock import MagicMock, patch
 import pytest
 
-from src.setup_app import get_manifest, ManifestCallbackHandler, resolve_api_base_url
+from repo360.setup_app import get_manifest, ManifestCallbackHandler, resolve_api_base_url
 
 
 def test_resolve_api_base_url_domains() -> None:
@@ -40,7 +40,7 @@ def test_get_manifest_payload() -> None:
 
 def test_app_name_limit_and_domain_quotes() -> None:
     """Verify GitHub App default name obeys 34-char cap and quoted domains normalize cleanly."""
-    from src.setup_app import _build_default_app_name, _normalize_github_domain
+    from repo360.setup_app import _build_default_app_name, _normalize_github_domain
 
     assert _build_default_app_name("") == "Repo360"
     long_name = _build_default_app_name("very-long-enterprise-organization-name-exceeding-limit")
@@ -103,7 +103,7 @@ def test_manifest_callback_handler_validates_state_and_exchanges_code() -> None:
     handler.path = "/callback?code=temp_code&state=expected_nonce"
     mock_resp = MagicMock()
     mock_resp.json.return_value = {"id": 12345, "slug": "repo360-test-org", "pem": "PEM"}
-    with patch("src.setup_app.requests.post", return_value=mock_resp) as mock_post:
+    with patch("repo360.setup_app.requests.post", return_value=mock_resp) as mock_post:
         handler.do_GET()
         mock_post.assert_called_once()
         assert mock_post.call_args[0][0] == "https://api.github.com/app-manifests/temp_code/conversions"
@@ -113,12 +113,12 @@ def test_manifest_callback_handler_validates_state_and_exchanges_code() -> None:
 
 def test_setup_app_main_keyboard_interrupt(capsys) -> None:
     """Verify that Ctrl+C in setup_app exits silently with code 130 and no extra text."""
-    from src.common.interrupts import SHUTDOWN_EVENT, reset_shutdown
-    from src.setup_app import main as setup_main
+    from repo360.common.interrupts import SHUTDOWN_EVENT, reset_shutdown
+    from repo360.setup_app import main as setup_main
 
     with patch("argparse.ArgumentParser.parse_args") as mock_args:
         mock_args.return_value = MagicMock(org="my-org", app_name="", domain="https://github.com", mode="auto")
-        with patch("src.setup_app.run_wizard", side_effect=KeyboardInterrupt):
+        with patch("repo360.setup_app.run_wizard", side_effect=KeyboardInterrupt):
             code = setup_main()
             assert code == 130
     captured = capsys.readouterr()
@@ -149,7 +149,7 @@ def test_setup_app_main_keyboard_interrupt(capsys) -> None:
 
 def test_get_manifest_custom_and_invalid_redirect_url() -> None:
     """Verify custom loopback callback URLs work and query params in redirect_url raise ValueError."""
-    from src.setup_app import _normalize_org_name
+    from repo360.setup_app import _normalize_org_name
 
     manifest = get_manifest("https://github.com", redirect_url="http://127.0.0.1:54321/callback")
     assert manifest["redirect_url"] == "http://127.0.0.1:54321/callback"
@@ -201,7 +201,7 @@ def test_manifest_callback_handler_dynamic_port_and_oauth_error() -> None:
 def test_bind_callback_server_fallback_on_occupied_port() -> None:
     """Verify _bind_callback_server falls back to an ephemeral port when preferred port is occupied."""
     import socket
-    from src.setup_app import _bind_callback_server
+    from repo360.setup_app import _bind_callback_server
 
     occupant = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     occupant.bind(("127.0.0.1", 0))
@@ -221,12 +221,12 @@ def test_bind_callback_server_fallback_on_occupied_port() -> None:
 
 def test_setup_main_interactive_mode_routing_and_cli_flags(monkeypatch) -> None:
     """Verify setup routes between auto wizard and manual flow via prompt or --mode flag."""
-    from src.setup_app import main as setup_main
+    from repo360.setup_app import main as setup_main
 
     auto_inputs = iter(["x", "1", "my-org", "https://ghe.internal"])
     monkeypatch.setattr("builtins.input", lambda _p="": next(auto_inputs))
     monkeypatch.setattr("sys.argv", ["repo360"])
-    with patch("src.setup_app.run_wizard") as mock_wizard:
+    with patch("repo360.setup_app.run_wizard") as mock_wizard:
         rc = setup_main()
         assert rc == 0
         mock_wizard.assert_called_once_with(
@@ -238,13 +238,13 @@ def test_setup_main_interactive_mode_routing_and_cli_flags(monkeypatch) -> None:
     manual_inputs = iter(["2"])
     monkeypatch.setattr("builtins.input", lambda _p="": next(manual_inputs))
     monkeypatch.setattr("sys.argv", ["repo360"])
-    with patch("src.setup_app.run_manual_setup", return_value=0) as mock_manual:
+    with patch("repo360.setup_app.run_manual_setup", return_value=0) as mock_manual:
         rc = setup_main()
         assert rc == 0
         mock_manual.assert_called_once_with(github_domain="", org_name="")
 
     monkeypatch.setattr("sys.argv", ["repo360", "--mode", "auto", "--org", "acme"])
-    with patch("src.setup_app.run_wizard") as mock_wizard:
+    with patch("repo360.setup_app.run_wizard") as mock_wizard:
         rc = setup_main()
         assert rc == 0
         mock_wizard.assert_called_once_with(
@@ -254,7 +254,7 @@ def test_setup_main_interactive_mode_routing_and_cli_flags(monkeypatch) -> None:
         )
 
     monkeypatch.setattr("sys.argv", ["repo360", "--mode", "manual", "--org", "acme", "--domain", "https://octo.ghe.com"])
-    with patch("src.setup_app.run_manual_setup", return_value=0) as mock_manual:
+    with patch("repo360.setup_app.run_manual_setup", return_value=0) as mock_manual:
         rc = setup_main()
         assert rc == 0
         mock_manual.assert_called_once_with(github_domain="https://octo.ghe.com", org_name="acme")
@@ -263,7 +263,7 @@ def test_setup_main_interactive_mode_routing_and_cli_flags(monkeypatch) -> None:
 def test_run_manual_setup_interactive_entry_and_template_mode(tmp_path, monkeypatch, capsys) -> None:
     """Verify both manual sub-flows: entering credentials now and writing config.json template."""
     import json
-    from src.setup_app import run_manual_setup
+    from repo360.setup_app import run_manual_setup
 
     cfg_dir = tmp_path / ".repo360"
     monkeypatch.setenv("REPO360_CONFIG_DIR", str(cfg_dir))
@@ -289,7 +289,7 @@ def test_run_manual_setup_interactive_entry_and_template_mode(tmp_path, monkeypa
         "gpt-4o-mini",
     ])
     monkeypatch.setattr("builtins.input", lambda _p="": next(inputs_a))
-    with patch("src.setup_app.GitHubAppAuth") as mock_auth_cls:
+    with patch("repo360.setup_app.GitHubAppAuth") as mock_auth_cls:
         mock_auth_cls.return_value.discover_installations.return_value = [
             {"id": 555001, "account": {"login": "acme"}},
         ]
@@ -343,20 +343,20 @@ def test_run_manual_setup_interactive_entry_and_template_mode(tmp_path, monkeypa
 def test_open_browser_url_handles_headless_and_errors(capsys) -> None:
     """Headless browser failures print the manual URL instead of aborting setup."""
     import webbrowser
-    from src.setup_app import _open_browser_url
+    from repo360.setup_app import _open_browser_url
 
-    with patch("src.setup_app.webbrowser.open", return_value=False):
+    with patch("repo360.setup_app.webbrowser.open", return_value=False):
         _open_browser_url("http://127.0.0.1:8989/?s=abc", "Open URL manually")
     assert "Open URL manually: http://127.0.0.1:8989/?s=abc" in capsys.readouterr().out
 
-    with patch("src.setup_app.webbrowser.open", side_effect=webbrowser.Error("no display")):
+    with patch("repo360.setup_app.webbrowser.open", side_effect=webbrowser.Error("no display")):
         _open_browser_url("http://127.0.0.1:8989/?s=xyz", "Open URL manually")
     assert "Open URL manually: http://127.0.0.1:8989/?s=xyz" in capsys.readouterr().out
 
 
 def test_setup_cli_accepts_ai_model_flag(monkeypatch) -> None:
     """Verify repo360 setup accepts --ai-model flag and passes it to setup wizard."""
-    from src.setup_app import main as setup_main
+    from repo360.setup_app import main as setup_main
 
     captured_kwargs = {}
 
@@ -364,7 +364,7 @@ def test_setup_cli_accepts_ai_model_flag(monkeypatch) -> None:
         captured_kwargs.update(kwargs)
         return 0
 
-    monkeypatch.setattr("src.setup_app.run_manual_setup", _mock_run_manual_setup)
+    monkeypatch.setattr("repo360.setup_app.run_manual_setup", _mock_run_manual_setup)
     monkeypatch.setattr(
         "sys.argv",
         ["repo360 setup", "--mode", "manual", "--org", "acme", "--ai-model", "gemini-2.5-pro"],

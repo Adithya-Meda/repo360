@@ -1,13 +1,13 @@
-"""Unit tests for Excel report generator."""
+﻿"""Unit tests for Excel report generator."""
 
 import os
 import tempfile
 import openpyxl
 import pytest
 
-from src.reporters.excel_reporter import ExcelReporter
+from repo360.reporters.excel_reporter import ExcelReporter
 from tests.conftest import create_mock_results
-from src.validator import RepoTarget
+from repo360.validator import RepoTarget
 
 
 @pytest.fixture
@@ -91,7 +91,7 @@ def test_excel_reporter_generation(mock_results: list) -> None:
 
 def test_formula_injection_defense() -> None:
     """Verify spreadsheet formula injection (CWE-1236) elements are neutralized with single quotes in Excel."""
-    from src.checks.base import CheckResult, CheckStatus, CheckSeverity, Persona
+    from repo360.checks.base import CheckResult, CheckStatus, CheckSeverity, Persona
 
     injected_result = CheckResult(
         check_id="test_injection",
@@ -127,7 +127,7 @@ def test_formula_injection_defense() -> None:
 def test_local_timestamp_dd_mm_yyyy_format() -> None:
     """Verify local timestamp conforms to DD-MM-YYYY format."""
     import re
-    from src.reporters.base_reporter import BaseReporter
+    from repo360.reporters.base_reporter import BaseReporter
 
     ts = BaseReporter.get_local_timestamp()
     match = re.match(r"^(\d{2})-(\d{2})-(\d{4})\s+\d{2}:\d{2}:\d{2}(?:\s+[A-Za-z0-9_-]+)?$", ts)
@@ -140,7 +140,7 @@ def test_local_timestamp_dd_mm_yyyy_format() -> None:
 
 def test_format_detected_stacks_and_repo_list() -> None:
     """Verify tech stack deduplication and bounded repository list formatting."""
-    from src.reporters.base_reporter import BaseReporter
+    from repo360.reporters.base_reporter import BaseReporter
 
     cleaned = BaseReporter.format_detected_stacks(
         ["C#, C#, C# / .NET Core, Docker Compose, General Software", "C# / .NET Core"]
@@ -157,7 +157,7 @@ def test_format_detected_stacks_and_repo_list() -> None:
 
 def test_excel_deduplication_and_clean_rendering() -> None:
     """Verify cross-sheet separation, findings vertical deduplication, and PASS/SKIPPED cleanup."""
-    from src.checks.base import CheckResult, CheckSeverity, CheckStatus, Persona
+    from repo360.checks.base import CheckResult, CheckSeverity, CheckStatus, Persona
 
     canonical_cfg = '{"name": "Standard Baseline DevContainer"}'
     ai_py_cfg = '{"name": "Python FastAPI AI Tailored DevContainer"}'
@@ -288,10 +288,10 @@ def test_excel_deduplication_and_clean_rendering() -> None:
 def test_finops_and_dora_baseline_rows_suppress_repetitive_advice() -> None:
     """Verify healthy FinOps profiles and zero-deploy DORA repos emit concise '-' instead of filler."""
     from unittest.mock import MagicMock
-    from src.finops.models import RepoStorageProfile
-    from src.finops.collector import build_finops_rows
-    from src.dora.models import RepoDORAMetrics
-    from src.dora.collector import build_dora_rows
+    from repo360.finops.models import RepoStorageProfile
+    from repo360.finops.collector import build_finops_rows
+    from repo360.dora.models import RepoDORAMetrics
+    from repo360.dora.collector import build_dora_rows
 
     ai_spy = MagicMock()
 
@@ -308,9 +308,9 @@ def test_finops_and_dora_baseline_rows_suppress_repetitive_advice() -> None:
 
 def test_audit_score_consistency_excludes_skipped(capsys) -> None:
     """Verify terminal scorecard and BaseReporter exclude SKIPPED checks consistently."""
-    from src.checks.base import CheckResult, CheckSeverity, CheckStatus, Persona
-    from src.main import print_terminal_scorecard
-    from src.reporters.base_reporter import BaseReporter
+    from repo360.checks.base import CheckResult, CheckSeverity, CheckStatus, Persona
+    from repo360.main import print_terminal_scorecard
+    from repo360.reporters.base_reporter import BaseReporter
 
     results = [
         CheckResult(
@@ -377,13 +377,13 @@ def test_hybrid_ai_and_fallback_recommendations_and_truthful_scorecard(capsys) -
     """Verify partial AI + fallback rows both render truthfully without dropping checks or mislabeling."""
     from datetime import datetime, timezone
     from pathlib import Path
-    from src.ai.engine import AIEngine
-    from src.activity.models import ActivityConfig
-    from src.activity.reporter import write_activity_workbook
-    from src.checks.base import CheckResult, CheckSeverity, CheckStatus, Persona
-    from src.main import print_terminal_scorecard
-    from src.runners.models import RunnersConfig
-    from src.runners.reporter import write_runners_workbook
+    from repo360.ai.engine import AIEngine
+    from repo360.activity.models import ActivityConfig
+    from repo360.activity.reporter import write_activity_workbook
+    from repo360.checks.base import CheckResult, CheckSeverity, CheckStatus, Persona
+    from repo360.main import print_terminal_scorecard
+    from repo360.runners.models import RunnersConfig
+    from repo360.runners.reporter import write_runners_workbook
 
     results = [
         CheckResult(
@@ -503,23 +503,23 @@ def test_ai_not_enabled_omits_fallback_remediations_across_reports(capsys, tmp_p
     """Verify disabled AI omits fallback remediation suggestions and displays 'AI was not enabled' across reports."""
     from datetime import datetime, timedelta, timezone
     from unittest.mock import MagicMock
-    from src.ai.engine import AIEngine
-    from src.activity.models import ActivityConfig
-    from src.activity.reporter import write_activity_workbook
-    from src.bypass.collector import build_bypass_rows, collect_bypass_data
-    from src.bypass.models import BypassConfig
-    from src.bypass.reporter import write_bypass_workbook
-    from src.checks.base import CheckResult, CheckSeverity, CheckStatus, Persona
-    from src.common.concurrency import AI_NOT_ENABLED_LABEL, AI_NOT_ENABLED_MESSAGE
-    from src.dora.collector import build_dora_rows
-    from src.dora.models import DORAConfig, DeploymentRecord, RepoDORAMetrics
-    from src.dora.reporter import write_dora_workbook
-    from src.finops.collector import build_finops_rows
-    from src.finops.models import ArtifactRecord, FinOpsConfig, RepoStorageProfile
-    from src.finops.reporter import write_finops_workbook
-    from src.main import print_terminal_scorecard
-    from src.runners.models import RunnersConfig
-    from src.runners.reporter import write_runners_workbook
+    from repo360.ai.engine import AIEngine
+    from repo360.activity.models import ActivityConfig
+    from repo360.activity.reporter import write_activity_workbook
+    from repo360.bypass.collector import build_bypass_rows, collect_bypass_data
+    from repo360.bypass.models import BypassConfig
+    from repo360.bypass.reporter import write_bypass_workbook
+    from repo360.checks.base import CheckResult, CheckSeverity, CheckStatus, Persona
+    from repo360.common.concurrency import AI_NOT_ENABLED_LABEL, AI_NOT_ENABLED_MESSAGE
+    from repo360.dora.collector import build_dora_rows
+    from repo360.dora.models import DORAConfig, DeploymentRecord, RepoDORAMetrics
+    from repo360.dora.reporter import write_dora_workbook
+    from repo360.finops.collector import build_finops_rows
+    from repo360.finops.models import ArtifactRecord, FinOpsConfig, RepoStorageProfile
+    from repo360.finops.reporter import write_finops_workbook
+    from repo360.main import print_terminal_scorecard
+    from repo360.runners.models import RunnersConfig
+    from repo360.runners.reporter import write_runners_workbook
 
     disabled_ai = AIEngine(enabled=False)
     disabled_ai.disabled_by_cli = True
@@ -754,8 +754,8 @@ def test_ai_not_enabled_omits_fallback_remediations_across_reports(capsys, tmp_p
 def test_audit_cli_default_no_ai_writes_ai_not_enabled_workbook(monkeypatch, capsys, tmp_path) -> None:
     """Verify 'repo360 audit --mock-mode' without AI enabled omits fallback remediation in the output workbook."""
     import sys
-    from src import main as main_mod
-    from src.common.concurrency import AI_NOT_ENABLED_MESSAGE
+    from repo360 import main as main_mod
+    from repo360.common.concurrency import AI_NOT_ENABLED_MESSAGE
 
     monkeypatch.setattr(
         sys,
@@ -763,7 +763,7 @@ def test_audit_cli_default_no_ai_writes_ai_not_enabled_workbook(monkeypatch, cap
         ["repo360", "audit", "--mock-mode", "--output-dir", str(tmp_path)],
     )
     monkeypatch.setattr(
-        "src.credentials.resolve_runtime_credentials",
+        "repo360.credentials.resolve_runtime_credentials",
         lambda: {
             "app_id": "",
             "installation_id": "",

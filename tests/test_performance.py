@@ -1,29 +1,29 @@
-"""Unit tests validating concurrency, adaptive throttling, GraphQL batching, and pruning optimizations."""
+﻿"""Unit tests validating concurrency, adaptive throttling, GraphQL batching, and pruning optimizations."""
 
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
-from src.activity.collector import fetch_team_access
-from src.bypass.collector import collect_bypass_data, profile_repo_bypasses
-from src.bypass.models import BypassConfig
-from src.collector.client import Repo360Client
-from src.collector.repo_inspector import RepoInspector
-from src.common.client import ResilientGitHubClient
-from src.common.concurrency import (
+from repo360.activity.collector import fetch_team_access
+from repo360.bypass.collector import collect_bypass_data, profile_repo_bypasses
+from repo360.bypass.models import BypassConfig
+from repo360.collector.client import Repo360Client
+from repo360.collector.repo_inspector import RepoInspector
+from repo360.common.client import ResilientGitHubClient
+from repo360.common.concurrency import (
     is_dormant_repo,
     is_empty_repo,
     map_concurrent,
     resolve_worker_count,
 )
-from src.common.inventory import discover_app_repositories
-from src.dora.collector import build_dora_rows, collect_repo_deployments, profile_repo_dora
-from src.dora.models import DeploymentRecord, RepoDORAMetrics
-from src.finops.collector import (
+from repo360.common.inventory import discover_app_repositories
+from repo360.dora.collector import build_dora_rows, collect_repo_deployments, profile_repo_dora
+from repo360.dora.models import DeploymentRecord, RepoDORAMetrics
+from repo360.finops.collector import (
     build_finops_rows,
     collect_org_packages,
     profile_single_repo,
 )
-from src.finops.models import ArtifactRecord, RepoStorageProfile
+from repo360.finops.models import ArtifactRecord, RepoStorageProfile
 
 
 def test_resolve_worker_count_scales_by_volume():
@@ -368,7 +368,7 @@ def test_client_pacing_wait_is_bounded_and_does_not_accumulate():
     client._org_remaining[org.lower()] = 800  # Sets delay to 0.15s
 
     import time
-    with patch("src.common.client.interruptible_sleep") as mock_sleep:
+    with patch("repo360.common.client.interruptible_sleep") as mock_sleep:
         # Simulate 20 rapid calls
         for _ in range(20):
             client._coordinate_rate_limit(org)

@@ -1,18 +1,18 @@
-"""Unit tests for individual Org, Repo, and Contributor checks."""
+﻿"""Unit tests for individual Org, Repo, and Contributor checks."""
 
 from unittest.mock import MagicMock
 import pytest
 import requests
 
-from src.checks.base import CheckStatus
-from src.checks.org_checks import (
+from repo360.checks.base import CheckStatus
+from repo360.checks.org_checks import (
     OrgDefaultWorkflowPermissionsCheck,
     OrgRulesetsCheck,
     OrgRunnerGroupsCheck,
     OrgSamlSsoEnforcementCheck,
     OrgSecretScanningPushProtectionCheck,
 )
-from src.checks.repo_checks import (
+from repo360.checks.repo_checks import (
     BranchRulesetsCheck,
     CodeownersCheck,
     DependabotConfigCheck,
@@ -20,7 +20,7 @@ from src.checks.repo_checks import (
     WorkflowConcurrencyGroupsCheck,
     WorkflowShaPinningCheck,
 )
-from src.checks.contributor_checks import (
+from repo360.checks.contributor_checks import (
     CopilotInstructionsCheck,
     DevcontainersCheck,
     IssueTemplatesCheck,
@@ -28,7 +28,7 @@ from src.checks.contributor_checks import (
     PullRequestTemplatesCheck,
     SetupDocumentationCheck,
 )
-from src.collector.repo_inspector import RepoInspector
+from repo360.collector.repo_inspector import RepoInspector
 
 
 def test_org_rulesets_check() -> None:

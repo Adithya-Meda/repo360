@@ -1,4 +1,4 @@
-"""Unit tests for Repo360 clean uninstallation and directory protection guards."""
+﻿"""Unit tests for Repo360 clean uninstallation and directory protection guards."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from src.credentials import resolve_user_config_dir
-from src.uninstall import (
+from repo360.credentials import resolve_user_config_dir
+from repo360.uninstall import (
     _is_protected_path,
     _safe_rmtree,
     _spawn_windows_deferred_uninstall,
@@ -96,12 +96,12 @@ def test_run_uninstall_cli_removes_related_dirs_and_preserves_reports(tmp_path: 
     mock_shim.write_text("shim", encoding="utf-8")
 
     with (
-        patch("src.uninstall.find_pipx_executable", return_value="C:/bin/pipx.exe"),
-        patch("src.uninstall._find_pipx_venv_dir", return_value=mock_venv),
-        patch("src.uninstall.get_installation_details", return_value={"installer": "uv"}),
-        patch("src.uninstall.shutil.which", return_value=str(mock_shim)),
-        patch("src.uninstall._requires_deferred_windows_cleanup", return_value=False),
-        patch("src.uninstall.subprocess.run", return_value=MagicMock(returncode=0, stdout="uninstalled", stderr="")),
+        patch("repo360.uninstall.find_pipx_executable", return_value="C:/bin/pipx.exe"),
+        patch("repo360.uninstall._find_pipx_venv_dir", return_value=mock_venv),
+        patch("repo360.uninstall.get_installation_details", return_value={"installer": "uv"}),
+        patch("repo360.uninstall.shutil.which", return_value=str(mock_shim)),
+        patch("repo360.uninstall._requires_deferred_windows_cleanup", return_value=False),
+        patch("repo360.uninstall.subprocess.run", return_value=MagicMock(returncode=0, stdout="uninstalled", stderr="")),
     ):
         plan = build_uninstall_plan(keep_config=False)
         plan["scripts_dir"] = mock_scripts
@@ -131,11 +131,11 @@ def test_run_uninstall_cli_dry_run_and_keep_config_and_abort(tmp_path: Path, mon
     monkeypatch.setenv("REPO360_CONFIG_DIR", str(cfg_dir))
 
     with (
-        patch("src.uninstall.find_pipx_executable", return_value=None),
-        patch("src.uninstall._find_pipx_venv_dir", return_value=None),
-        patch("src.uninstall.get_installation_details", return_value={"installer": "pip"}),
-        patch("src.uninstall.shutil.which", return_value=None),
-        patch("src.uninstall._requires_deferred_windows_cleanup", return_value=False),
+        patch("repo360.uninstall.find_pipx_executable", return_value=None),
+        patch("repo360.uninstall._find_pipx_venv_dir", return_value=None),
+        patch("repo360.uninstall.get_installation_details", return_value={"installer": "pip"}),
+        patch("repo360.uninstall.shutil.which", return_value=None),
+        patch("repo360.uninstall._requires_deferred_windows_cleanup", return_value=False),
     ):
         assert run_uninstall_cli(["--dry-run"]) == 0
         assert cfg_dir.exists()
@@ -149,8 +149,8 @@ def test_run_uninstall_cli_dry_run_and_keep_config_and_abort(tmp_path: Path, mon
         assert "Repo360 Uninstall Summary:" not in out_abort
 
         with (
-            patch("src.uninstall.subprocess.run", return_value=MagicMock(returncode=0)) as mock_run,
-            patch("src.uninstall.time.sleep") as mock_sleep,
+            patch("repo360.uninstall.subprocess.run", return_value=MagicMock(returncode=0)) as mock_run,
+            patch("repo360.uninstall.time.sleep") as mock_sleep,
         ):
             assert run_uninstall_cli(["--yes", "--keep-config"]) == 0
             assert mock_run.called
@@ -175,8 +175,8 @@ def test_spawn_windows_deferred_uninstall_creates_helper_and_spawns(tmp_path: Pa
     }
 
     with (
-        patch("src.uninstall._find_external_python", return_value="C:/Python312/python.exe"),
-        patch("src.uninstall.subprocess.Popen") as mock_popen,
+        patch("repo360.uninstall._find_external_python", return_value="C:/Python312/python.exe"),
+        patch("repo360.uninstall.subprocess.Popen") as mock_popen,
     ):
         ok, script_path = _spawn_windows_deferred_uninstall(plan, keep_config=False)
 
@@ -199,28 +199,28 @@ def test_spawn_windows_deferred_uninstall_creates_helper_and_spawns(tmp_path: Pa
 
 def test_find_pipx_venv_dir_supports_env_and_macos_paths(tmp_path: Path, monkeypatch) -> None:
     """Resolve pipx venv from PIPX_HOME env var and macOS Application Support fallback."""
-    from src.uninstall import _find_pipx_venv_dir
+    from repo360.uninstall import _find_pipx_venv_dir
 
     custom_venv = tmp_path / "custom-pipx" / "venvs" / "repo360"
     custom_venv.mkdir(parents=True)
     monkeypatch.setenv("PIPX_HOME", str(tmp_path / "custom-pipx"))
     monkeypatch.delenv("PIPX_LOCAL_VENVS", raising=False)
-    with patch("src.uninstall.sys.prefix", str(tmp_path / "other")):
+    with patch("repo360.uninstall.sys.prefix", str(tmp_path / "other")):
         assert _find_pipx_venv_dir(None) == custom_venv
 
     monkeypatch.delenv("PIPX_HOME", raising=False)
     monkeypatch.delenv("LOCALAPPDATA", raising=False)
     mac_venv = tmp_path / "Library" / "Application Support" / "pipx" / "venvs" / "repo360"
     mac_venv.mkdir(parents=True)
-    with patch("src.uninstall.sys.prefix", str(tmp_path / "other")), \
-         patch("src.uninstall.sys.platform", "darwin"), \
-         patch("src.uninstall.Path.home", return_value=tmp_path):
+    with patch("repo360.uninstall.sys.prefix", str(tmp_path / "other")), \
+         patch("repo360.uninstall.sys.platform", "darwin"), \
+         patch("repo360.uninstall.Path.home", return_value=tmp_path):
         assert _find_pipx_venv_dir(None) == mac_venv
 
 
 def test_find_external_python_prefers_pythonw_on_windows(tmp_path: Path, monkeypatch) -> None:
     """Ensure _find_external_python prefers pythonw.exe over python.exe on Windows for windowless execution."""
-    from src.uninstall import _find_external_python
+    from repo360.uninstall import _find_external_python
 
     py_exe = tmp_path / "python.exe"
     py_exe.write_text("dummy", encoding="utf-8")
@@ -237,7 +237,7 @@ def test_find_external_python_prefers_pythonw_on_windows(tmp_path: Path, monkeyp
 
 def test_execute_uninstall_delay_timer(tmp_path: Path) -> None:
     """Verify execute_uninstall applies the 7.0s default timer (3s baseline + 4s timer) before completion."""
-    from src.uninstall import (
+    from repo360.uninstall import (
         DEFAULT_UNINSTALL_DELAY_SECONDS,
         DEFAULT_UNINSTALL_GRACE_TIMER_SECONDS,
         DEFAULT_UNINSTALL_SETTLING_DELAY_SECONDS,
@@ -255,8 +255,8 @@ def test_execute_uninstall_delay_timer(tmp_path: Path) -> None:
         "package_cmd": ["echo", "uninstalled"],
     }
     with (
-        patch("src.uninstall.run_interruptible_subprocess", return_value=MagicMock(returncode=0)),
-        patch("src.uninstall.time.sleep") as mock_sleep,
+        patch("repo360.uninstall.run_interruptible_subprocess", return_value=MagicMock(returncode=0)),
+        patch("repo360.uninstall.time.sleep") as mock_sleep,
     ):
         rc = execute_uninstall(plan)
         assert rc == 0

@@ -1,23 +1,23 @@
-"""Unit and integration tests for Repo360 user activity scraper."""
+﻿"""Unit and integration tests for Repo360 user activity scraper."""
 
 import os
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 import pytest
 
-from src.activity.models import (
+from repo360.activity.models import (
     Activity,
     ActivityConfig,
     fmt_timestamp,
     is_bot,
     parse_ts,
 )
-from src.activity.collector import (
+from repo360.activity.collector import (
     build_org_rows,
     build_rows,
     classify,
 )
-from src.activity.reporter import write_activity_workbook
+from repo360.activity.reporter import write_activity_workbook
 
 
 def test_activity_model_methods():
@@ -158,7 +158,7 @@ def test_write_activity_workbook_and_csv(tmp_path):
 
 
 def test_format_error_permission_mapping():
-    from src.activity.collector import _format_error
+    from repo360.activity.collector import _format_error
     import requests
 
     resp_403 = requests.Response()
@@ -186,8 +186,8 @@ def test_format_error_permission_mapping():
 
 def test_build_management_tables_and_sheets(tmp_path):
     from openpyxl import load_workbook
-    from src.activity.collector import build_management_tables
-    from src.activity.models import (
+    from repo360.activity.collector import build_management_tables
+    from repo360.activity.models import (
         MGMT_KPI_HEADERS,
         REPO_INVENTORY_HEADERS,
         TOP_REPOS_HEADERS,
@@ -317,7 +317,7 @@ def test_build_management_tables_and_sheets(tmp_path):
 
 def test_activity_hardened_dormancy_partial_errors_reviews_and_normalization():
     from datetime import timedelta
-    from src.activity.collector import (
+    from repo360.activity.collector import (
         build_management_tables,
         collect_repository,
         fetch_team_access,
@@ -464,8 +464,8 @@ def test_activity_hardened_dormancy_partial_errors_reviews_and_normalization():
 
 def test_activity_commit_unlinked_author_fallback():
     """Verify that commits where author is None fall back to committer login."""
-    from src.activity.collector import collect_repo_events
-    from src.activity.models import RepositoryReport
+    from repo360.activity.collector import collect_repo_events
+    from repo360.activity.models import RepositoryReport
 
     now = datetime(2026, 10, 15, 12, 0, tzinfo=timezone.utc)
     mock_client = MagicMock()

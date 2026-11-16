@@ -1,11 +1,11 @@
-"""Unit tests for Repo360Client and RepoInspector."""
+﻿"""Unit tests for Repo360Client and RepoInspector."""
 
 from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from src.collector.client import Repo360Client
-from src.collector.repo_inspector import RepoInspector
+from repo360.collector.client import Repo360Client
+from repo360.collector.repo_inspector import RepoInspector
 
 
 @pytest.fixture

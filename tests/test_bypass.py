@@ -1,4 +1,4 @@
-"""Unit and integration tests for Repo360 Push Protection & Ruleset Bypass Ledger."""
+﻿"""Unit and integration tests for Repo360 Push Protection & Ruleset Bypass Ledger."""
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -7,14 +7,14 @@ import pytest
 import requests
 from openpyxl import load_workbook
 
-from src.bypass.models import (
+from repo360.bypass.models import (
     BypassConfig,
     PushProtectionBypassRecord,
     RepoBypassProfile,
     RulesetBypassRecord,
     classify_bypass_risk,
 )
-from src.bypass.collector import (
+from repo360.bypass.collector import (
     build_bypass_rows,
     collapse_plan_limitations,
     collect_repo_push_bypasses,
@@ -22,7 +22,7 @@ from src.bypass.collector import (
     profile_repo_bypasses,
     resolve_ruleset_metadata,
 )
-from src.bypass.reporter import write_bypass_workbook
+from repo360.bypass.reporter import write_bypass_workbook
 
 
 def test_bypass_record_models():

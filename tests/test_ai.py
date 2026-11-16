@@ -1,4 +1,4 @@
-"""Unit tests for the Enterprise AI Synthesis & Remediation Engine."""
+﻿"""Unit tests for the Enterprise AI Synthesis & Remediation Engine."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.ai.engine import AIEngine
-from src.checks.base import CheckResult, CheckSeverity, CheckStatus, Persona
+from repo360.ai.engine import AIEngine
+from repo360.checks.base import CheckResult, CheckSeverity, CheckStatus, Persona
 
 
 def test_ai_disabled_when_no_api_key() -> None:
@@ -439,7 +439,7 @@ def test_generate_activity_insights_deterministic() -> None:
 
 def test_init_ai_engine_overrides() -> None:
     """Verify init_ai_engine correctly processes --no-ai and --require-ai flags."""
-    from src.ai import init_ai_engine
+    from repo360.ai import init_ai_engine
 
     eng = init_ai_engine(no_ai=True)
     assert eng.enabled is False
@@ -574,7 +574,7 @@ def test_diagnose_dora_flow_grounding_markdown_strip_and_no_op_awareness(monkeyp
 def test_gemini_rate_limit_fails_over_to_fallback_model_without_circuit_trip(monkeypatch):
     from unittest.mock import MagicMock
 
-    monkeypatch.setattr("src.ai.engine.time.sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("repo360.ai.engine.time.sleep", lambda *_args, **_kwargs: None)
     engine = AIEngine(provider="gemini", api_key="test-key", model_name="gemini-3.5-flash", enabled=True)
     mock_client = MagicMock()
 
@@ -608,7 +608,7 @@ def test_gemini_rate_limit_backoff_retry_recovers_on_same_model(monkeypatch):
     from unittest.mock import MagicMock
 
     sleep_durations = []
-    monkeypatch.setattr("src.ai.engine.time.sleep", lambda sec: sleep_durations.append(sec))
+    monkeypatch.setattr("repo360.ai.engine.time.sleep", lambda sec: sleep_durations.append(sec))
 
     engine = AIEngine(provider="gemini", api_key="test-key", model_name="gemini-3.5-flash", enabled=True)
     mock_client = MagicMock()
@@ -635,7 +635,7 @@ def test_gemini_rate_limit_backoff_retry_recovers_on_same_model(monkeypatch):
 def test_openai_and_anthropic_429_retry_after_and_model_fallback(monkeypatch):
     from unittest.mock import MagicMock, patch
 
-    monkeypatch.setattr("src.ai.engine.time.sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("repo360.ai.engine.time.sleep", lambda *_args, **_kwargs: None)
 
     openai_engine = AIEngine(provider="openai", api_key="sk-test", model_name="gpt-4o", enabled=True)
     openai_calls = []
@@ -700,7 +700,7 @@ def test_prompt_cache_deduplicates_identical_generate_text_calls():
 
 
 def test_recommended_max_workers_and_run_concurrent_ai_throttling(monkeypatch):
-    from src.common.concurrency import run_concurrent_ai
+    from repo360.common.concurrency import run_concurrent_ai
 
     monkeypatch.delenv("LLM_MAX_WORKERS", raising=False)
     monkeypatch.delenv("LLM_MIN_INTERVAL_SECONDS", raising=False)
@@ -722,7 +722,7 @@ def test_parse_yes_no_and_cli_helper_flags():
     """Verify --require-ai yes/no parsing, default 'no', and rejection of removed --no-ai alias."""
     import argparse
     import pytest
-    from src.ai import add_ai_cli_arguments, parse_yes_no, resolve_ai_cli_flag
+    from repo360.ai import add_ai_cli_arguments, parse_yes_no, resolve_ai_cli_flag
 
     assert parse_yes_no("yes") is True
     assert parse_yes_no("YES") is True
@@ -762,7 +762,7 @@ def test_parse_yes_no_and_cli_helper_flags():
 @patch("google.genai.Client")
 def test_init_ai_engine_enable_ai_flag_and_fallback(mock_client_cls: MagicMock) -> None:
     """Verify enable_ai=False disables AI even with a key, and enable_ai=True falls back when offline."""
-    from src.ai import init_ai_engine
+    from repo360.ai import init_ai_engine
 
     creds_with_key = {
         "llm_provider": "gemini",
@@ -829,7 +829,7 @@ def test_verify_connection_marks_rate_limited_primary_and_promotes_fallback():
 
 
 def test_executive_summary_and_advisories_strip_markdown_cleanly(monkeypatch):
-    from src.checks.base import CheckResult, CheckSeverity, CheckStatus, Persona
+    from repo360.checks.base import CheckResult, CheckSeverity, CheckStatus, Persona
 
     results = [
         CheckResult(
@@ -887,8 +887,8 @@ def test_executive_summary_and_advisories_strip_markdown_cleanly(monkeypatch):
 
 def test_is_ai_live_and_run_concurrent_ai_circuit_short_circuit():
     from concurrent.futures import ThreadPoolExecutor
-    from src.common.concurrency import is_ai_live, run_concurrent_ai
-    from src.main import _resolve_ai_pool_size
+    from repo360.common.concurrency import is_ai_live, run_concurrent_ai
+    from repo360.main import _resolve_ai_pool_size
 
     engine = AIEngine(provider="gemini", model_name="gemini-2.5-flash", api_key="test-key", enabled=True)
     assert is_ai_live(engine) is True
@@ -913,7 +913,7 @@ def test_ai_engine_disabled_when_no_model_selected():
 
 def test_init_ai_engine_fails_fast_when_require_ai_without_model():
     """Verify init_ai_engine raises an informative error when --require-ai yes without model."""
-    from src.ai import init_ai_engine
+    from repo360.ai import init_ai_engine
 
     creds_no_model = {
         "llm_provider": "gemini",
@@ -928,7 +928,7 @@ def test_init_ai_engine_fails_fast_when_require_ai_without_model():
 def test_cli_subcommand_ai_flags_only_accepts_require_ai():
     """Verify general subcommands only accept --require-ai yes/no without --ai-model."""
     import argparse
-    from src.ai import add_ai_cli_arguments, resolve_ai_cli_flag
+    from repo360.ai import add_ai_cli_arguments, resolve_ai_cli_flag
 
     parser = argparse.ArgumentParser(prog="repo360 test")
     add_ai_cli_arguments(parser)

@@ -1,18 +1,18 @@
-"""Unit and integration tests for Repo360 Actions self-hosted runners analytics."""
+﻿"""Unit and integration tests for Repo360 Actions self-hosted runners analytics."""
 
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 import pytest
 
-from src.runners.models import (
+from repo360.runners.models import (
     ORG_RUNNER_HEADERS,
     RUNNER_HEADERS,
     RunnerInfo,
     RunnerJobMetrics,
     RunnersConfig,
 )
-from src.runners.collector import build_runner_rows
-from src.runners.reporter import write_runners_workbook
+from repo360.runners.collector import build_runner_rows
+from repo360.runners.reporter import write_runners_workbook
 
 
 def test_runner_job_metrics_calculations():
@@ -246,7 +246,7 @@ def test_runners_hardened_isolation_ephemeral_and_pooled_metrics(tmp_path):
                 ])
             return iter([])
 
-    from src.runners.collector import collect_runners_and_metrics
+    from repo360.runners.collector import collect_runners_and_metrics
 
     failures = []
     cfg = RunnersConfig(lookback_days=30, max_runner_runs_per_repo=20, scan_repo_runners=True, include_github_hosted=False, output_dir=str(tmp_path))
@@ -344,7 +344,7 @@ def test_runner_group_self_hosted_detection(tmp_path):
         ],
     ]
 
-    from src.runners.collector import collect_runners_and_metrics
+    from repo360.runners.collector import collect_runners_and_metrics
 
     failures = []
     cfg = RunnersConfig(lookback_days=7, max_runner_runs_per_repo=10, scan_repo_runners=True, output_dir=str(tmp_path))
@@ -366,7 +366,7 @@ def test_runner_group_self_hosted_detection(tmp_path):
 
 def test_runners_error_sanitization():
     """Verify raw socket and connection tracebacks are sanitized into clean diagnostic messages."""
-    from src.runners.collector import sanitize_api_error
+    from repo360.runners.collector import sanitize_api_error
 
     class _MockResp:
         def __init__(self, code: int):
@@ -391,9 +391,9 @@ def test_runners_error_sanitization():
 def test_runners_job_history_and_truncation_separation(tmp_path):
     """Verify granular job history worksheet, repository list column, and clean truncation separation."""
     from datetime import datetime, timezone
-    from src.runners.models import RunnerInfo, RunnerJobMetrics, RunnerJobRecord, RunnersConfig
-    from src.runners.collector import build_runner_rows, build_runner_job_rows
-    from src.runners.reporter import write_runners_workbook
+    from repo360.runners.models import RunnerInfo, RunnerJobMetrics, RunnerJobRecord, RunnersConfig
+    from repo360.runners.collector import build_runner_rows, build_runner_job_rows
+    from repo360.runners.reporter import write_runners_workbook
     from openpyxl import load_workbook
 
     now = datetime(2026, 11, 13, 12, 0, tzinfo=timezone.utc)
@@ -514,7 +514,7 @@ def test_runners_skip_repo_runners_by_default(tmp_path):
                 ])
             return iter([])
 
-    from src.runners.collector import collect_runners_and_metrics
+    from repo360.runners.collector import collect_runners_and_metrics
 
     cfg = RunnersConfig(lookback_days=7, max_runner_runs_per_repo=10, scan_repo_runners=False, output_dir=str(tmp_path))
     failures = []
@@ -540,7 +540,7 @@ def test_runners_skip_repo_runners_by_default(tmp_path):
 
 def test_parse_max_runs_arg():
     """Verify parse_max_runs_arg allows 0 (unlimited) and rejects negative values."""
-    from src.common.cli import parse_max_runs_arg
+    from repo360.common.cli import parse_max_runs_arg
     import argparse
 
     assert parse_max_runs_arg("0") == 0
@@ -565,8 +565,8 @@ def test_runner_headers_alignment():
 
 def test_build_runner_job_rows_timezone_aware_sorting():
     """Verify sorting handles jobs with None started_at alongside timezone-aware datetimes."""
-    from src.runners.models import RunnerJobRecord
-    from src.runners.collector import build_runner_job_rows
+    from repo360.runners.models import RunnerJobRecord
+    from repo360.runners.collector import build_runner_job_rows
 
     j1 = RunnerJobRecord(
         org="org-1", repo="repo-a", workflow_name="CI", run_id=1, job_id=10, job_name="test",
@@ -613,7 +613,7 @@ def test_runners_unlimited_runs_no_truncation(tmp_path):
                 return iter([])
             return iter([])
 
-    from src.runners.collector import collect_runners_and_metrics
+    from repo360.runners.collector import collect_runners_and_metrics
 
     failures = []
     cfg = RunnersConfig(lookback_days=7, max_runner_runs_per_repo=0, scan_repo_runners=False, output_dir=str(tmp_path))
@@ -678,7 +678,7 @@ def test_include_github_hosted_runners(tmp_path):
                 ])
             return iter([])
 
-    from src.runners.collector import collect_runners_and_metrics, build_runner_rows
+    from repo360.runners.collector import collect_runners_and_metrics, build_runner_rows
 
     # 1. By default: both self-hosted and GitHub-hosted are captured automatically
     cfg_default = RunnersConfig(lookback_days=7, output_dir=str(tmp_path))
@@ -780,7 +780,7 @@ def test_runners_workflow_profiling_cache_efficiency(tmp_path):
                 ])
             return iter([])
 
-    from src.runners.collector import collect_runners_and_metrics
+    from repo360.runners.collector import collect_runners_and_metrics
 
     test_client = _ProfilingTestClient()
     failures = []

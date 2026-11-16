@@ -1,6 +1,6 @@
-"""Unit tests for text formatting and grammatical pluralization helpers."""
+﻿"""Unit tests for text formatting and grammatical pluralization helpers."""
 
-from src.common.text import pluralize
+from repo360.common.text import pluralize
 
 
 def test_pluralize_automatic_rules():

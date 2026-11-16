@@ -10,7 +10,17 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [
-    { name = "Repo360 Engineering Team" }
+    { name = "Repo360 Engineering Team", email = "47377931+Adithya-Meda@users.noreply.github.com" }
+]
+keywords = [
+    "github",
+    "governance",
+    "security",
+    "compliance",
+    "dora-metrics",
+    "finops",
+    "devops",
+    "audit",
 ]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
@@ -19,10 +29,13 @@ classifiers = [
     "Operating System :: OS Independent",
     "Topic :: Security",
     "Topic :: Software Development :: Quality Assurance",
+    "Typing :: Typed",
+    "Environment :: Console",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
     "cryptography>=43.0.0",
@@ -32,7 +45,6 @@ dependencies = [
     "urllib3>=2.2.0",
     "python-dotenv>=1.0.0",
     "colorama>=0.4.6",
-    "google-genai>=0.1.0",
 ]
 
 [project.optional-dependencies]
@@ -45,6 +57,8 @@ dev = [
     "pytest-mock>=3.12.0",
     "pylint>=3.0.0",
     "black>=24.0.0",
+    "build>=1.2.0",
+    "twine>=5.0.0",
 ]
 
 [project.urls]
@@ -52,16 +66,20 @@ Homepage = "https://github.com/Adithya-Meda/repo360"
 Repository = "https://github.com/Adithya-Meda/repo360"
 Documentation = "https://github.com/Adithya-Meda/repo360#readme"
 Issues = "https://github.com/Adithya-Meda/repo360/issues"
+Changelog = "https://github.com/Adithya-Meda/repo360/releases"
+"Security Policy" = "https://github.com/Adithya-Meda/repo360/blob/main/SECURITY.md"
+"Code of Conduct" = "https://github.com/Adithya-Meda/repo360/blob/main/CODE_OF_CONDUCT.md"
+"Privacy Notice" = "https://github.com/Adithya-Meda/repo360/blob/main/PRIVACY.md"
 
 [project.scripts]
-repo360 = "src.main:main"
+repo360 = "repo360.main:main"
 
 [tool.setuptools.dynamic]
-version = { attr = "src.__version__" }
+version = { attr = "repo360.__version__" }
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["src*"]
+where = ["src"]
+include = ["repo360*"]
 
 [tool.setuptools.package-data]
-"*" = ["*.json", "*.md"]
+"repo360" = ["py.typed", "*.json", "*.md"]

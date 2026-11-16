@@ -1,7 +1,7 @@
-"""Tests for dynamic repository and organization discovery engine."""
+﻿"""Tests for dynamic repository and organization discovery engine."""
 
 from unittest.mock import MagicMock
-from src.common.inventory import (
+from repo360.common.inventory import (
     discover_app_organizations,
     discover_app_repositories,
     resolve_scan_targets,

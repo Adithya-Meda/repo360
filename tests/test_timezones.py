@@ -1,4 +1,4 @@
-"""Unit tests for Repo360 global timezone and timestamp normalization engine."""
+﻿"""Unit tests for Repo360 global timezone and timestamp normalization engine."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from src.common.timezones import (
+from repo360.common.timezones import (
     DATE_FMT,
     IST,
     LOCAL_TZ,
@@ -116,11 +116,11 @@ def test_fmt_timestamp_none_and_custom_defaults():
 
 def test_backward_compatibility_aliases():
     """Verify legacy IST exports remain fully functional across all modules."""
-    from src.activity.models import IST as ACT_IST
-    from src.bypass.models import IST as BYPASS_IST
-    from src.dora.models import IST as DORA_IST
-    from src.finops.models import IST as FINOPS_IST
-    from src.runners.models import IST as RUNNERS_IST
+    from repo360.activity.models import IST as ACT_IST
+    from repo360.bypass.models import IST as BYPASS_IST
+    from repo360.dora.models import IST as DORA_IST
+    from repo360.finops.models import IST as FINOPS_IST
+    from repo360.runners.models import IST as RUNNERS_IST
 
     assert ACT_IST == LOCAL_TZ
     assert BYPASS_IST == LOCAL_TZ
