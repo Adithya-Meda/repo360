@@ -115,6 +115,7 @@ def test_run_uninstall_cli_removes_related_dirs_and_preserves_reports(tmp_path: 
     assert reports_dir.is_dir()
     assert workbook.read_text(encoding="utf-8") == "keep-me"
     out = capsys.readouterr().out
+    assert "Uninstalling Repo360..." in out
     assert "Successfully uninstalled Repo360." in out
     assert "[PASS]" not in out
     assert "[INFO]" not in out

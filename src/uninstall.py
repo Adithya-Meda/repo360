@@ -14,6 +14,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -488,6 +489,7 @@ def execute_uninstall(plan: Dict[str, Any], dry_run: bool = False, keep_config: 
         print("\033[96m[DRY-RUN]\033[0m No files or packages were removed.")
         return 0
 
+    print("Uninstalling Repo360...")
     exit_code = 0
 
     config_dir: Path = plan["config_dir"]
@@ -504,6 +506,8 @@ def execute_uninstall(plan: Dict[str, Any], dry_run: bool = False, keep_config: 
         if not ok:
             print(f"\033[91m[FAIL]\033[0m Could not schedule Windows package removal: {info}")
             exit_code = 1
+        else:
+            time.sleep(0.6)
     else:
         res = run_interruptible_subprocess(
             plan["package_cmd"],
@@ -531,7 +535,7 @@ def execute_uninstall(plan: Dict[str, Any], dry_run: bool = False, keep_config: 
                 print(f"\033[93m[WARN]\033[0m Could not remove CLI executable {bin_shim}: {exc}")
 
     if exit_code == 0:
-        print("\nSuccessfully uninstalled Repo360.")
+        print("Successfully uninstalled Repo360.")
 
     print("\nNote: To remove the GitHub App from your organization, revoke/delete it under GitHub Organization Settings.\n")
     return exit_code
