@@ -1,6 +1,6 @@
 # Repo360
 
-Platform governance, compliance, engineering intelligence, and infrastructure metrics for **GitHub Enterprise Cloud** organizations. Evaluates repositories against security baselines, analyzes contributor activity, monitors Actions self-hosted runner fleets, profiles storage and artifact costs (FinOps), tracks cross-organization DORA delivery metrics, audits security and ruleset bypasses, and generates executive multi-tab Excel workbooks.
+Platform governance, compliance, engineering intelligence, and infrastructure metrics for **GitHub Enterprise Cloud** organizations. Evaluates repositories against security baselines, analyzes contributor activity, monitors Actions runner fleets, profiles storage and artifact costs (FinOps), tracks cross-organization DORA delivery metrics, audits security and ruleset bypasses, and generates executive multi-tab Excel workbooks.
 
 > [!WARNING]
 > **Advisory Only:** Remediation snippets and policies are advisory. Validate suggested changes in non-production environments before applying.
