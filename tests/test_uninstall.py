@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import stat
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -114,7 +115,10 @@ def test_run_uninstall_cli_removes_related_dirs_and_preserves_reports(tmp_path: 
     assert reports_dir.is_dir()
     assert workbook.read_text(encoding="utf-8") == "keep-me"
     out = capsys.readouterr().out
-    assert "Preserved reports directory untouched" in out
+    assert "Successfully uninstalled Repo360." in out
+    assert "[PASS]" not in out
+    assert "[INFO]" not in out
+    assert "Note: To remove the GitHub App from your organization" in out
 
 
 def test_run_uninstall_cli_dry_run_and_keep_config_and_abort(tmp_path: Path, monkeypatch) -> None:
@@ -169,6 +173,9 @@ def test_spawn_windows_deferred_uninstall_creates_helper_and_spawns(tmp_path: Pa
     assert popen_cmd[0] == "C:/Python312/python.exe"
     assert str(mock_venv) in popen_cmd
     assert mock_popen.call_args[1]["close_fds"] is True
+    creationflags = mock_popen.call_args[1].get("creationflags", 0)
+    assert creationflags & getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    assert not (creationflags & getattr(subprocess, "DETACHED_PROCESS", 0x00000008))
 
 
 def test_find_pipx_venv_dir_supports_env_and_macos_paths(tmp_path: Path, monkeypatch) -> None:
@@ -190,3 +197,21 @@ def test_find_pipx_venv_dir_supports_env_and_macos_paths(tmp_path: Path, monkeyp
          patch("src.uninstall.sys.platform", "darwin"), \
          patch("src.uninstall.Path.home", return_value=tmp_path):
         assert _find_pipx_venv_dir(None) == mac_venv
+
+
+def test_find_external_python_prefers_pythonw_on_windows(tmp_path: Path, monkeypatch) -> None:
+    """Ensure _find_external_python prefers pythonw.exe over python.exe on Windows for windowless execution."""
+    from src.uninstall import _find_external_python
+
+    py_exe = tmp_path / "python.exe"
+    py_exe.write_text("dummy", encoding="utf-8")
+    pyw_exe = tmp_path / "pythonw.exe"
+    pyw_exe.write_text("dummy", encoding="utf-8")
+
+    monkeypatch.setattr(sys, "_base_executable", str(py_exe))
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    found = _find_external_python()
+    assert found is not None
+    assert Path(found).name.lower() == "pythonw.exe"
+

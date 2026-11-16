@@ -249,13 +249,19 @@ def _find_external_python(exclude_dir: Optional[Path] = None) -> Optional[str]:
     if base_exec:
         candidates.append(str(base_exec))
 
-    for name in ("python3", "python"):
-        hit = shutil.which(name)
-        if hit:
-            candidates.append(hit)
-
-    exe_name = "python.exe" if sys.platform == "win32" else "python3"
-    candidates.append(str(Path(sys.base_prefix) / exe_name))
+    if sys.platform == "win32":
+        for name in ("pythonw", "python", "python3"):
+            hit = shutil.which(name)
+            if hit:
+                candidates.append(hit)
+        candidates.append(str(Path(sys.base_prefix) / "pythonw.exe"))
+        candidates.append(str(Path(sys.base_prefix) / "python.exe"))
+    else:
+        for name in ("python3", "python"):
+            hit = shutil.which(name)
+            if hit:
+                candidates.append(hit)
+        candidates.append(str(Path(sys.base_prefix) / "python3"))
 
     resolved_exclude: Optional[Path] = None
     if exclude_dir:
@@ -266,6 +272,12 @@ def _find_external_python(exclude_dir: Optional[Path] = None) -> Optional[str]:
 
     for cand in candidates:
         cand_path = Path(cand)
+        # On Windows, prefer pythonw.exe over python.exe to prevent any console window popup
+        if sys.platform == "win32" and cand_path.stem.lower() == "python":
+            gui_cand = cand_path.with_name("pythonw.exe")
+            if gui_cand.is_file():
+                cand_path = gui_cand
+
         if not cand_path.is_file():
             continue
         try:
@@ -371,9 +383,9 @@ def _spawn_windows_deferred_uninstall(plan: Dict[str, Any]) -> Tuple[bool, str]:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(_WIN_DEFERRED_UNINSTALL_SCRIPT)
 
-        creationflags = getattr(subprocess, "DETACHED_PROCESS", 0x00000008) | getattr(
-            subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200
-        )
+        no_window_flag = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        new_group_flag = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+        creationflags = no_window_flag | new_group_flag
         cmd = [
             external_python,
             script_path,
@@ -434,27 +446,17 @@ def execute_uninstall(plan: Dict[str, Any], dry_run: bool = False, keep_config: 
     exit_code = 0
 
     config_dir: Path = plan["config_dir"]
-    if not keep_config:
-        if config_dir.exists():
-            ok, msg = _safe_rmtree(config_dir)
-            if ok:
-                print(f"\033[92m[PASS]\033[0m Removed configuration & secrets directory: {config_dir}")
-            else:
-                print(f"\033[91m[FAIL]\033[0m {msg}")
-                exit_code = 1
-        else:
-            print(f"[INFO] Configuration directory not found (skipping): {config_dir}")
+    if not keep_config and config_dir.exists():
+        ok, msg = _safe_rmtree(config_dir)
+        if not ok:
+            print(f"\033[91m[FAIL]\033[0m {msg}")
+            exit_code = 1
 
     _cleanup_stale_staged_binaries(plan["scripts_dir"])
 
     if plan.get("deferred_windows"):
         ok, info = _spawn_windows_deferred_uninstall(plan)
-        if ok:
-            print(
-                f"\033[96m[INFO]\033[0m Scheduled post-exit Windows cleanup ({plan['strategy']}) "
-                "once this CLI process releases file locks."
-            )
-        else:
+        if not ok:
             print(f"\033[91m[FAIL]\033[0m Could not schedule Windows package removal: {info}")
             exit_code = 1
     else:
@@ -465,18 +467,14 @@ def execute_uninstall(plan: Dict[str, Any], dry_run: bool = False, keep_config: 
             check=False,
             timeout=120,
         )
-        if res.returncode == 0:
-            print(f"\033[92m[PASS]\033[0m Uninstalled repo360 package via {plan['strategy']}.")
-        else:
+        if res.returncode != 0:
             err = (res.stderr or res.stdout or "").strip()
             print(f"\033[93m[WARN]\033[0m Installer returned code {res.returncode}: {err}")
 
         venv_dir: Optional[Path] = plan.get("pipx_venv_dir")
         if venv_dir and venv_dir.exists():
             ok, msg = _safe_rmtree(venv_dir)
-            if ok:
-                print(f"\033[92m[PASS]\033[0m Removed residual virtual environment directory: {venv_dir}")
-            else:
+            if not ok:
                 print(f"\033[91m[FAIL]\033[0m {msg}")
                 exit_code = 1
 
@@ -484,13 +482,12 @@ def execute_uninstall(plan: Dict[str, Any], dry_run: bool = False, keep_config: 
         if bin_shim and bin_shim.is_file() and not _is_protected_path(bin_shim):
             try:
                 bin_shim.unlink()
-                print(f"\033[92m[PASS]\033[0m Removed residual CLI executable: {bin_shim}")
             except OSError as exc:
                 print(f"\033[93m[WARN]\033[0m Could not remove CLI executable {bin_shim}: {exc}")
 
-    reports_dir = Path.cwd() / PROTECTED_REPORT_DIR_NAME
-    if reports_dir.exists():
-        print(f"\033[92m[KEEP]\033[0m Preserved reports directory untouched: {reports_dir}")
+    if exit_code == 0:
+        print("\nSuccessfully uninstalled Repo360.")
+
     print("\nNote: To remove the GitHub App from your organization, revoke/delete it under GitHub Organization Settings.\n")
     return exit_code
 
