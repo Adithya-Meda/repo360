@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [
-    { name = "Repo360 Engineering Team", email = "47377931+Adithya-Meda@users.noreply.github.com" }
+    { name = "Adithya Meda", email = "47377931+Adithya-Meda@users.noreply.github.com" }
 ]
 keywords = [
     "github",

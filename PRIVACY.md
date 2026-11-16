@@ -2,12 +2,12 @@
 
 **Last Updated:** November 16, 2026
 
-Repo360 is an enterprise platform governance and engineering intelligence tool. Because Repo360 interacts with organizational security and audit configurations, this document outlines our transparent privacy and data handling practices.
+Repo360 is an enterprise platform governance and engineering intelligence tool maintained by Adithya Meda. Because Repo360 interacts with organizational security and audit configurations, this document outlines transparent privacy and data handling practices.
 
 ---
 
 ## 1. Zero Telemetry Policy
-* **No Tracking or Beacons:** Repo360 does **not** collect, store, or transmit any telemetry, analytics, usage statistics, or crash reports back to the developers or third-party servers.
+* **No Tracking or Beacons:** Repo360 does **not** collect, store, or transmit any telemetry, analytics, usage statistics, or crash reports back to the maintainer or third-party servers.
 * **No Remote Phone-Home:** The tool executes strictly on your local machine or CI/CD runner. Network requests are made solely to endpoints you explicitly configure.
 
 ---

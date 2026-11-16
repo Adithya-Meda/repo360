@@ -16,5 +16,5 @@ warnings.filterwarnings("ignore", message=".*invalid escape sequence.*")
 warnings.filterwarnings("ignore", message=".*automatic function calling.*")
 
 __version__ = "1.1.0"
-__author__ = "Enterprise Platform Engineering Team"
+__author__ = "Adithya Meda"
 

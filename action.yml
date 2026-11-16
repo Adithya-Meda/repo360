@@ -1,6 +1,6 @@
 name: "Repo360"
 description: "360-Degree Platform Governance, Compliance, and Engineering Intelligence for GitHub Organizations."
-author: "Repo360 Engineering Team"
+author: "Adithya Meda"
 
 inputs:
   app_id:
