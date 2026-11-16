@@ -11,7 +11,7 @@ Platform governance, compliance, engineering intelligence, and infrastructure me
 
 - **Python 3.10+** and **[pipx](https://pypa.github.io/pipx/)** (for CLI use)
 - **Organization Owner / Admin access** on GitHub (to install the read-only GitHub App)
-- **AI API Key** (Optional: Google Gemini, OpenAI, or Anthropic — used when `--require-ai yes` / `require_ai: "yes"` is enabled; defaults to `--require-ai no` deterministic policy rules)
+- **AI API Key** (Optional: Google Gemini, OpenAI, or Anthropic — used when `--require-ai yes` is enabled; defaults to `--require-ai no` deterministic policy rules)
 
 ---
 
@@ -40,7 +40,7 @@ Platform governance, compliance, engineering intelligence, and infrastructure me
 
 | Command | Description |
 | :--- | :--- |
-| `setup` | Configure GitHub App credentials via auto-browser setup or manual config (`--mode auto|manual`), and store keys under `~/.repo360/`. |
+| `setup` | Configure GitHub App credentials via auto-browser setup or manual config (`--mode auto` or `--mode manual`), and store keys under `~/.repo360/`. |
 | `upgrade` | Upgrade Repo360 to the latest published release, or install a specific tag with `--tag TAG`. |
 | `health` | Check GitHub App authentication, organization installations, and AI engine status. |
 | `version` | Show the installed Repo360 version. |
@@ -137,7 +137,7 @@ Removes the installed `repo360` package, isolated virtual environment, and `~/.r
 ### Multi-Organization Support
 
 Install the registered GitHub App across multiple organizations in your enterprise using the same App ID and private key:
-- **Automatic Multi-Org Discovery:** Running `repo360 audit` (or `activity` / `runners`) automatically discovers every organization where the app is installed, provisions scoped tokens per organization, and aggregates findings into a single executive workbook.
+- **Automatic Multi-Org Discovery:** Running `repo360 audit` (or `activity`, `runners`) automatically discovers every organization where the app is installed, provisions scoped tokens per organization, and aggregates findings into a single executive workbook.
 - **Targeted Organization Filtering:** Restrict scans to specific organizations on demand using `--org`:
   ```bash
   # Audit specific organizations
@@ -169,7 +169,7 @@ Repo360 is packaged as a composite action that sets up the environment, executes
 In repository **Settings** &rarr; **Secrets and variables** &rarr; **Actions**:
 - `REPO360_APP_ID`: Numeric GitHub App ID (Variable or Secret)
 - `REPO360_APP_PRIVATE_KEY`: RSA private key `.pem` string (Secret)
-- `AI_API_KEY`: API key for Google Gemini, OpenAI, or Anthropic (Secret, optional — used when `require_ai: "yes"` is set)
+- `AI_API_KEY`: API key for Google Gemini, OpenAI, or Anthropic (Secret, optional — used when `--require-ai yes` is enabled)
 
 #### 2. Workflow Example (`.github/workflows/audit.yml`)
 
@@ -225,16 +225,16 @@ jobs:
 | `app_id` | Numeric GitHub App ID | String (numeric) | *Required* |
 | `private_key` | App RSA private key | String (`.pem`) | *Required* |
 | `org` | Target organization filter list | String (`"org1,org2"`) | `""` *(All orgs)* |
-| `lookback_days` | Telemetry lookback window days | String / Integer (`"1"`-`"400"`) | `"90"` |
+| `lookback_days` | Telemetry lookback window days | Integer (`"1"`-`"400"`) | `"90"` |
 | `include_archived` | Scan archived repository targets | `"true"`, `"false"` | `"false"` |
-| `workers` | Worker thread concurrency limit | String / Integer (`"0"`-`"32"`) | `"0"` *(Auto)* |
+| `workers` | Worker thread concurrency limit | Integer (`"0"`-`"32"`) | `"0"` *(Auto)* |
 | `require_ai` | Enable AI advisory insights | `"yes"`, `"no"` | `"no"` |
 | `ai_api_key` | Unified AI API key | String | `""` |
 | `ai_model` | Target AI model identifier | String | `"gemini-3.5-flash"` |
 | `output_dir` | Report output directory path | String | `"./repo360-output"` |
 | `upload_artifact` | Upload workflow report artifact | `"true"`, `"false"` | `"true"` |
 | `artifact_name` | Workflow artifact bundle name | String | `"repo360-audit-reports"` |
-| `artifact_retention_days` | Artifact retention window days | String / Integer (`"1"`-`"90"`) | `"60"` |
+| `artifact_retention_days` | Artifact retention window days | Integer (`"1"`-`"90"`) | `"60"` |
 
 ---
 
