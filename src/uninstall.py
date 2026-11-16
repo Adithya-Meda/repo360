@@ -483,7 +483,12 @@ def _print_uninstall_plan(plan: Dict[str, Any], keep_config: bool) -> None:
     print("")
 
 
-def execute_uninstall(plan: Dict[str, Any], dry_run: bool = False, keep_config: bool = False) -> int:
+def execute_uninstall(
+    plan: Dict[str, Any],
+    dry_run: bool = False,
+    keep_config: bool = False,
+    delay_seconds: float = 3.0,
+) -> int:
     """Execute package uninstallation and clean up Repo360 directories."""
     if dry_run:
         print("\033[96m[DRY-RUN]\033[0m No files or packages were removed.")
@@ -506,8 +511,6 @@ def execute_uninstall(plan: Dict[str, Any], dry_run: bool = False, keep_config: 
         if not ok:
             print(f"\033[91m[FAIL]\033[0m Could not schedule Windows package removal: {info}")
             exit_code = 1
-        else:
-            time.sleep(0.6)
     else:
         res = run_interruptible_subprocess(
             plan["package_cmd"],
@@ -533,6 +536,9 @@ def execute_uninstall(plan: Dict[str, Any], dry_run: bool = False, keep_config: 
                 bin_shim.unlink()
             except OSError as exc:
                 print(f"\033[93m[WARN]\033[0m Could not remove CLI executable {bin_shim}: {exc}")
+
+    if delay_seconds > 0:
+        time.sleep(delay_seconds)
 
     if exit_code == 0:
         print("Successfully uninstalled Repo360.")

@@ -105,7 +105,7 @@ def test_run_uninstall_cli_removes_related_dirs_and_preserves_reports(tmp_path: 
     ):
         plan = build_uninstall_plan(keep_config=False)
         plan["scripts_dir"] = mock_scripts
-        rc = execute_uninstall(plan, dry_run=False, keep_config=False)
+        rc = execute_uninstall(plan, dry_run=False, keep_config=False, delay_seconds=0)
 
     assert rc == 0
     assert not cfg_dir.exists()
@@ -148,9 +148,13 @@ def test_run_uninstall_cli_dry_run_and_keep_config_and_abort(tmp_path: Path, mon
         out_abort = capsys.readouterr().out
         assert "Repo360 Uninstall Summary:" not in out_abort
 
-        with patch("src.uninstall.subprocess.run", return_value=MagicMock(returncode=0)) as mock_run:
+        with (
+            patch("src.uninstall.subprocess.run", return_value=MagicMock(returncode=0)) as mock_run,
+            patch("src.uninstall.time.sleep") as mock_sleep,
+        ):
             assert run_uninstall_cli(["--yes", "--keep-config"]) == 0
             assert mock_run.called
+            assert mock_sleep.called
         assert cfg_dir.exists()
         out_yes = capsys.readouterr().out
         assert "Repo360 Uninstall Summary:" not in out_yes
