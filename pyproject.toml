@@ -68,7 +68,6 @@ Documentation = "https://github.com/Adithya-Meda/repo360#readme"
 Issues = "https://github.com/Adithya-Meda/repo360/issues"
 Changelog = "https://github.com/Adithya-Meda/repo360/releases"
 "Security Policy" = "https://github.com/Adithya-Meda/repo360/blob/main/SECURITY.md"
-"Code of Conduct" = "https://github.com/Adithya-Meda/repo360/blob/main/CODE_OF_CONDUCT.md"
 "Privacy Notice" = "https://github.com/Adithya-Meda/repo360/blob/main/PRIVACY.md"
 
 [project.scripts]
