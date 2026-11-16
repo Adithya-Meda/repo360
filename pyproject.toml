@@ -8,7 +8,7 @@ dynamic = ["version"]
 description = "360-Degree Platform Governance, Compliance & Engineering Intelligence Suite."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
 authors = [
     { name = "Repo360 Engineering Team" }
 ]
@@ -46,6 +46,12 @@ dev = [
     "pylint>=3.0.0",
     "black>=24.0.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Adithya-Meda/repo360"
+Repository = "https://github.com/Adithya-Meda/repo360"
+Documentation = "https://github.com/Adithya-Meda/repo360#readme"
+Issues = "https://github.com/Adithya-Meda/repo360/issues"
 
 [project.scripts]
 repo360 = "src.main:main"
