@@ -153,7 +153,10 @@ def test_spawn_windows_deferred_uninstall_creates_helper_and_spawns(tmp_path: Pa
     """Verify deferred Windows helper passes exact paths via argv without shell interpolation."""
     mock_venv = tmp_path / "pipx" / "venvs" / "repo360"
     mock_venv.mkdir(parents=True)
+    cfg_dir = tmp_path / ".repo360"
+    cfg_dir.mkdir()
     plan = {
+        "config_dir": cfg_dir,
         "pipx_bin": "C:/tools/pipx.exe",
         "pipx_venv_dir": mock_venv,
         "bin_shim": tmp_path / "repo360.exe",
@@ -164,7 +167,7 @@ def test_spawn_windows_deferred_uninstall_creates_helper_and_spawns(tmp_path: Pa
         patch("src.uninstall._find_external_python", return_value="C:/Python312/python.exe"),
         patch("src.uninstall.subprocess.Popen") as mock_popen,
     ):
-        ok, script_path = _spawn_windows_deferred_uninstall(plan)
+        ok, script_path = _spawn_windows_deferred_uninstall(plan, keep_config=False)
 
     assert ok is True
     assert Path(script_path).is_file()
@@ -172,6 +175,7 @@ def test_spawn_windows_deferred_uninstall_creates_helper_and_spawns(tmp_path: Pa
     popen_cmd = mock_popen.call_args[0][0]
     assert popen_cmd[0] == "C:/Python312/python.exe"
     assert str(mock_venv) in popen_cmd
+    assert str(cfg_dir) in popen_cmd
     assert mock_popen.call_args[1]["close_fds"] is True
     creationflags = mock_popen.call_args[1].get("creationflags", 0)
     assert creationflags & getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)

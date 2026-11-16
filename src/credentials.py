@@ -53,29 +53,36 @@ def _write_restricted_text(file_path: str, content: str) -> None:
     enforce_strict_permissions(file_path)
 
 
-def get_user_config_dir() -> str:
-    """Return OS-standard user configuration directory for Repo360, creating it if absent.
+def get_user_config_dir(ensure_exists: bool = False) -> str:
+    """Return OS-standard user configuration directory for Repo360.
 
     Can be overridden via REPO360_CONFIG_DIR environment variable.
     """
-    return _ensure_private_dir(resolve_user_config_dir())
+    path = resolve_user_config_dir()
+    if ensure_exists:
+        _ensure_private_dir(path)
+    return path
 
 
 def get_credentials_path() -> str:
-    """Return path to saved credentials JSON file."""
-    return os.path.join(get_user_config_dir(), "config.json")
+    """Return path to saved credentials JSON file without creating directories."""
+    return os.path.join(resolve_user_config_dir(), "config.json")
 
 
-def get_secrets_dir() -> str:
+def get_secrets_dir(ensure_exists: bool = False) -> str:
     """Return path to secrets directory where private keys are stored."""
-    return _ensure_private_dir(os.path.join(get_user_config_dir(), "secrets"))
+    path = os.path.join(resolve_user_config_dir(), "secrets")
+    if ensure_exists:
+        _ensure_private_dir(resolve_user_config_dir())
+        _ensure_private_dir(path)
+    return path
 
 
 def save_private_key(key_content: str, app_slug: str = "repo360", dest_dir: Optional[str] = None) -> str:
     """Save RSA private key with standardized naming convention and safe permissions."""
     today_str = time.strftime("%Y-%m-%d")
     filename = f"{app_slug}.{today_str}.private-key.pem"
-    target_dir = _ensure_private_dir(dest_dir) if dest_dir else get_secrets_dir()
+    target_dir = _ensure_private_dir(dest_dir) if dest_dir else get_secrets_dir(ensure_exists=True)
     key_path = os.path.join(target_dir, filename)
 
     _write_restricted_text(key_path, key_content)
@@ -108,6 +115,7 @@ def save_user_credentials(
         },
     }
 
+    _ensure_private_dir(resolve_user_config_dir())
     config_path = get_credentials_path()
     _write_restricted_text(config_path, json.dumps(config_data, indent=2))
     return config_path
@@ -134,7 +142,7 @@ def find_private_key(candidate_path: Optional[str] = None) -> Optional[str]:
         if candidate_path.startswith("-----BEGIN"):
             return candidate_path
 
-    user_secrets = get_secrets_dir()
+    user_secrets = get_secrets_dir(ensure_exists=False)
     if os.path.isdir(user_secrets):
         keys = [
             os.path.join(user_secrets, f)

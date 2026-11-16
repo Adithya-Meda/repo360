@@ -46,12 +46,14 @@ def _rmtree(target: Path) -> None:
     shutil.rmtree(target, **kwargs)
 
 
-def _is_safe_venv(target: Path) -> bool:
+def _is_safe_purge_target(target: Path) -> bool:
     try:
         resolved = target.resolve()
     except OSError:
         return False
-    if resolved.name.lower() != "repo360":
+    if resolved == resolved.parent or resolved == Path.home().resolve():
+        return False
+    if resolved.name.lower() not in ("repo360", ".repo360"):
         return False
     if any(part.lower() == "repo360-output" for part in resolved.parts):
         return False
@@ -63,7 +65,8 @@ def main() -> None:
     pipx_bin = sys.argv[2]
     venv_arg = sys.argv[3]
     shim_arg = sys.argv[4]
-    cmd = sys.argv[5:]
+    config_arg = sys.argv[5]
+    cmd = sys.argv[6:]
 
     # Wait until the parent repo360 Python process terminates cleanly so Windows unlocks executables.
     k32 = ctypes.windll.kernel32
@@ -91,7 +94,7 @@ def main() -> None:
 
     if venv_arg:
         venv_dir = Path(venv_arg)
-        if venv_dir.exists() and _is_safe_venv(venv_dir):
+        if venv_dir.exists() and _is_safe_purge_target(venv_dir):
             for _ in range(3):
                 try:
                     _rmtree(venv_dir)
@@ -108,6 +111,18 @@ def main() -> None:
                 shim_path.unlink()
             except OSError:
                 pass
+
+    if config_arg:
+        cfg_dir = Path(config_arg)
+        if cfg_dir.exists() and _is_safe_purge_target(cfg_dir):
+            for _ in range(3):
+                try:
+                    _rmtree(cfg_dir)
+                except OSError:
+                    pass
+                if not cfg_dir.exists():
+                    break
+                time.sleep(0.4)
 
 
 if __name__ == "__main__":
@@ -371,7 +386,7 @@ def build_uninstall_plan(keep_config: bool = False) -> Dict[str, Any]:
     }
 
 
-def _spawn_windows_deferred_uninstall(plan: Dict[str, Any]) -> Tuple[bool, str]:
+def _spawn_windows_deferred_uninstall(plan: Dict[str, Any], keep_config: bool = False) -> Tuple[bool, str]:
     """Spawn a detached external Python helper to uninstall and purge locked files after CLI exit."""
     pipx_venv_dir: Optional[Path] = plan.get("pipx_venv_dir")
     external_python = _find_external_python(exclude_dir=pipx_venv_dir)
@@ -386,6 +401,7 @@ def _spawn_windows_deferred_uninstall(plan: Dict[str, Any]) -> Tuple[bool, str]:
         no_window_flag = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
         new_group_flag = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
         creationflags = no_window_flag | new_group_flag
+        config_arg = "" if keep_config else str(plan.get("config_dir") or "")
         cmd = [
             external_python,
             script_path,
@@ -393,6 +409,7 @@ def _spawn_windows_deferred_uninstall(plan: Dict[str, Any]) -> Tuple[bool, str]:
             plan.get("pipx_bin") or "",
             str(pipx_venv_dir) if pipx_venv_dir else "",
             str(plan["bin_shim"]) if plan.get("bin_shim") else "",
+            config_arg,
             *plan["package_cmd"],
         ]
         subprocess.Popen(
@@ -455,7 +472,7 @@ def execute_uninstall(plan: Dict[str, Any], dry_run: bool = False, keep_config: 
     _cleanup_stale_staged_binaries(plan["scripts_dir"])
 
     if plan.get("deferred_windows"):
-        ok, info = _spawn_windows_deferred_uninstall(plan)
+        ok, info = _spawn_windows_deferred_uninstall(plan, keep_config=keep_config)
         if not ok:
             print(f"\033[91m[FAIL]\033[0m Could not schedule Windows package removal: {info}")
             exit_code = 1
