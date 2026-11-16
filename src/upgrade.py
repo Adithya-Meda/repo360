@@ -1257,6 +1257,26 @@ def run_upgrade_cli(argv: Optional[List[str]] = None) -> int:
             print(f"Repo360 {ver_display} ({target.commit[:7]}) is already up to date.")
         return 0
 
+    local_semver = _parse_semver_tag(local_ver)
+    target_semver = _parse_semver_tag(target.tag) if target.tag else None
+
+    # Guard against downgrade: if user runs standard upgrade without --tag/--ref and
+    # the installed version is already ahead of the latest published remote release.
+    if (
+        not requested_tag
+        and not use_commit_mode
+        and local_semver is not None
+        and target_semver is not None
+        and local_semver > target_semver
+    ):
+        ver_display = local_ver.lstrip("v")
+        commit_suffix = f" ({local_sha[:7]})" if local_sha else ""
+        print(
+            f"Repo360 {ver_display}{commit_suffix} is already up to date "
+            f"(ahead of latest release {target.tag})."
+        )
+        return 0
+
     force = bool(
         is_stale
         or local_dirty

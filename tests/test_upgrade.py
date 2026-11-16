@@ -235,6 +235,25 @@ def test_run_upgrade_cli_fresh_upgrade(capsys):
         assert "Repo360 upgraded to 1.1.0 (fedcba9)." in captured
 
 
+def test_run_upgrade_cli_does_not_downgrade_when_ahead_of_release(capsys):
+    """Ensure run_upgrade_cli does not downgrade when locally installed version is ahead of latest remote release."""
+    local_details = {
+        "version": "v1.1.0",
+        "commit": "3eb8ef4e7c97",
+        "is_dirty": False,
+        "is_stale_snapshot": False,
+    }
+    target = ReleaseTarget(tag="v1.0.0", commit="12805b0d15f9", source="github-release")
+    with patch("src.upgrade.get_installation_details", return_value=local_details), \
+         patch("src.upgrade.resolve_release_target", return_value=target), \
+         patch("src.upgrade.execute_upgrade") as mock_exec:
+        ret = run_upgrade_cli([])
+        assert ret == 0
+        mock_exec.assert_not_called()
+        captured = capsys.readouterr().out.strip()
+        assert "Repo360 1.1.0 (3eb8ef4) is already up to date (ahead of latest release v1.0.0)." in captured
+
+
 def test_is_output_already_up_to_date_uv_markers() -> None:
     """uv package install output containing '+ repo360' must not be misclassified as up-to-date."""
     from src.upgrade import is_output_already_up_to_date
