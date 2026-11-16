@@ -15,10 +15,12 @@ __all__ = [
     "DORA_ORG_HEADERS",
     "DORA_REPO_HEADERS",
     "DORA_DEPLOYMENT_HEADERS",
+    "DORA_RECOVERY_HEADERS",
     "DORA_INCIDENT_HEADERS",
     "BENCHMARKS",
     "BENCHMARK_DESCRIPTIONS",
     "DeploymentRecord",
+    "RecoveryIncident",
     "IncidentRecord",
     "RepoDORAMetrics",
     "FleetDORASummary",
@@ -109,6 +111,12 @@ DORA_RECOVERY_HEADERS = (
     "Recovery Source",
     "Environment",
 )
+
+# Backward-compatible aliases for recovery/incident headers and benchmarks
+DORA_INCIDENT_HEADERS = DORA_RECOVERY_HEADERS
+BENCHMARKS: Dict[str, Any] = {}
+BENCHMARK_DESCRIPTIONS: Dict[str, str] = {}
+FleetDORASummary = Dict[str, Any]
 
 TIER_ORDER = {"Elite": 4, "High": 3, "Medium": 2, "Low": 1, "N/A": 0}
 
@@ -465,6 +473,10 @@ class RecoveryIncident:
     status: str = "Resolved"
     source: str = "Deployment Stream"
     environment: str = "production"
+
+
+# Backward-compatible alias
+IncidentRecord = RecoveryIncident
 
 
 @dataclass

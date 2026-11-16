@@ -122,7 +122,7 @@ All reports are written to `./repo360-output/`.
 repo360 upgrade
 
 # Install or switch to a specific release tag (upgrades or downgrades)
-repo360 upgrade --tag v1.0.0
+repo360 upgrade --tag v1.1.0
 ```
 Stored credentials and GitHub App private keys in `~/.repo360/` are automatically preserved across upgrades.
 
@@ -191,7 +191,7 @@ jobs:
 
     steps:
       - name: "Run Repo360 Action"
-        uses: Adithya-Meda/repo360@main # Pin to a release tag in production (e.g. @v1.0.0)
+        uses: Adithya-Meda/repo360@main # Pin to a release tag in production (e.g. @v1.1.0)
         with:
           app_id: ${{ vars.REPO360_APP_ID }}
           private_key: ${{ secrets.REPO360_APP_PRIVATE_KEY }}

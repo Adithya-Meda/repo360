@@ -155,6 +155,7 @@ def run_concurrent_ai(
     rec_fn = getattr(ai_engine, "recommended_max_workers", None)
     capped_workers = max_workers
     if callable(rec_fn):
+        # pylint: disable=not-callable
         candidate = rec_fn(max_workers)
         if isinstance(candidate, int) and not isinstance(candidate, bool):
             capped_workers = max(1, min(max_workers, candidate))

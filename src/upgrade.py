@@ -1280,8 +1280,9 @@ def run_upgrade_cli(argv: Optional[List[str]] = None) -> int:
     exit_code = int(res)
     if exit_code == 0:
         display_ver = (getattr(res, "version", "") or local_ver).lstrip("v")
-        post_commit = getattr(res, "commit", None)
-        commit_suffix = f" ({post_commit[:7]})" if post_commit else ""
+        post_commit_val = getattr(res, "commit", None)
+        post_commit_sha: str = str(post_commit_val) if post_commit_val else ""
+        commit_suffix = f" ({post_commit_sha[:7]})" if post_commit_sha else ""
 
         if getattr(res, "already_up_to_date", False):
             if requested_tag or requested_ref:
@@ -1293,10 +1294,10 @@ def run_upgrade_cli(argv: Optional[List[str]] = None) -> int:
         else:
             print(f"Repo360 upgraded to {display_ver}{commit_suffix}.")
 
-        if target.commit and post_commit and not _commits_match(post_commit, target.commit):
+        if target.commit and post_commit_sha and not _commits_match(post_commit_sha, target.commit):
             expected_desc = f"{target.tag} ({target.commit[:7]})" if not use_commit_mode else target_label
             print(
-                f"Warning: Installed commit ({post_commit[:7]}) differs from {expected_desc}."
+                f"Warning: Installed commit ({post_commit_sha[:7]}) differs from {expected_desc}."
             )
     else:
         print(f"Upgrade failed with exit code {exit_code}.")

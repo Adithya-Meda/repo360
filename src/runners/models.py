@@ -13,6 +13,7 @@ __all__ = [
     "RUNNER_HEADERS",
     "ORG_RUNNER_HEADERS",
     "RUNNER_JOB_HEADERS",
+    "RunnerJobRecord",
     "RunnerInfo",
     "RunnerJobMetrics",
     "OrgRunnerMetrics",
@@ -198,6 +199,10 @@ class RunnerJobMetrics:
             self.first_job_time = min(self.first_job_time, other.first_job_time) if self.first_job_time else other.first_job_time
         if other.last_job_time:
             self.last_job_time = max(self.last_job_time, other.last_job_time) if self.last_job_time else other.last_job_time
+
+
+# Backward-compatible alias
+OrgRunnerMetrics = RunnerJobMetrics
 
 
 @dataclass(frozen=True)
