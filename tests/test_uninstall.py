@@ -234,3 +234,31 @@ def test_find_external_python_prefers_pythonw_on_windows(tmp_path: Path, monkeyp
     assert found is not None
     assert Path(found).name.lower() == "pythonw.exe"
 
+
+def test_execute_uninstall_delay_timer(tmp_path: Path) -> None:
+    """Verify execute_uninstall applies the 7.0s default timer (3s baseline + 4s timer) before completion."""
+    from src.uninstall import (
+        DEFAULT_UNINSTALL_DELAY_SECONDS,
+        DEFAULT_UNINSTALL_GRACE_TIMER_SECONDS,
+        DEFAULT_UNINSTALL_SETTLING_DELAY_SECONDS,
+        execute_uninstall,
+    )
+
+    assert DEFAULT_UNINSTALL_SETTLING_DELAY_SECONDS == 3.0
+    assert DEFAULT_UNINSTALL_GRACE_TIMER_SECONDS == 4.0
+    assert DEFAULT_UNINSTALL_DELAY_SECONDS == 7.0
+
+    plan = {
+        "config_dir": tmp_path / "nonexistent",
+        "scripts_dir": tmp_path / "scripts",
+        "deferred_windows": False,
+        "package_cmd": ["echo", "uninstalled"],
+    }
+    with (
+        patch("src.uninstall.run_interruptible_subprocess", return_value=MagicMock(returncode=0)),
+        patch("src.uninstall.time.sleep") as mock_sleep,
+    ):
+        rc = execute_uninstall(plan)
+        assert rc == 0
+        mock_sleep.assert_called_once_with(7.0)
+

@@ -24,6 +24,13 @@ from .upgrade import find_pipx_executable, get_installation_details
 
 PROTECTED_REPORT_DIR_NAME = "repo360-output"
 
+# Baseline settling duration (3.0s) + additional confirmation grace timer (4.0s)
+DEFAULT_UNINSTALL_SETTLING_DELAY_SECONDS: float = 3.0
+DEFAULT_UNINSTALL_GRACE_TIMER_SECONDS: float = 4.0
+DEFAULT_UNINSTALL_DELAY_SECONDS: float = (
+    DEFAULT_UNINSTALL_SETTLING_DELAY_SECONDS + DEFAULT_UNINSTALL_GRACE_TIMER_SECONDS
+)
+
 _WIN_DEFERRED_UNINSTALL_SCRIPT = """import ctypes
 import os
 import shutil
@@ -487,9 +494,20 @@ def execute_uninstall(
     plan: Dict[str, Any],
     dry_run: bool = False,
     keep_config: bool = False,
-    delay_seconds: float = 3.0,
+    delay_seconds: float = DEFAULT_UNINSTALL_DELAY_SECONDS,
 ) -> int:
-    """Execute package uninstallation and clean up Repo360 directories."""
+    """Execute package uninstallation and clean up Repo360 directories.
+
+    Args:
+        plan: Prepared uninstall plan mapping directories and uninstall commands.
+        dry_run: When True, preview actions without modifying files or packages.
+        keep_config: When True, preserve ~/.repo360 configuration and keys.
+        delay_seconds: Settling and verification delay (in seconds) before displaying
+            the completion text. Defaults to 7.0s (3.0s baseline settling + 4.0s grace timer).
+
+    Returns:
+        Exit code: 0 on successful uninstallation, non-zero on failure.
+    """
     if dry_run:
         print("\033[96m[DRY-RUN]\033[0m No files or packages were removed.")
         return 0
