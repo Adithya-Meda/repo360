@@ -225,6 +225,17 @@ jobs:
 
 ---
 
+## Legal Disclaimers
+
+### Trademarks & Non-Affiliation
+* **GitHub**: GitHub and the GitHub logo are registered trademarks of GitHub, Inc. or Microsoft Corporation. Repo360 is an independent open-source project and is not affiliated with, endorsed by, sponsored by, or supported by GitHub, Inc. or Microsoft Corporation.
+* **AI Providers**: Google, Gemini, OpenAI, Anthropic, and other third-party trademarks referenced in documentation or configuration are the property of their respective trademark holders. Repo360 is an independent project and is not affiliated with, endorsed by, or sponsored by any AI model provider.
+
+### Advisory & Informational Purpose
+Repo360 and its generated audit reports, metrics, DORA classifications, and AI-assisted insights are provided for informational, diagnostic, and governance analysis purposes only. They do not constitute formal legal, regulatory, or compliance certification. Users are solely responsible for evaluating, testing, and applying security configurations and changes within their environments.
+
+---
+
 ## License
 
-[MIT License](LICENSE)
+[MIT License](LICENSE) — Copyright (c) 2026 Adithya Meda

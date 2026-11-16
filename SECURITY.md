@@ -16,10 +16,6 @@ Repo360 is maintained as an independent open-source project by Adithya Meda. If 
 ### Preferred Reporting Method
 Submit an advisory via **[GitHub Private Vulnerability Reporting](https://github.com/Adithya-Meda/repo360/security/advisories/new)**.
 
-### Alternative Reporting Method
-If you cannot use GitHub Security Advisories, send a report directly to:
-* **Maintainer Contact:** `47377931+Adithya-Meda@users.noreply.github.com`
-
 ### What to Include
 Please provide:
 * Detailed description of the vulnerability and attack vector.
