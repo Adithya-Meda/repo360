@@ -129,26 +129,10 @@ Removes the installed `repo360` package, isolated virtual environment, and `~/.r
 ### Multi-Organization Support
 
 Install the registered GitHub App across multiple organizations in your enterprise using the same App ID and private key:
-- **Automatic Multi-Org Discovery:** Running `repo360 audit` (or `activity`, `runners`) automatically discovers every organization where the app is installed, provisions scoped tokens per organization, and aggregates findings into a single executive workbook.
+- **Automatic Multi-Org Discovery:** Running `repo360 <Command>` automatically discovers every organization where the app is installed, provisions scoped tokens per organization, and aggregates findings into a single executive workbook.
 - **Targeted Organization Filtering:** Restrict scans to specific organizations on demand using `--org`:
   ```bash
-  # Audit specific organizations
-  repo360 audit --org OrgAlpha,OrgBeta
-
-  # Analyze user activity across specific organizations
-  repo360 activity --org OrgAlpha,OrgBeta
-
-  # Analyze runner fleet across specific organizations
-  repo360 runners --org OrgAlpha,OrgBeta
-
-  # Profile storage and workflow artifacts across specific organizations
-  repo360 finops --org OrgAlpha,OrgBeta
-
-  # Measure DORA delivery metrics across specific organizations
-  repo360 dora --org OrgAlpha,OrgBeta
-
-  # Audit security and ruleset bypasses across specific organizations
-  repo360 bypass --org OrgAlpha,OrgBeta
+  repo360 <Command> --org OrgAlpha,OrgBeta
   ```
 
 ---
@@ -170,8 +154,6 @@ name: "Repo360 Platform Audit"
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 6 * * 1" # Weekly: Mondays at 06:00 UTC
 
 permissions:
   contents: read
@@ -236,8 +218,8 @@ jobs:
 - **Repository Security:** Branch protection review gates, `CODEOWNERS` validation, GitHub Actions commit SHA pinning, workflow concurrency groups, Dependabot.
 - **Developer Enablement:** Dev containers (`devcontainer.json`), GitHub Copilot instructions, standardized issue & PR templates, pre-commit hooks.
 - **User Activity Collection:** Contributor commit cadence, pull requests opened/merged, code review participation, issue discussions, active days, and adoption metrics.
-- **Runner Fleet Intelligence:** Actions self-hosted runner availability, ephemeral provisioning, execution compute hours, queue latency, and SLA breach tracking (>60s).
-- **FinOps & Storage Profiling:** Per-repository Git storage quotas, GitHub Actions workflow artifacts, default 90-day retention waste detection, stale Actions caches (>30d unaccessed), and container/package registries.
+- **Runner Fleet Intelligence:** Actions runner availability, ephemeral provisioning, execution compute hours, queue latency, and SLA breach tracking (>60s).
+- **FinOps & Storage Profiling:** Per-repository Git storage quotas, GitHub Actions workflow artifacts, default 90-day retention waste detection, stale Actions caches, and container/package registries.
 - **DORA & Flow Metrics:** Cross-organization Deployment Frequency (DF), Lead Time for Changes (LTTC), Change Failure Rate (CFR), and Mean Time to Recovery (MTTR) with Google DORA performance tier classification (Elite, High, Medium, Low).
 - **Security & Policy Bypass Ledger:** Consolidated push protection bypass records (with secret type, bypassing actor, timestamp, and justification reason) and branch ruleset override audit history.
 
