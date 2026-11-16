@@ -1,6 +1,6 @@
 # Repo360
 
-Platform governance, compliance, engineering intelligence, and infrastructure metrics for GitHub organizations. Evaluates repositories against security baselines, analyzes contributor activity, monitors Actions self-hosted runner fleets, profiles storage and artifact costs (FinOps), tracks cross-organization DORA delivery metrics, audits security and ruleset bypasses, and generates executive multi-tab Excel workbooks.
+Platform governance, compliance, engineering intelligence, and infrastructure metrics for **GitHub Enterprise Cloud** organizations (`https://github.com`). Evaluates repositories against security baselines, analyzes contributor activity, monitors Actions self-hosted runner fleets, profiles storage and artifact costs (FinOps), tracks cross-organization DORA delivery metrics, audits security and ruleset bypasses, and generates executive multi-tab Excel workbooks.
 
 > [!WARNING]
 > **Advisory Only:** Remediation snippets and policies are advisory. Validate suggested changes in non-production environments before applying.
@@ -10,16 +10,8 @@ Platform governance, compliance, engineering intelligence, and infrastructure me
 ## Prerequisites
 
 - **Python 3.10+** and **[pipx](https://pypa.github.io/pipx/)** (for CLI use)
-- **Organization Owner / Admin access** on GitHub (to install the read-only GitHub App)
+- **Organization Owner / Admin access** on GitHub Enterprise Cloud (to install the read-only GitHub App)
 - **AI API Key** (Optional: Google Gemini, OpenAI, or Anthropic — used when `--require-ai yes` is enabled; defaults to `--require-ai no` deterministic policy rules)
-
----
-
-## Supported Platform
-
-| Platform | Domain | Setup Command |
-| :--- | :--- | :--- |
-| **GitHub Enterprise Cloud** | `https://github.com` | `repo360 setup --org <your-org>` |
 
 ---
 
