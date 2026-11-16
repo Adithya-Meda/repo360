@@ -48,7 +48,7 @@ def test_generate_executive_summary_success(mock_client_cls: MagicMock) -> None:
     mock_response.text = "### Executive Risk Briefing\nOverall posture is strong with 1 critical gap."
     mock_client.models.generate_content.return_value = mock_response
 
-    engine = AIEngine(api_key="valid-mock-key", enabled=True)
+    engine = AIEngine(api_key="valid-mock-key", model_name="gemini-2.5-flash", enabled=True)
     assert engine.is_available()
 
     results = [
@@ -95,7 +95,7 @@ def test_enrich_remediation_success(mock_client_cls: MagicMock) -> None:
     mock_response.text = "```markdown\n# Custom Copilot Instructions for Python / FastAPI\n- Use type hints\n```"
     mock_client.models.generate_content.return_value = mock_response
 
-    engine = AIEngine(api_key="valid-mock-key", enabled=True)
+    engine = AIEngine(api_key="valid-mock-key", model_name="gemini-2.5-flash", enabled=True)
 
     result = CheckResult(
         check_id="copilot_instructions",
@@ -126,7 +126,7 @@ def test_enrich_remediation_success(mock_client_cls: MagicMock) -> None:
 
 def test_enrich_remediation_skips_passing_or_unsupported() -> None:
     """Verify enrichment does nothing for PASS checks or checks outside AI scope."""
-    engine = AIEngine(api_key="valid-mock-key", enabled=True)
+    engine = AIEngine(api_key="valid-mock-key", model_name="gemini-2.5-flash", enabled=True)
 
     passing_result = CheckResult(
         check_id="copilot_instructions",
@@ -164,7 +164,7 @@ def test_enrich_remediation_skips_passing_or_unsupported() -> None:
 @patch("google.genai.Client", side_effect=RuntimeError("Client failed to init"))
 def test_ai_client_init_exception_fallback(mock_client_cls: MagicMock) -> None:
     """Verify AI Engine falls back gracefully if client init fails."""
-    engine = AIEngine(api_key="valid-mock-key", enabled=True)
+    engine = AIEngine(api_key="valid-mock-key", model_name="gemini-2.5-flash", enabled=True)
     assert not engine.is_available()
 
 
@@ -175,7 +175,7 @@ def test_generate_executive_summary_api_error_fallback(mock_client_cls: MagicMoc
     mock_client_cls.return_value = mock_client
     mock_client.models.generate_content.side_effect = RuntimeError("API quota exceeded")
 
-    engine = AIEngine(api_key="valid-mock-key", enabled=True)
+    engine = AIEngine(api_key="valid-mock-key", model_name="gemini-2.5-flash", enabled=True)
     summary = engine.generate_executive_summary([], "test-org")
     assert summary == ""
 
@@ -187,7 +187,7 @@ def test_enrich_remediation_api_error_handled(mock_client_cls: MagicMock) -> Non
     mock_client_cls.return_value = mock_client
     mock_client.models.generate_content.side_effect = RuntimeError("API timeout")
 
-    engine = AIEngine(api_key="valid-mock-key", enabled=True)
+    engine = AIEngine(api_key="valid-mock-key", model_name="gemini-2.5-flash", enabled=True)
     result = CheckResult(
         check_id="copilot_instructions",
         check_name="GitHub Copilot Instructions",
@@ -212,7 +212,7 @@ def test_verify_connection_success(mock_client_cls: MagicMock) -> None:
     mock_client_cls.return_value = mock_client
     mock_client.models.generate_content.return_value = MagicMock(text="pong")
 
-    engine = AIEngine(api_key="valid-key", enabled=True)
+    engine = AIEngine(api_key="valid-key", model_name="gemini-2.5-flash", enabled=True)
     is_ok, reason = engine.verify_connection()
     assert is_ok is True
     assert reason == "OK"
@@ -225,7 +225,7 @@ def test_verify_connection_failure(mock_client_cls: MagicMock) -> None:
     mock_client_cls.return_value = mock_client
     mock_client.models.generate_content.side_effect = Exception("API_KEY_INVALID: Key not found")
 
-    engine = AIEngine(api_key="bad-key", enabled=True)
+    engine = AIEngine(api_key="bad-key", model_name="gemini-2.5-flash", enabled=True)
     is_ok, reason = engine.verify_connection()
     assert is_ok is False
     assert "Invalid" in reason
@@ -302,7 +302,7 @@ def test_enrich_remediation_uses_cache(mock_client_cls: MagicMock) -> None:
     mock_response.text = "```yaml\n# Cached Snippet\n```"
     mock_client.models.generate_content.return_value = mock_response
 
-    engine = AIEngine(api_key="valid-mock-key", enabled=True)
+    engine = AIEngine(api_key="valid-mock-key", model_name="gemini-2.5-flash", enabled=True)
 
     result1 = CheckResult(
         check_id="copilot_instructions",
@@ -361,7 +361,7 @@ def test_analyze_push_protection_bypass_deterministic() -> None:
 def test_analyze_push_protection_bypass_ai(mock_gen: MagicMock) -> None:
     """Verify AI model parsing for push protection bypass."""
     mock_gen.return_value = "RISK: High Risk\nADVISORY: Active credential committed to production branch; revoke in IAM immediately."
-    engine = AIEngine(api_key="valid-key", enabled=True)
+    engine = AIEngine(api_key="valid-key", model_name="gemini-2.5-flash", enabled=True)
     engine._available = True
 
     risk, adv = engine.analyze_push_protection_bypass("AWS Access Key", "testing in staging", actor="developer1", repo="core-api")
@@ -458,7 +458,7 @@ def test_ai_circuit_breaker_on_rate_limit(mock_client_cls: MagicMock) -> None:
     mock_client_cls.return_value = mock_client
     mock_client.models.generate_content.side_effect = Exception("429 RESOURCE_EXHAUSTED: quota exceeded")
 
-    engine = AIEngine(api_key="valid-mock-key", enabled=True)
+    engine = AIEngine(api_key="valid-mock-key", model_name="gemini-2.5-flash", enabled=True)
     assert not engine.is_circuit_active()
 
     result = CheckResult(
@@ -522,7 +522,7 @@ def test_diagnose_dora_flow_grounding_markdown_strip_and_no_op_awareness(monkeyp
     assert "3 duplicate retry" in stalled_diag
     assert "14 stalled IN_PROGRESS" in stalled_diag
 
-    online = AIEngine(api_key="mock-key", provider="openai", enabled=True)
+    online = AIEngine(api_key="mock-key", model_name="gpt-4o", provider="openai", enabled=True)
     captured_prompts = []
 
     def _fake_generate_md(prompt: str, retry_on_rate_limit: bool = True) -> str:
@@ -705,7 +705,7 @@ def test_recommended_max_workers_and_run_concurrent_ai_throttling(monkeypatch):
     monkeypatch.delenv("LLM_MAX_WORKERS", raising=False)
     monkeypatch.delenv("LLM_MIN_INTERVAL_SECONDS", raising=False)
 
-    gemini_engine = AIEngine(provider="gemini", api_key="test-key", enabled=True)
+    gemini_engine = AIEngine(provider="gemini", model_name="gemini-2.5-flash", api_key="test-key", enabled=True)
     assert gemini_engine.recommended_max_workers(8) == 3
 
     gemini_engine._bump_adaptive_pacing()
@@ -864,7 +864,7 @@ def test_executive_summary_and_advisories_strip_markdown_cleanly(monkeypatch):
     assert "50.0%" in det
     assert "Branch Rulesets" in det
 
-    online = AIEngine(provider="openai", api_key="sk-test", enabled=True)
+    online = AIEngine(provider="openai", model_name="gpt-4o", api_key="sk-test", enabled=True)
     monkeypatch.setattr(
         online,
         "_generate_text",
@@ -890,7 +890,7 @@ def test_is_ai_live_and_run_concurrent_ai_circuit_short_circuit():
     from src.common.concurrency import is_ai_live, run_concurrent_ai
     from src.main import _resolve_ai_pool_size
 
-    engine = AIEngine(provider="gemini", api_key="test-key", enabled=True)
+    engine = AIEngine(provider="gemini", model_name="gemini-2.5-flash", api_key="test-key", enabled=True)
     assert is_ai_live(engine) is True
     assert _resolve_ai_pool_size(engine, 8) == 3
 
@@ -901,3 +901,41 @@ def test_is_ai_live_and_run_concurrent_ai_circuit_short_circuit():
     with ThreadPoolExecutor(max_workers=1) as _unused:
         out = run_concurrent_ai(["x", "y"], lambda s: f"det:{s}", ai_engine=engine, max_workers=8)
     assert out == ["det:x", "det:y"]
+
+
+def test_ai_engine_disabled_when_no_model_selected():
+    """Verify AI Engine disables cleanly and records error when model is omitted."""
+    engine = AIEngine(api_key="valid-key", enabled=True)
+    assert not engine.is_available()
+    assert engine.enabled is False
+    assert "No AI model selected" in (engine.init_error or "")
+
+
+def test_init_ai_engine_fails_fast_when_require_ai_without_model():
+    """Verify init_ai_engine raises an informative error when --require-ai yes without model."""
+    from src.ai import init_ai_engine
+
+    creds_no_model = {
+        "llm_provider": "gemini",
+        "llm_model": "",
+        "llm_api_key": "some-key",
+        "llm_enabled": True,
+    }
+    with pytest.raises(RuntimeError, match="--require-ai was specified but no AI model is configured"):
+        init_ai_engine(require_ai=True, creds=creds_no_model)
+
+
+def test_cli_subcommand_ai_flags_only_accepts_require_ai():
+    """Verify general subcommands only accept --require-ai yes/no without --ai-model."""
+    import argparse
+    from src.ai import add_ai_cli_arguments, resolve_ai_cli_flag
+
+    parser = argparse.ArgumentParser(prog="repo360 test")
+    add_ai_cli_arguments(parser)
+    args = parser.parse_args(["--require-ai", "yes"])
+    assert resolve_ai_cli_flag(args, parser) is True
+
+    # --ai-model is rejected on standard scan subcommands
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--require-ai", "yes", "--ai-model", "gpt-4o"])
+

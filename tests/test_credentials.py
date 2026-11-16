@@ -142,3 +142,17 @@ def test_posix_directory_and_file_permissions(tmp_path) -> None:
     assert (str(cfg_dir / "secrets"), 0o700) in chmod_calls
     assert (key_path, 0o600) in chmod_calls
     assert (cfg_path, 0o600) in chmod_calls
+
+
+def test_resolve_runtime_credentials_no_default_model() -> None:
+    """Verify that no default AI model is selected when unconfigured."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        os.environ["REPO360_CONFIG_DIR"] = temp_dir
+        os.environ.pop("AI_MODEL", None)
+        os.environ.pop("LLM_MODEL", None)
+        try:
+            creds = resolve_runtime_credentials()
+            assert creds["llm_model"] == ""
+        finally:
+            os.environ.pop("REPO360_CONFIG_DIR", None)
+

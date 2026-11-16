@@ -554,6 +554,7 @@ def run_wizard(
     github_domain: str = "https://github.com",
     app_name: str = "",
     open_browser: bool = True,
+    ai_model: str = "",
 ) -> None:
     """Run the interactive setup wizard."""
     clean_org = _normalize_org_name(org_name)
@@ -695,7 +696,7 @@ def run_wizard(
         if manual_in.isdigit():
             installation_id = int(manual_in)
 
-    llm_provider, llm_model, llm_api_key, llm_enabled = _prompt_ai_configuration()
+    llm_provider, llm_model, llm_api_key, llm_enabled = _prompt_ai_configuration(default_model=ai_model)
 
     cfg_path = save_user_credentials(
         app_id=app_id,
@@ -736,10 +737,10 @@ def run_wizard(
     print("=" * 65 + "\n")
 
 
-_LLM_PROVIDER_MAP: dict[str, tuple[str, str, str]] = {
-    "1": ("gemini", "gemini-3.5-flash", "GEMINI_API_KEY"),
-    "2": ("openai", "gpt-4o", "OPENAI_API_KEY"),
-    "3": ("anthropic", "claude-3-5-sonnet-20241022", "ANTHROPIC_API_KEY"),
+_LLM_PROVIDER_MAP: dict[str, tuple[str, str]] = {
+    "1": ("gemini", "GEMINI_API_KEY"),
+    "2": ("openai", "OPENAI_API_KEY"),
+    "3": ("anthropic", "ANTHROPIC_API_KEY"),
 }
 
 
@@ -776,7 +777,7 @@ def _prompt_domain(default_domain: str = "https://github.com") -> str:
     return _normalize_github_domain(custom_domain or default_domain)
 
 
-def _prompt_ai_configuration() -> tuple[str, str, str, bool]:
+def _prompt_ai_configuration(default_model: str = "") -> tuple[str, str, str, bool]:
     """Prompt interactively for optional AI remediation provider settings."""
     print("\n" + "=" * 65)
     print("  AI REMEDIATION & GOVERNANCE ADVISORY ENGINE")
@@ -788,18 +789,22 @@ def _prompt_ai_configuration() -> tuple[str, str, str, bool]:
     print("  [4] None / Disable AI (Deterministic policy checks only)")
     print("-" * 65)
 
-    llm_choice = interruptible_input("Select provider [1-4] (default: 1): ", eof_default="").strip() or "1"
+    llm_choice = interruptible_input("Select provider [1-4] (default: 4): ", eof_default="").strip() or "4"
     if llm_choice == "4":
         return "none", "", "", False
 
-    llm_provider, llm_model, env_key_name = _LLM_PROVIDER_MAP.get(
+    llm_provider, env_key_name = _LLM_PROVIDER_MAP.get(
         llm_choice, _LLM_PROVIDER_MAP["1"]
     )
     llm_api_key = interruptible_input(f"Enter {env_key_name} (press Enter to skip): ", eof_default="").strip()
-    custom_model = interruptible_input(f"Enter model name [{llm_model}]: ", eof_default="").strip()
-    if custom_model:
-        llm_model = custom_model
-    return llm_provider, llm_model, llm_api_key, True
+    prompt_text = (
+        f"Enter {llm_provider.capitalize()} model name [{default_model}]: "
+        if default_model
+        else f"Enter {llm_provider.capitalize()} model name: "
+    )
+    custom_model = interruptible_input(prompt_text, eof_default="").strip()
+    llm_model = custom_model or default_model
+    return llm_provider, llm_model, llm_api_key, bool(llm_model)
 
 
 def _update_local_env_if_present(
@@ -939,7 +944,7 @@ def _prompt_or_discover_installation_id(
     return None
 
 
-def run_manual_setup(github_domain: str = "", org_name: str = "") -> int:
+def run_manual_setup(github_domain: str = "", org_name: str = "", ai_model: str = "") -> int:
     """Guide manual GitHub App credential entry or config file template creation."""
     _print_manual_permissions_guide()
     clean_domain = _normalize_github_domain(github_domain) if github_domain else _prompt_domain()
@@ -973,7 +978,7 @@ def run_manual_setup(github_domain: str = "", org_name: str = "") -> int:
             write_template = overwrite in ("y", "yes")
 
         if write_template:
-            llm_provider, llm_model, llm_api_key, llm_enabled = _prompt_ai_configuration()
+            llm_provider, llm_model, llm_api_key, llm_enabled = _prompt_ai_configuration(default_model=ai_model)
             placeholder_key = os.path.join(secrets_dir, "<your-app>.private-key.pem")
             cfg_path = save_user_credentials(
                 app_id="",
@@ -1011,7 +1016,7 @@ def run_manual_setup(github_domain: str = "", org_name: str = "") -> int:
         api_domain=api_domain,
         target_org=clean_org,
     )
-    llm_provider, llm_model, llm_api_key, llm_enabled = _prompt_ai_configuration()
+    llm_provider, llm_model, llm_api_key, llm_enabled = _prompt_ai_configuration(default_model=ai_model)
 
     cfg_path = save_user_credentials(
         app_id=app_id,
@@ -1092,6 +1097,13 @@ def main() -> int:
         metavar="URL",
         help="GitHub host URL (default: https://github.com).",
     )
+    parser.add_argument(
+        "--ai-model",
+        required=False,
+        default="",
+        metavar="MODEL",
+        help="Target AI model identifier to configure in ~/.repo360/config.json.",
+    )
 
     try:
         args = parser.parse_args()
@@ -1100,9 +1112,12 @@ def main() -> int:
 
         org = _normalize_org_name(args.org)
         has_explicit_domain = args.domain != "https://github.com"
+        ai_model = (getattr(args, "ai_model", "") or "").strip()
 
         if mode == "manual":
             manual_domain = args.domain if (org or has_explicit_domain) else ""
+            if ai_model:
+                return run_manual_setup(github_domain=manual_domain, org_name=org, ai_model=ai_model)
             return run_manual_setup(github_domain=manual_domain, org_name=org)
 
         if not org:
@@ -1115,7 +1130,10 @@ def main() -> int:
             return 1
 
         domain = args.domain if (args.org or has_explicit_domain) else _prompt_domain()
-        run_wizard(org_name=org, github_domain=domain, app_name=args.app_name)
+        if ai_model:
+            run_wizard(org_name=org, github_domain=domain, app_name=args.app_name, ai_model=ai_model)
+        else:
+            run_wizard(org_name=org, github_domain=domain, app_name=args.app_name)
         return 0
     except EOFError:
         print("\nSetup cancelled (end of input).")

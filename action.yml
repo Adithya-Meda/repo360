@@ -46,9 +46,9 @@ inputs:
     required: false
     default: ""
   ai_model:
-    description: "Optional AI model identifier (e.g. 'gemini-3.5-flash', 'gpt-4o', 'claude-3-5-sonnet-20241022'). Provider is auto-detected from model name."
+    description: "User-selected AI model. Required when require_ai is 'yes'."
     required: false
-    default: "gemini-3.5-flash"
+    default: ""
   collect_audit:
     description: "Run platform security and governance compliance audit ('true' or 'false')"
     required: false

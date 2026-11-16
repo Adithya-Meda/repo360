@@ -352,3 +352,24 @@ def test_open_browser_url_handles_headless_and_errors(capsys) -> None:
     with patch("src.setup_app.webbrowser.open", side_effect=webbrowser.Error("no display")):
         _open_browser_url("http://127.0.0.1:8989/?s=xyz", "Open URL manually")
     assert "Open URL manually: http://127.0.0.1:8989/?s=xyz" in capsys.readouterr().out
+
+
+def test_setup_cli_accepts_ai_model_flag(monkeypatch) -> None:
+    """Verify repo360 setup accepts --ai-model flag and passes it to setup wizard."""
+    from src.setup_app import main as setup_main
+
+    captured_kwargs = {}
+
+    def _mock_run_manual_setup(**kwargs):
+        captured_kwargs.update(kwargs)
+        return 0
+
+    monkeypatch.setattr("src.setup_app.run_manual_setup", _mock_run_manual_setup)
+    monkeypatch.setattr(
+        "sys.argv",
+        ["repo360 setup", "--mode", "manual", "--org", "acme", "--ai-model", "gemini-2.5-pro"],
+    )
+    rc = setup_main()
+    assert rc == 0
+    assert captured_kwargs.get("ai_model") == "gemini-2.5-pro"
+

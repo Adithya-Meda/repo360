@@ -204,7 +204,7 @@ jobs:
 | `workers` | Worker thread concurrency limit | Integer (`"0"`-`"32"`) | `"0"` *(Auto)* |
 | `require_ai` | Enable AI advisory insights | `"yes"`, `"no"` | `"no"` |
 | `ai_api_key` | Unified AI API key | String | `""` |
-| `ai_model` | Target AI model identifier | String | `"gemini-3.5-flash"` |
+| `ai_model` | Target AI model identifier | String | `""` *(User selected)* |
 | `output_dir` | Report output directory path | String | `"./repo360-output"` |
 | `upload_artifact` | Upload workflow report artifact | `"true"`, `"false"` | `"true"` |
 | `artifact_name` | Workflow artifact bundle name | String | `"repo360-audit-reports"` |

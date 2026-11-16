@@ -88,7 +88,7 @@ def save_user_credentials(
     installation_id: Optional[int | str] = None,
     api_base_url: str = "https://api.github.com",
     llm_provider: str = "gemini",
-    llm_model: str = "gemini-3.5-flash",
+    llm_model: str = "",
     llm_api_key: str = "",
     llm_enabled: bool = True,
 ) -> str:
@@ -224,12 +224,7 @@ def resolve_runtime_credentials() -> Dict[str, Any]:
         elif m_lower.startswith("gemini-"):
             llm_provider = "gemini"
 
-    default_models = {
-        "gemini": "gemini-3.5-flash",
-        "openai": "gpt-4o",
-        "anthropic": "claude-3-5-sonnet-20241022",
-    }
-    llm_model = env_model or default_models.get(llm_provider, "gemini-3.5-flash")
+    llm_model = env_model
 
     llm_api_key = (
         os.getenv("AI_API_KEY")

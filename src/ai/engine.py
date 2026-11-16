@@ -79,7 +79,7 @@ class AIEngine:
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model_name: str = "gemini-3.5-flash",
+        model_name: str = "",
         provider: str = "gemini",
         enabled: bool = True,
         base_url: str = "",
@@ -88,7 +88,7 @@ class AIEngine:
 
         Args:
             api_key: API Key for the target provider (optional).
-            model_name: Target model identifier (e.g. gemini-3.5-flash, gpt-4o, claude-3-5-sonnet-20241022).
+            model_name: Target model identifier explicitly selected by the user.
             provider: LLM provider name ("gemini", "openai", "azure", "anthropic").
             enabled: Master toggle for AI capabilities.
             base_url: Custom API endpoint base URL (optional, for Azure / proxies).
@@ -108,17 +108,11 @@ class AIEngine:
                 prov = "gemini"
         self.provider = prov
 
-        if not model_name:
-            if self.provider in ("openai", "azure"):
-                self.model_name = "gpt-4o"
-            elif self.provider == "anthropic":
-                self.model_name = "claude-3-5-sonnet-20241022"
-            else:
-                self.model_name = "gemini-3.5-flash"
-        else:
-            self.model_name = model_name
-
-        self.enabled = enabled and bool(self.api_key)
+        self.init_error: Optional[str] = None
+        self.model_name = (model_name or "").strip()
+        self.enabled = enabled and bool(self.api_key) and bool(self.model_name)
+        if enabled and bool(self.api_key) and not self.model_name:
+            self.init_error = "No AI model selected. Model must be explicitly configured."
         self.base_url = (base_url or "").strip()
         self._client: Optional[Any] = None
         self._gen_config: Optional[Any] = None
@@ -139,7 +133,6 @@ class AIEngine:
         )
         self._next_request_at: float = 0.0
         self._model_cooldown_until: Dict[str, float] = {}
-        self.init_error: Optional[str] = None
         self._circuit_cooldown_until: float = 0.0
         self._circuit_notified: bool = False
 
@@ -172,7 +165,7 @@ class AIEngine:
 
     def is_available(self) -> bool:
         """Return True if AI engine is configured and ready."""
-        if not self.enabled or not self.api_key:
+        if not self.enabled or not self.api_key or not self.model_name:
             return False
         if self.provider == "gemini":
             return self._client is not None
@@ -1286,7 +1279,7 @@ def init_ai_engine(
     active_log = log or logger
     resolved_creds = creds if creds is not None else resolve_runtime_credentials()
     provider = resolved_creds.get("llm_provider", "gemini")
-    ai_model = resolved_creds.get("llm_model", "gemini-3.5-flash")
+    ai_model = (resolved_creds.get("llm_model") or "").strip()
     llm_api_key = resolved_creds.get("llm_api_key", "")
 
     if no_ai or enable_ai is False:
@@ -1323,9 +1316,20 @@ def init_ai_engine(
     )
 
     if not ai_engine.is_available():
-        offline_reason = ai_engine.init_error or f"{key_hint} not configured"
         if require_ai:
-            raise RuntimeError("--require-ai was specified but AI engine is disabled or not configured.")
+            if not ai_model:
+                raise RuntimeError(
+                    "--require-ai was specified but no AI model is configured. "
+                    "Please configure an AI model via 'repo360 setup', ~/.repo360/config.json, or AI_MODEL environment variable."
+                )
+            offline_reason = ai_engine.init_error or f"{key_hint} not configured"
+            raise RuntimeError(f"--require-ai was specified but AI engine is disabled or not configured ({offline_reason}).")
+
+        offline_reason = ai_engine.init_error or (
+            "No AI model selected. Model must be explicitly configured."
+            if not ai_model
+            else f"{key_hint} not configured"
+        )
         if verify:
             active_log.warning(
                 "AI Remediation Engine: NOT ENABLED / OFFLINE (%s). "

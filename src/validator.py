@@ -29,7 +29,7 @@ DEFAULT_APP_CONFIG: Dict[str, Any] = {
     "llm": {
         "enabled": True,
         "provider": "${LLM_PROVIDER:-gemini}",
-        "model": "${LLM_MODEL:-gemini-3.5-flash}",
+        "model": "${LLM_MODEL:-}",
     },
 }
 
