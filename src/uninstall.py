@@ -76,16 +76,32 @@ def main() -> None:
         k32.CloseHandle(handle)
     time.sleep(0.35)
 
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0x00000001)
+    si.wShowWindow = 0
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+
     for _ in range(4):
         if cmd:
-            res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            res = subprocess.run(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=creationflags,
+                startupinfo=si,
+                check=False,
+            )
             if res.returncode == 0:
                 break
         elif pipx_bin:
             res = subprocess.run(
                 [pipx_bin, "uninstall", "repo360"],
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                creationflags=creationflags,
+                startupinfo=si,
                 check=False,
             )
             if res.returncode == 0:
@@ -203,12 +219,20 @@ def _find_pipx_venv_dir(pipx_bin: Optional[str]) -> Optional[Path]:
 
     if pipx_bin:
         try:
+            extra_kwargs: Dict[str, Any] = {}
+            if sys.platform == "win32":
+                extra_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+                si = subprocess.STARTUPINFO()
+                si.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0x00000001)
+                si.wShowWindow = 0
+                extra_kwargs["startupinfo"] = si
             res = subprocess.run(
                 [pipx_bin, "environment", "--value", "PIPX_LOCAL_VENVS"],
                 capture_output=True,
                 text=True,
                 check=False,
                 timeout=5,
+                **extra_kwargs,
             )
             if res.returncode == 0 and res.stdout.strip():
                 cand = Path(res.stdout.strip().splitlines()[0]) / "repo360"
@@ -401,6 +425,9 @@ def _spawn_windows_deferred_uninstall(plan: Dict[str, Any], keep_config: bool = 
         no_window_flag = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
         new_group_flag = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
         creationflags = no_window_flag | new_group_flag
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0x00000001)
+        si.wShowWindow = 0
         config_arg = "" if keep_config else str(plan.get("config_dir") or "")
         cmd = [
             external_python,
@@ -419,6 +446,7 @@ def _spawn_windows_deferred_uninstall(plan: Dict[str, Any], keep_config: bool = 
             stderr=subprocess.DEVNULL,
             close_fds=True,
             creationflags=creationflags,
+            startupinfo=si,
         )
         return True, script_path
     except Exception as exc:
@@ -539,7 +567,8 @@ def run_uninstall_cli(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     plan = build_uninstall_plan(keep_config=args.keep_config)
-    _print_uninstall_plan(plan, keep_config=args.keep_config)
+    if args.dry_run:
+        _print_uninstall_plan(plan, keep_config=args.keep_config)
 
     if not args.dry_run and not args.yes:
         answer = _prompt_confirmation("Proceed with Repo360 uninstall? [y/N]: ")

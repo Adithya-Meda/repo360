@@ -121,7 +121,7 @@ def test_run_uninstall_cli_removes_related_dirs_and_preserves_reports(tmp_path: 
     assert "Note: To remove the GitHub App from your organization" in out
 
 
-def test_run_uninstall_cli_dry_run_and_keep_config_and_abort(tmp_path: Path, monkeypatch) -> None:
+def test_run_uninstall_cli_dry_run_and_keep_config_and_abort(tmp_path: Path, monkeypatch, capsys) -> None:
     """Verify --dry-run, prompt cancellation, and --keep-config preserve directories appropriately."""
     monkeypatch.chdir(tmp_path)
     cfg_dir = tmp_path / ".repo360"
@@ -138,15 +138,21 @@ def test_run_uninstall_cli_dry_run_and_keep_config_and_abort(tmp_path: Path, mon
     ):
         assert run_uninstall_cli(["--dry-run"]) == 0
         assert cfg_dir.exists()
+        out_dry = capsys.readouterr().out
+        assert "Repo360 Uninstall Summary:" in out_dry
 
         with patch("builtins.input", return_value="n"):
             assert run_uninstall_cli([]) == 1
         assert cfg_dir.exists()
+        out_abort = capsys.readouterr().out
+        assert "Repo360 Uninstall Summary:" not in out_abort
 
         with patch("src.uninstall.subprocess.run", return_value=MagicMock(returncode=0)) as mock_run:
             assert run_uninstall_cli(["--yes", "--keep-config"]) == 0
             assert mock_run.called
         assert cfg_dir.exists()
+        out_yes = capsys.readouterr().out
+        assert "Repo360 Uninstall Summary:" not in out_yes
 
 
 def test_spawn_windows_deferred_uninstall_creates_helper_and_spawns(tmp_path: Path) -> None:
@@ -180,6 +186,10 @@ def test_spawn_windows_deferred_uninstall_creates_helper_and_spawns(tmp_path: Pa
     creationflags = mock_popen.call_args[1].get("creationflags", 0)
     assert creationflags & getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
     assert not (creationflags & getattr(subprocess, "DETACHED_PROCESS", 0x00000008))
+    startupinfo = mock_popen.call_args[1].get("startupinfo")
+    assert startupinfo is not None
+    assert startupinfo.dwFlags & getattr(subprocess, "STARTF_USESHOWWINDOW", 0x00000001)
+    assert startupinfo.wShowWindow == 0
 
 
 def test_find_pipx_venv_dir_supports_env_and_macos_paths(tmp_path: Path, monkeypatch) -> None:
