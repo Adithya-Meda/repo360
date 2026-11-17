@@ -15,7 +15,13 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from ..auth.github_app_auth import USER_AGENT, GitHubAppAuth
-from .interrupts import _ORIG_TIME_SLEEP, interruptible_sleep, is_shutting_down, register_closable
+from .interrupts import (
+    _ORIG_TIME_SLEEP,
+    interruptible_sleep,
+    is_shutting_down,
+    register_closable,
+    unregister_closable,
+)
 
 logger = logging.getLogger("repo360.client")
 EMPTY_RESOURCE_STATUSES = frozenset({409, 410})
@@ -71,7 +77,7 @@ class ResilientGitHubClient:
                 raise_on_status=False,
             )
             session = requests.Session()
-            adapter = HTTPAdapter(max_retries=retry, pool_connections=50, pool_maxsize=50)
+            adapter = HTTPAdapter(max_retries=retry, pool_connections=10, pool_maxsize=10)
             session.mount("https://", adapter)
             session.mount("http://", adapter)
             session.headers.update({
@@ -82,6 +88,17 @@ class ResilientGitHubClient:
             register_closable(session)
             self._local.session = session
         return session
+
+    def _reset_session(self) -> None:
+        """Close and discard thread-local session so retry creates a fresh socket and connection pool."""
+        session = getattr(self._local, "session", None)
+        if session is not None:
+            try:
+                unregister_closable(session)
+                session.close()
+            except Exception:
+                pass
+            self._local.session = None
 
     def _coordinate_rate_limit(self, org: Optional[str]) -> None:
         """Coordinate rate-limit delays and pacing across all concurrent worker threads."""
@@ -264,14 +281,22 @@ class ResilientGitHubClient:
                         timeout=self.timeout_seconds,
                     )
             except (requests.exceptions.ConnectionError, requests.exceptions.Timeout, requests.exceptions.ChunkedEncodingError) as net_err:
+                self._reset_session()
                 if attempt == self.max_retries:
                     logger.error("Network request failed after %d retries for %s: %s", self.max_retries, url, net_err)
                     raise
-                backoff = min(30.0, (1.5 ** attempt) + random.uniform(0.1, 0.5))
-                logger.warning(
-                    "Transient network drop (%s) for %s; retrying in %.2fs (attempt %d/%d)",
-                    type(net_err).__name__, url, backoff, attempt + 1, self.max_retries
-                )
+                if attempt == 0:
+                    backoff = random.uniform(0.08, 0.20)
+                    logger.debug(
+                        "Transient connection reset (%s) on %s; immediately retrying on fresh connection in %.2fs",
+                        type(net_err).__name__, url, backoff
+                    )
+                else:
+                    backoff = min(30.0, (1.5 ** attempt) + random.uniform(0.2, 0.5))
+                    logger.warning(
+                        "Transient network drop (%s) for %s; retrying in %.2fs (attempt %d/%d)",
+                        type(net_err).__name__, url, backoff, attempt + 1, self.max_retries
+                    )
                 interruptible_sleep(backoff, sleep_fn=time.sleep)
                 continue
 

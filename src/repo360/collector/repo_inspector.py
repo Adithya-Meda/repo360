@@ -830,7 +830,11 @@ class RepoInspector:
         if _is_enabled("environment_protection_gates"):
             tasks.append(lambda: self.get_environments(org, repo))
 
-        if len(tasks) <= 1:
+        is_in_outer_pool = (
+            threading.current_thread().name.startswith("audit-worker")
+            or threading.active_count() > 8
+        )
+        if len(tasks) <= 1 or is_in_outer_pool:
             for fn in tasks:
                 try:
                     fn()
@@ -847,8 +851,8 @@ class RepoInspector:
         map_concurrent(
             tasks,
             _safe_run,
-            max_workers=min(6, len(tasks)),
-            max_cap=6,
+            max_workers=min(4, len(tasks)),
+            max_cap=4,
             thread_name_prefix="repo-prefetch",
         )
 
