@@ -782,7 +782,7 @@ def _prompt_setup_mode() -> str:
 
 
 _DEFAULT_MODELS_BY_PROVIDER: dict[str, str] = {
-    "gemini": "gemini-2.5-flash",
+    "gemini": "gemini-flash-latest",
     "openai": "gpt-4o-mini",
     "anthropic": "claude-3-5-haiku-20241022",
 }

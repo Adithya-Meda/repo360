@@ -116,6 +116,7 @@ class AIEngine:
 
         self.init_error: Optional[str] = None
         self.model_name = (model_name or "").strip()
+        self.configured_model = self.model_name
         self.enabled = enabled and bool(self.api_key) and bool(self.model_name)
         if enabled and bool(self.api_key) and not self.model_name:
             self.init_error = "No AI model selected. Model must be explicitly configured."
@@ -355,10 +356,18 @@ class AIEngine:
                     kwargs["config"] = self._gen_config
 
                 self._client.models.generate_content(**kwargs)
-                if candidate != self.model_name:
+                if candidate != self.configured_model:
+                    reason_desc = (
+                        "Google API HTTP 503 high demand spike"
+                        if ("503" in last_error or "UNAVAILABLE" in last_error)
+                        else "rate limit / quota reached"
+                        if ("429" in last_error or "RESOURCE_EXHAUSTED" in last_error)
+                        else "model unavailable"
+                    )
                     logger.info(
-                        "Primary model '%s' unavailable. Seamlessly fell back to '%s'.",
-                        self.model_name,
+                        "Primary model '%s' temporarily unavailable (%s). Seamlessly fell back to '%s'.",
+                        self.configured_model,
+                        reason_desc,
                         candidate,
                     )
                     self.model_name = candidate
@@ -1380,11 +1389,19 @@ def init_ai_engine(
         )
         is_ok, reason = ai_engine.verify_connection()
         if is_ok:
-            active_log.info(
-                "AI Remediation Engine: ONLINE (%s: %s - Authenticated)",
-                ai_engine.provider.upper(),
-                ai_engine.model_name,
-            )
+            if getattr(ai_engine, "configured_model", "") and ai_engine.configured_model != ai_engine.model_name:
+                active_log.info(
+                    "AI Remediation Engine: ONLINE (%s: %s - Authenticated, fallback from '%s')",
+                    ai_engine.provider.upper(),
+                    ai_engine.model_name,
+                    ai_engine.configured_model,
+                )
+            else:
+                active_log.info(
+                    "AI Remediation Engine: ONLINE (%s: %s - Authenticated)",
+                    ai_engine.provider.upper(),
+                    ai_engine.model_name,
+                )
         else:
             ai_engine.enabled = False
             active_log.warning(
