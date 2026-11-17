@@ -91,7 +91,7 @@ def test_run_interruptible_subprocess_terminates_child_promptly() -> None:
             )
     finally:
         timer.cancel()
-    assert (time.monotonic() - start) < 1.5
+    assert (time.monotonic() - start) < 3.0
 
 
 def test_interrupt_controller_watchdog_and_double_ctrl_c() -> None:

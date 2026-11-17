@@ -613,7 +613,6 @@ def _run_health_cli() -> int:
     version_meta = {
         "version": install_details.get("version"),
         "installed_commit": install_details.get("commit_short"),
-        "commit_source": install_details.get("commit_source"),
     }
 
     creds = resolve_runtime_credentials()
@@ -628,8 +627,11 @@ def _run_health_cli() -> int:
             private_key=private_key,
             api_base_url=creds.get("api_base_url", "https://api.github.com"),
         )
-        installs = auth.discover_installations()
-        ai_eng = init_ai_engine()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            fut_installs = executor.submit(auth.discover_installations)
+            fut_ai = executor.submit(init_ai_engine)
+            installs = fut_installs.result()
+            ai_eng = fut_ai.result()
         health_data = {
             "status": "HEALTHY" if installs else "DEGRADED",
             "app_id": app_id,

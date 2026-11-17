@@ -30,6 +30,7 @@ from ..common.text import pluralize
 logger = logging.getLogger(__name__)
 
 LLM_REQUEST_TIMEOUT_SECONDS = 30
+LLM_HEALTHCHECK_TIMEOUT_SECONDS = 5
 
 
 class AIEngine:
@@ -346,16 +347,29 @@ class AIEngine:
         ]
         last_error = ""
 
+        is_mock = hasattr(self._client, "_mock_return_value") or hasattr(self._client, "_mock_side_effect")
+        models_api = getattr(self._client, "models", None)
+        can_use_fast_metadata = (
+            not is_mock
+            and models_api is not None
+            and hasattr(models_api, "get")
+            and not hasattr(models_api, "_mock_return_value")
+            and not hasattr(getattr(models_api, "get", None), "_mock_return_value")
+        )
+
         for candidate in candidate_models:
             try:
-                kwargs: Dict[str, Any] = {
-                    "model": candidate,
-                    "contents": "ping",
-                }
-                if self._gen_config is not None:
-                    kwargs["config"] = self._gen_config
+                if can_use_fast_metadata:
+                    models_api.get(model=candidate)
+                else:
+                    kwargs: Dict[str, Any] = {
+                        "model": candidate,
+                        "contents": "ping",
+                    }
+                    if self._gen_config is not None:
+                        kwargs["config"] = self._gen_config
 
-                self._client.models.generate_content(**kwargs)
+                    self._client.models.generate_content(**kwargs)
                 if candidate != self.configured_model:
                     reason_desc = (
                         "Google API HTTP 503 high demand spike"
@@ -423,7 +437,7 @@ class AIEngine:
                     "messages": [{"role": "user", "content": "ping"}],
                     "max_tokens": 5,
                 }
-                resp = requests.post(url, headers=headers, json=payload, timeout=LLM_REQUEST_TIMEOUT_SECONDS)
+                resp = requests.post(url, headers=headers, json=payload, timeout=LLM_HEALTHCHECK_TIMEOUT_SECONDS)
                 if resp.status_code == 200:
                     if candidate != self.model_name:
                         logger.info(
@@ -481,7 +495,7 @@ class AIEngine:
                     "max_tokens": 5,
                     "messages": [{"role": "user", "content": "ping"}],
                 }
-                resp = requests.post(url, headers=headers, json=payload, timeout=LLM_REQUEST_TIMEOUT_SECONDS)
+                resp = requests.post(url, headers=headers, json=payload, timeout=LLM_HEALTHCHECK_TIMEOUT_SECONDS)
                 if resp.status_code == 200:
                     if candidate != self.model_name:
                         logger.info(

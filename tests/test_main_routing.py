@@ -321,7 +321,7 @@ def test_main_route_health_includes_commit_metadata(monkeypatch, capsys) -> None
     assert payload["status"] == "HEALTHY"
     assert payload["version"] == "1.0.0"
     assert payload["installed_commit"] == "cdfeb814"
-    assert payload["commit_source"] == "direct_url.json"
+    assert "commit_source" not in payload
 
 
 def test_main_route_uninstall_only(monkeypatch) -> None:
