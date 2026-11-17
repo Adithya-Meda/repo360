@@ -392,6 +392,33 @@ class RepoInspector:
                         f"GraphQL SAML SSO lookup denied: {err_msg}",
                     )
                     return {"error_403": True}
+            if isinstance(org_node, dict) and (org_node.get("samlIdentityProvider") or {}).get("ssoUrl"):
+                return org_node
+
+            # Fallback for Enterprise Cloud / EMU where SAML SSO is enforced at the enterprise level
+            try:
+                cred_resp = self.client._send("GET", f"/orgs/{org}/credential-authorizations", allow_404=True)
+                if cred_resp.status_code == 200:
+                    creds_data = cred_resp.json() if isinstance(cred_resp.json(), list) else []
+                    result = dict(org_node) if isinstance(org_node, dict) else {}
+                    result["samlIdentityProvider"] = {
+                        "ssoUrl": "Enforced via Enterprise / Organization SAML SSO",
+                    }
+                    result["credential_authorizations_count"] = len(creds_data)
+                    result["enforced_by"] = "credential_authorizations"
+                    return result
+                if cred_resp.status_code in (401, 403, 404):
+                    scim_resp = self.client._send("GET", f"/scim/v2/organizations/{org}/Users", allow_404=True)
+                    if scim_resp.status_code == 403 and "enterprise account" in (scim_resp.text or "").lower():
+                        result = dict(org_node) if isinstance(org_node, dict) else {}
+                        result["samlIdentityProvider"] = {
+                            "ssoUrl": "Enforced via Parent Enterprise Account",
+                        }
+                        result["enforced_by"] = "enterprise_account"
+                        return result
+            except Exception as rest_err:
+                logger.debug("REST SAML credential check skipped for %s: %s", org, rest_err)
+
             if isinstance(org_node, dict):
                 return org_node
             return None

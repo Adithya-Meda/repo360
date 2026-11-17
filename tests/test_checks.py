@@ -151,6 +151,23 @@ def test_org_saml_sso_enforcement_check() -> None:
     inspector.get_org_saml_sso.return_value = {"samlIdentityProvider": None, "requiresTwoFactorAuthentication": None}
     assert check.evaluate(inspector, "org", {}).status == CheckStatus.SKIPPED
 
+    inspector.get_org_saml_sso.return_value = {
+        "samlIdentityProvider": {"ssoUrl": "Enforced via Parent Enterprise Account"},
+        "enforced_by": "enterprise_account",
+    }
+    res_ent = check.evaluate(inspector, "org", {})
+    assert res_ent.status == CheckStatus.PASS
+    assert "Enterprise account" in res_ent.current_state
+
+    inspector.get_org_saml_sso.return_value = {
+        "samlIdentityProvider": {"ssoUrl": "Enforced via Enterprise / Organization SAML SSO"},
+        "credential_authorizations_count": 30,
+        "enforced_by": "credential_authorizations",
+    }
+    res_creds = check.evaluate(inspector, "org", {})
+    assert res_creds.status == CheckStatus.PASS
+    assert "30 authorized SAML credentials" in res_creds.current_state
+
 
 def test_codeowners_check_variations() -> None:
     inspector = MagicMock()

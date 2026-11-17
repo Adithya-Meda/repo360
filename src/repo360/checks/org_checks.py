@@ -427,6 +427,14 @@ class OrgSamlSsoEnforcementCheck(BaseCheck):
 
         idp = saml_info.get("samlIdentityProvider") or {}
         if isinstance(idp, dict) and idp.get("ssoUrl"):
+            enforced_by = saml_info.get("enforced_by")
+            auth_count = saml_info.get("credential_authorizations_count")
+            if enforced_by == "enterprise_account":
+                state = "Organization SAML Single Sign-On (SSO) is active (enforced via Enterprise account)."
+            elif enforced_by == "credential_authorizations" and auth_count:
+                state = f"Organization SAML Single Sign-On (SSO) is active ({pluralize(auth_count, 'authorized SAML credential', include_count=True)} verified)."
+            else:
+                state = "Organization SAML Single Sign-On (SSO) identity provider is active."
             return CheckResult(
                 check_id=self.check_id,
                 check_name=self.check_name,
@@ -436,7 +444,7 @@ class OrgSamlSsoEnforcementCheck(BaseCheck):
                 severity=self.severity,
                 org_name=org,
                 repo_name="Organization-Wide",
-                current_state="Organization SAML Single Sign-On (SSO) identity provider is active.",
+                current_state=state,
                 recommended_state="Maintain SAML SSO enforcement and periodic SCIM/access reviews.",
                 explanation="SAML SSO centralizes authentication, enforces corporate IdP policies, and revokes GitHub org access upon offboarding.",
                 documentation_url=doc_url,
