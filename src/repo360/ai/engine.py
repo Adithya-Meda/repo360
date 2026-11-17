@@ -162,7 +162,7 @@ class AIEngine:
                     logger.info("AI Engine initialized using Gemini (model: %s)", self.model_name)
                 except ModuleNotFoundError as err:
                     if "google" in str(err).lower():
-                        msg = "google-genai is not installed (run 'pipx inject repo360 google-genai' or 'pip install repo360[ai]')"
+                        msg = "google-genai is not installed (run 'pip install google-genai')"
                         logger.warning("Could not initialize Google GenAI client: %s. Falling back to deterministic mode.", msg)
                         self.init_error = msg
                     else:
