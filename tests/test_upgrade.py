@@ -478,6 +478,7 @@ def test_get_upgrade_commands_pip_includes_isolated_fallback() -> None:
         assert "--no-cache-dir" in pip_iso_cmd
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows binary staging is Windows-specific")
 def test_windows_binaries_staging_restores_missing_exe_even_on_noop_success(tmp_path: Path) -> None:
     exe = tmp_path / "repo360.exe"
     other = tmp_path / "other.exe"
@@ -498,6 +499,7 @@ def test_windows_binaries_staging_restores_missing_exe_even_on_noop_success(tmp_
     assert not staged_path.exists()
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows binary staging is Windows-specific")
 def test_windows_binaries_restore_cleans_backup_when_new_exe_exists(tmp_path: Path) -> None:
     exe = tmp_path / "repo360.exe"
     exe.write_bytes(b"old-binary")

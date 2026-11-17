@@ -100,27 +100,37 @@ def test_interrupt_controller_watchdog_and_double_ctrl_c() -> None:
     ctrl = InterruptController(grace_seconds=0.2, exit_fn=lambda code: exit_calls.append(code))
     closable_session = MagicMock(spec=["close"])
     closable_server = MagicMock(spec=["server_close"])
+    session_closed = threading.Event()
+    server_closed = threading.Event()
+    closable_session.close.side_effect = session_closed.set
+    closable_server.server_close.side_effect = server_closed.set
     register_closable(closable_session)
     register_closable(closable_server)
 
-    ctrl.trigger(signum=2, from_os_thread=False)
-    assert SHUTDOWN_EVENT.is_set()
-    time.sleep(0.08)
-    assert closable_session.close.called
-    assert closable_server.server_close.called
+    try:
+        with (
+            patch("repo360.common.interrupts.threading.Timer") as timer,
+            patch("repo360.common.interrupts.time.monotonic", side_effect=[100.0, 100.05, 200.0, 200.18]),
+        ):
+            ctrl.trigger(signum=2, from_os_thread=False)
+            assert SHUTDOWN_EVENT.is_set()
+            assert session_closed.wait(timeout=2)
+            assert server_closed.wait(timeout=2)
 
-    ctrl.trigger(signum=2, from_os_thread=False)
-    assert exit_calls == []
+            ctrl.trigger(signum=2, from_os_thread=False)
+            assert exit_calls == []
+            timer.assert_called_once_with(0.2, ctrl._on_watchdog_timeout, args=(130,))
+            timer.return_value.start.assert_called_once()
+            timer.call_args.args[1](*timer.call_args.kwargs["args"])
+            assert exit_calls == [130]
 
-    time.sleep(0.3)
-    assert exit_calls == [130]
-
-    ctrl.reset()
-    exit_calls.clear()
-    ctrl.trigger(signum=2, from_os_thread=False)
-    time.sleep(0.18)
-    ctrl.trigger(signum=2, from_os_thread=False)
-    assert exit_calls == [130]
+            ctrl.reset()
+            exit_calls.clear()
+            ctrl.trigger(signum=2, from_os_thread=False)
+            ctrl.trigger(signum=2, from_os_thread=False)
+            assert exit_calls == [130]
+    finally:
+        ctrl.reset()
 
 
 def test_handle_python_signal_consumes_expected_os_interrupt() -> None:

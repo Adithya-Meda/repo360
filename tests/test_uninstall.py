@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from repo360.credentials import resolve_user_config_dir
 from repo360.uninstall import (
     _is_protected_path,
@@ -191,6 +193,7 @@ def test_run_uninstall_cli_dry_run_and_keep_config_and_abort(tmp_path: Path, mon
         assert "Repo360 Uninstall Summary:" not in out_yes
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Requires Windows subprocess startup APIs")
 def test_spawn_windows_deferred_uninstall_creates_helper_and_spawns(tmp_path: Path) -> None:
     """Verify deferred Windows helper passes exact paths via argv without shell interpolation."""
     mock_venv = tmp_path / "pipx" / "venvs" / "repo360"
@@ -249,6 +252,7 @@ def test_find_pipx_venv_dir_supports_env_and_macos_paths(tmp_path: Path, monkeyp
         assert _find_pipx_venv_dir(None) == mac_venv
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Requires Windows executable discovery")
 def test_find_external_python_prefers_pythonw_on_windows(tmp_path: Path, monkeypatch) -> None:
     """Ensure _find_external_python prefers pythonw.exe over python.exe on Windows for windowless execution."""
     from repo360.uninstall import _find_external_python
