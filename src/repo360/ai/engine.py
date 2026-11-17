@@ -58,12 +58,14 @@ class AIEngine:
             "gemini-flash-latest",
         ),
         "openai": (
-            "gpt-6-luna",
-            "gpt-6.1-sol",
+            "gpt-4o-mini",
+            "gpt-4o",
+            "gpt-4-turbo",
         ),
         "anthropic": (
-            "claude-haiku-5-5",
-            "claude-sonnet-5-5",
+            "claude-3-5-haiku-20241022",
+            "claude-3-5-sonnet-20241022",
+            "claude-3-haiku-20240307",
         ),
     }
 

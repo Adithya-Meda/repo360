@@ -781,10 +781,17 @@ def _prompt_setup_mode() -> str:
     return "manual" if choice in ("2", "manual", "m") else "auto"
 
 
+_DEFAULT_MODELS_BY_PROVIDER: dict[str, str] = {
+    "gemini": "gemini-2.5-flash",
+    "openai": "gpt-4o-mini",
+    "anthropic": "claude-3-5-haiku-20241022",
+}
+
+
 def _prompt_domain(default_domain: str = "https://github.com") -> str:
     """Prompt for GitHub host URL and normalize it."""
     custom_domain = interruptible_input(
-        f"Enter GitHub Domain [{default_domain}] (press Enter for default, or e.g. https://<enterprise>.ghe.com or https://ghe.company.com): ",
+        f"Enter GitHub Domain [{default_domain}] (press Enter for default): ",
         eof_default="",
     ).strip()
     return _normalize_github_domain(custom_domain or default_domain)
@@ -809,14 +816,15 @@ def _prompt_ai_configuration(default_model: str = "") -> tuple[str, str, str, bo
     llm_provider, env_key_name = _LLM_PROVIDER_MAP.get(
         llm_choice, _LLM_PROVIDER_MAP["1"]
     )
+    suggested_model = default_model or _DEFAULT_MODELS_BY_PROVIDER.get(llm_provider, "")
     llm_api_key = interruptible_input(f"Enter {env_key_name} (press Enter to skip): ", eof_default="").strip()
     prompt_text = (
-        f"Enter {llm_provider.capitalize()} model name [{default_model}]: "
-        if default_model
+        f"Enter {llm_provider.capitalize()} model name [{suggested_model}]: "
+        if suggested_model
         else f"Enter {llm_provider.capitalize()} model name: "
     )
     custom_model = interruptible_input(prompt_text, eof_default="").strip()
-    llm_model = custom_model or default_model
+    llm_model = custom_model or suggested_model
     return llm_provider, llm_model, llm_api_key, bool(llm_model)
 
 
