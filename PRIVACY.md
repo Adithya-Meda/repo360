@@ -1,6 +1,6 @@
 # Privacy Notice & Data Handling Policy
 
-**Last Updated:** November 16, 2026
+**Last Updated:** November 17, 2026
 
 Repo360 is an enterprise platform governance and engineering intelligence tool maintained by Adithya Meda. Because Repo360 interacts with organizational security and audit configurations, this document outlines transparent privacy and data handling practices.
 
@@ -14,20 +14,22 @@ Repo360 is an enterprise platform governance and engineering intelligence tool m
 
 ## 2. Credential & Secret Management
 * **Local Storage Only:** GitHub App credentials, RSA private keys, and configuration files are stored locally under `~/.repo360/`.
-* **File Permissions:** Configuration files and private keys are created with restricted file permissions (`0600` on POSIX systems, user-scoped ACLs on Windows) accessible only to the active user.
+* **File Permissions:** Configuration files and private keys are created with restricted file permissions (`0600` files / `0700` directories on POSIX systems). On Windows they inherit the access control list of your user profile directory, which is private to your account by default.
 * **Non-Persistent Authentication:** GitHub App installation tokens are generated in-memory on demand and are never written to disk or logged.
-* **Redaction in Logs:** All tokens and private keys are redacted from stdout and logging handlers.
+* **Credential Isolation:** Installation tokens are only ever sent to the configured GitHub API host over HTTPS; requests to any other host (including pagination links) are refused.
 
 ---
 
 ## 3. Network & API Destinations
 Repo360 connects exclusively to:
 1. **GitHub REST & GraphQL APIs:**
-   * Target endpoints configured by you: `https://api.github.com`, GitHub Enterprise Cloud (`*.ghe.com`), or GitHub Enterprise Server (GHES).
-   * All API calls are read-only (`GET` requests), requiring minimal read scopes.
+   * Target endpoints configured by you: `https://api.github.com`, GitHub Enterprise Cloud (`*.ghe.com`), or GitHub Enterprise Server (GHES). HTTPS is mandatory.
+   * All operations are read-only. Data is fetched with REST `GET` requests and GraphQL queries (sent as `POST`, as GraphQL requires); the only other `POST` is the GitHub App installation-token exchange. No repository, organization, or settings data is ever modified.
 2. **AI Provider APIs (Optional):**
-   * If and only if `--require-ai yes` is enabled, the tool communicates with your configured AI provider (e.g. Google Gemini API) using your own API key.
-   * Only sanitized metadata (e.g., check name, remediation context) is transmitted. No proprietary source code, credentials, or audit spreadsheets are sent.
+   * If and only if `--require-ai yes` is enabled, the tool communicates with your configured AI provider (Google Gemini, OpenAI, or Anthropic) over HTTPS using your own API key.
+   * Data sent is limited to audit metadata: organization and repository names, check names and findings, detected languages/frameworks, aggregate metrics, and — for push-protection bypass analysis — the secret type, bypassing actor's GitHub login, and the developer's bypass justification text.
+   * Before transmission, every prompt is scanned and common credential formats (GitHub tokens, private keys, cloud/API keys, JWTs, bearer tokens, `password=`/`token=` assignments) are replaced with `[REDACTED_CREDENTIAL]`. Source code and generated spreadsheets are never sent.
+   * Review your AI provider's data retention terms before enabling AI features for regulated organizations.
 
 ---
 

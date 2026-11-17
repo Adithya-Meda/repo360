@@ -14,6 +14,7 @@ from ..activity.reporter import (
     NAVY,
     autofit,
     finalize_sheet,
+    safe_cell,
     section_title,
     write_empty_table,
     write_table,
@@ -205,7 +206,7 @@ def write_runners_workbook(
     curr_row = write_table(summary, 4, ("Metric", "Fleet Aggregate"), kpis) + 2
 
     curr_row = section_title(summary, curr_row, advisory_title)
-    summary.cell(curr_row, 1, advisory_text)
+    summary.cell(curr_row, 1, safe_cell(advisory_text))
     summary.cell(curr_row, 1).font = Font(name="Calibri", size=10, italic=True)
     summary.row_dimensions[curr_row].height = 28
     curr_row += 2

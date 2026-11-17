@@ -1,8 +1,7 @@
-﻿"""Unit and integration tests for Repo360 DORA & Flow Metrics."""
+"""Unit and integration tests for Repo360 DORA & Flow Metrics."""
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-import pytest
 from openpyxl import load_workbook
 
 from repo360.dora.models import (
@@ -230,9 +229,7 @@ from unittest.mock import MagicMock
 import requests
 
 from repo360.dora.models import (
-    compute_composite_tier,
     compute_fleet_dora_summary,
-    get_lttc_tier,
     get_rework_tier,
 )
 from repo360.dora.collector import (
@@ -755,7 +752,6 @@ def test_dora_excludes_in_progress_and_inactive_and_skips_failed_lttc():
         cfg=DORAConfig(lookback_days=90),
     )
 
-    assert metrics.in_progress_deploys == 4
     assert metrics.total_deploys == 3
     assert metrics.successful_deploys == 0
     assert metrics.failed_deploys == 3

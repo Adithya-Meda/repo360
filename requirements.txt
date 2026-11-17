@@ -2,7 +2,9 @@ cryptography>=43.0.0
 PyJWT>=2.9.0
 requests>=2.32.0
 openpyxl>=3.1.2
+lxml>=5.2.0
 urllib3>=2.2.0
 python-dotenv>=1.0.0
 colorama>=0.4.6
+tzdata>=2024.1; sys_platform == "win32"
 

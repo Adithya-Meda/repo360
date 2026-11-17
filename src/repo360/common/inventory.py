@@ -90,10 +90,16 @@ def discover_app_repositories(
 
         try:
             repo_iter = list(client.paginate_enveloped(org_login, "/installation/repositories", "repositories"))
-        except Exception:
+        except Exception as primary_err:
+            logger.debug("Installation repository listing failed for '%s': %s", org_login, primary_err)
             try:
                 repo_iter = list(client.paginate(org_login, f"/orgs/{org_login}/repos", {"type": "all"}))
-            except Exception:
+            except Exception as fallback_err:
+                logger.warning(
+                    "Organization '%s': repository discovery failed (%s); it will be reported with 0 repositories.",
+                    org_login,
+                    fallback_err,
+                )
                 repo_iter = []
 
         for repo_data in repo_iter:
@@ -144,7 +150,6 @@ def discover_app_repositories(
 def resolve_scan_targets(
     auth: Any,
     client: Any,
-    repos_file: Optional[str] = None,
     org_filter: Optional[List[str]] = None,
     include_archived: bool = False,
     include_forks: bool = True,

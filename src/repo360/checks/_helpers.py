@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional
 import requests
 
 from .base import BaseCheck, CheckResult, CheckSeverity, CheckStatus
@@ -54,3 +54,52 @@ def make_permission_skipped_result(
         explanation="Check was marked SKIPPED rather than assuming PASS or FAIL because GitHub denied access to inspect this control.",
         documentation_url=documentation_url,
     )
+
+
+def incomplete_workflow_coverage_result(
+    check: BaseCheck,
+    org: str,
+    repo: str,
+    inspected: int,
+    unreadable: List[str],
+    documentation_url: str,
+) -> Optional[CheckResult]:
+    """Return SKIPPED/WARN when workflow files could not be read, so partial coverage never reports PASS."""
+    if not unreadable:
+        return None
+    if inspected == 0:
+        return make_permission_skipped_result(
+            check,
+            org,
+            f"workflow file contents could not be read ({', '.join(unreadable[:3])}).",
+            documentation_url,
+            repo=repo,
+        )
+    return CheckResult(
+        check_id=check.check_id,
+        check_name=check.check_name,
+        persona=check.persona,
+        category=check.category,
+        status=CheckStatus.WARN,
+        severity=check.severity,
+        org_name=org,
+        repo_name=repo,
+        current_state=(
+            f"No issues in {inspected} inspected workflow(s), but {len(unreadable)} could not be read: "
+            f"{', '.join(unreadable[:3])}"
+        ),
+        recommended_state="Ensure the GitHub App has 'contents: read' so every workflow can be audited.",
+        explanation="Compliance cannot be confirmed for workflow files that were not inspected.",
+        documentation_url=documentation_url,
+    )
+
+
+def is_repository_workflow(workflow: Dict[str, Any]) -> bool:
+    """Return True for active workflow files committed under .github/workflows/.
+
+    The Actions API also lists GitHub-managed dynamic workflows (e.g. ``dynamic/pages/...``,
+    Dependabot, CodeQL default setup) and deleted workflows, which have no file to inspect.
+    """
+    path = str(workflow.get("path") or "")
+    state = workflow.get("state")
+    return path.startswith(".github/workflows/") and state in (None, "active")

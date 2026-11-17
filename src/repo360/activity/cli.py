@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..common.timezones import file_timestamp
 from ..auth.github_app_auth import GitHubAppAuth
 from ..common.cli import add_common_scan_arguments, parse_days_in_year_arg
 from ..common.client import ResilientGitHubClient
@@ -153,7 +154,7 @@ def run_activity_cli(argv: Optional[List[str]] = None) -> int:
 
     end = datetime.now(timezone.utc)
     since = datetime(1970, 1, 1, tzinfo=timezone.utc) if cfg.lookback_days == 0 else end - timedelta(days=cfg.lookback_days)
-    stamp = end.strftime("%Y%m%d_%H%M%S")
+    stamp = file_timestamp(end)
 
     targets: List[Tuple[str, str]] = []
     failures: List[Tuple[str, str]] = []
@@ -178,9 +179,11 @@ def run_activity_cli(argv: Optional[List[str]] = None) -> int:
     )
     orgs = sorted(set(discovered_orgs) | {org for org, _ in targets}, key=str.lower)
 
-    if not targets and not orgs:
-        print("\033[91m[FAIL] No repositories or organizations discovered to analyze.\033[0m\n")
-        return 1
+    if not targets:
+        print(
+            "\033[93m[WARN]\033[0m No accessible repositories discovered; the report will contain organization-level data only. "
+            "Check the GitHub App's repository access settings."
+        )
 
     print(f"\033[96m[INFO]\033[0m Scanning {pluralize(len(targets), 'repository', 'repositories', include_count=True)} across {pluralize(len(orgs), 'organization', include_count=True)}...")
 
@@ -236,7 +239,7 @@ def run_activity_cli(argv: Optional[List[str]] = None) -> int:
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
 
-    print(f"\033[96m[INFO]\033[0m Fetching organization members and teams...")
+    print("\033[96m[INFO]\033[0m Fetching organization members and teams...")
     members = fetch_members(client, orgs, cfg.exclude_bots, failures)
     teams_by_user, org_team_complete = fetch_team_access(
         client, orgs, cfg.exclude_bots

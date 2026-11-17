@@ -7,18 +7,44 @@ for GitHub organizations without leaking credentials.
 from __future__ import annotations
 
 import base64
+import contextlib
 import email.utils
 import logging
 import os
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
+
 import jwt
 import requests
 
+from .. import __version__
 from ..common.interrupts import interruptible_sleep, is_shutting_down
 
 logger = logging.getLogger(__name__)
+
+USER_AGENT = f"Repo360/{__version__}"
+DEFAULT_HTTP_TIMEOUT_SECONDS = 30
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def validate_api_base_url(api_base_url: str) -> str:
+    """Return a normalized API base URL, rejecting non-HTTPS endpoints that would expose tokens.
+
+    Plain HTTP is only tolerated for loopback hosts (local test doubles).
+    """
+    cleaned = (api_base_url or "").strip().rstrip("/")
+    parsed = urlparse(cleaned)
+    if not parsed.netloc or parsed.scheme not in ("https", "http"):
+        raise ValueError(f"Invalid GitHub API base URL: {api_base_url!r}")
+    if parsed.scheme == "http" and (parsed.hostname or "") not in _LOOPBACK_HOSTS:
+        raise ValueError(
+            f"Refusing insecure GitHub API base URL {cleaned!r}: HTTPS is required to protect credentials."
+        )
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("GitHub API base URL must not contain credentials, query strings, or fragments.")
+    return cleaned
 
 
 def _request_with_retry(
@@ -29,19 +55,18 @@ def _request_with_retry(
     **kwargs: Any,
 ) -> requests.Response:
     """Execute an HTTP request with automatic retries on transient network/connection drops."""
+    timeout = kwargs.pop("timeout", DEFAULT_HTTP_TIMEOUT_SECONDS)
     last_err: Optional[Exception] = None
     for attempt in range(1, max_retries + 1):
         if is_shutting_down():
             raise KeyboardInterrupt
         try:
-            if method.lower() == "get":
-                return requests.get(url, **kwargs)
-            elif method.lower() == "post":
-                return requests.post(url, **kwargs)
-            elif method.lower() == "head":
-                return requests.head(url, **kwargs)
-            else:
-                return requests.request(method, url, **kwargs)
+            verb = method.upper()
+            if verb == "GET":
+                return requests.get(url, timeout=timeout, **kwargs)
+            if verb == "POST":
+                return requests.post(url, timeout=timeout, **kwargs)
+            return requests.request(verb, url, timeout=timeout, **kwargs)
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as err:
             last_err = err
             if attempt < max_retries:
@@ -82,24 +107,18 @@ class GitHubAppAuth:
         """
         self.app_id = int(app_id) if str(app_id).isdigit() else str(app_id)
         self.installation_id = int(installation_id) if installation_id else None
-        self.api_base_url = api_base_url.rstrip("/")
+        self.api_base_url = validate_api_base_url(api_base_url)
         self._private_key_pem = self._load_private_key(private_key)
         self._token_cache: Dict[int, Tuple[str, float]] = {}
         self._token_lock = threading.RLock()
+        self._discovery_lock = threading.Lock()
         self._org_to_installation: Dict[str, int] = {}
         self._installations_cache: Optional[List[Dict[str, Any]]] = None
-        self._cached_token: Optional[str] = None
-        self._token_expires_at: float = 0.0
         self._clock_skew: float = self._calculate_clock_skew()
 
     def set_installation_id(self, installation_id: int | str) -> None:
         """Set or update the active installation ID."""
         self.installation_id = int(installation_id)
-        if self.installation_id in self._token_cache:
-            self._cached_token, self._token_expires_at = self._token_cache[self.installation_id]
-        else:
-            self._cached_token = None
-            self._token_expires_at = 0.0
 
     def discover_installations(self, force_refresh: bool = False) -> List[Dict[str, Any]]:
         """List all active installations of this GitHub App across organizations using JWT auth.
@@ -109,33 +128,44 @@ class GitHubAppAuth:
 
         Returns:
             List of installation dictionaries from GitHub API.
+
+        Raises:
+            RuntimeError: If GitHub rejects the App credentials or the inventory cannot be retrieved.
         """
-        if not force_refresh and self._installations_cache is not None:
-            return self._installations_cache
+        with self._discovery_lock:
+            if not force_refresh and self._installations_cache is not None:
+                return self._installations_cache
 
-        jwt_token = self.generate_jwt()
-        endpoint = f"{self.api_base_url}/app/installations"
-        headers = {
-            "Authorization": f"Bearer {jwt_token}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "Repo360-Platform/1.0",
-        }
+            endpoint = f"{self.api_base_url}/app/installations"
+            headers = {
+                "Authorization": f"Bearer {self.generate_jwt()}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+                "User-Agent": USER_AGENT,
+            }
 
-        all_installations: List[Dict[str, Any]] = []
-        page = 1
-        per_page = 100
+            all_installations: List[Dict[str, Any]] = []
+            page = 1
+            per_page = 100
 
-        while True:
-            try:
-                response = _request_with_retry(
-                    "GET",
-                    endpoint,
-                    headers=headers,
-                    params={"per_page": per_page, "page": page},
-                    timeout=15,
-                )
-                response.raise_for_status()
+            while True:
+                try:
+                    response = _request_with_retry(
+                        "GET",
+                        endpoint,
+                        headers=headers,
+                        params={"per_page": per_page, "page": page},
+                        timeout=15,
+                    )
+                    response.raise_for_status()
+                except requests.exceptions.RequestException as err:
+                    status = getattr(getattr(err, "response", None), "status_code", None)
+                    if status in (401, 403, 404):
+                        raise RuntimeError(
+                            f"GitHub rejected the App credentials (HTTP {status}) while listing installations. "
+                            "Verify the App ID, private key, and API base URL, then run 'repo360 health'."
+                        ) from err
+                    raise RuntimeError(f"Failed to list GitHub App installations (page {page}): {err}") from err
                 data = response.json()
                 if not isinstance(data, list) or not data:
                     break
@@ -143,18 +173,15 @@ class GitHubAppAuth:
                 if len(data) < per_page:
                     break
                 page += 1
-            except Exception as err:
-                logger.error("Failed to list GitHub App installations (page %d): %s", page, err)
-                break
 
-        for inst in all_installations:
-            login = inst.get("account", {}).get("login", "")
-            inst_id = inst.get("id")
-            if login and inst_id:
-                self._org_to_installation[login.lower()] = int(inst_id)
+            for inst in all_installations:
+                login = inst.get("account", {}).get("login", "")
+                inst_id = inst.get("id")
+                if login and inst_id:
+                    self._org_to_installation[login.lower()] = int(inst_id)
 
-        self._installations_cache = all_installations
-        return all_installations
+            self._installations_cache = all_installations
+            return all_installations
 
     def get_installation_id_for_org(self, org: str) -> Optional[int]:
         """Look up the installation ID for a specific organization login.
@@ -218,14 +245,12 @@ class GitHubAppAuth:
         else:
             content = key_input.strip()
 
-        # CI/CD secrets often supply base64-encoded PEM keys
+        # CI/CD secrets often supply base64-encoded PEM keys; a non-base64 value simply falls through to validation
         if not content.startswith("-----BEGIN"):
-            try:
-                decoded = base64.b64decode(content).decode("utf-8").strip()
+            with contextlib.suppress(ValueError):
+                decoded = base64.b64decode(content, validate=False).decode("utf-8").strip()
                 if decoded.startswith("-----BEGIN"):
                     content = decoded
-            except Exception:
-                pass
 
         if "-----BEGIN" not in content or "PRIVATE KEY-----" not in content:
             raise ValueError(
@@ -311,7 +336,7 @@ class GitHubAppAuth:
                 "Authorization": f"Bearer {jwt_token}",
                 "Accept": "application/vnd.github+json",
                 "X-GitHub-Api-Version": "2022-11-28",
-                "User-Agent": "Repo360-Platform/1.0",
+                "User-Agent": USER_AGENT,
             }
 
             try:
@@ -323,16 +348,14 @@ class GitHubAppAuth:
 
                 self._token_cache[target_id] = (new_token, expires_at)
 
-                if self.installation_id == target_id or self.installation_id is None:
+                if self.installation_id is None:
                     self.installation_id = target_id
-                    self._cached_token = new_token
-                    self._token_expires_at = expires_at
 
                 return new_token
             except requests.exceptions.RequestException as err:
                 details = ""
                 if getattr(err, "response", None) is not None:
-                    details = f" - Details: {err.response.text}"
+                    details = f" - Details: {err.response.text[:300]}"
                 logger.error(
                     "Failed to obtain installation token for App ID %s and Installation ID %s%s",
                     self.app_id,
@@ -365,7 +388,7 @@ class GitHubAppAuth:
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "Repo360-Platform/1.0",
+            "User-Agent": USER_AGENT,
         }
 
     def __repr__(self) -> str:

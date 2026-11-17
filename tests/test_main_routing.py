@@ -204,31 +204,10 @@ def test_repo_inspector_seed_repo_metadata():
     assert mock_client.get.call_count == 0
 
 
-def test_client_rate_limit_adaptive_delay_healthy():
-    """Verify that client executes with zero delay when rate limit quota is healthy (>=1000)."""
-    from repo360.collector.client import Repo360Client
-
-    mock_auth = MagicMock()
-    mock_auth.api_base_url = "https://api.github.com"
-    client = Repo360Client(auth=mock_auth, adaptive_delay_ms=20)
-
-    mock_resp = MagicMock()
-    mock_resp.headers = {
-        "x-ratelimit-remaining": "4500",
-        "x-ratelimit-limit": "5000",
-        "x-ratelimit-reset": "1900000000",
-    }
-
-    with patch("time.sleep") as mock_sleep:
-        client._handle_rate_limit(mock_resp)
-        assert mock_sleep.call_count == 0
-
-
 def test_run_audit_parallel_ai_enrichment_decoupled():
     """Verify that AI recommendations are dispatched and synthesized asynchronously without blocking repo audits."""
     from repo360.main import run_audit
     from repo360.validator import RepoTarget
-    from repo360.checks.base import CheckResult, CheckStatus
 
     mock_inspector = MagicMock()
     mock_inspector.detect_tech_stack.return_value = {"languages": ["Python"]}

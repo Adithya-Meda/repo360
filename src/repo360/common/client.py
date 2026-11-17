@@ -7,18 +7,19 @@ import random
 import threading
 import time
 from email.utils import parsedate_to_datetime
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, Dict, Iterator, Optional, Set
 from urllib.parse import urlparse
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from ..auth.github_app_auth import GitHubAppAuth
+from ..auth.github_app_auth import USER_AGENT, GitHubAppAuth
 from .interrupts import _ORIG_TIME_SLEEP, interruptible_sleep, is_shutting_down, register_closable
 
 logger = logging.getLogger("repo360.client")
 EMPTY_RESOURCE_STATUSES = frozenset({409, 410})
+_SECONDARY_LIMIT_MARKERS = ("secondary rate limit", "abuse detection", "please wait")
 
 
 class ResilientGitHubClient:
@@ -32,7 +33,6 @@ class ResilientGitHubClient:
         rate_limit_buffer: int = 25,
         inter_request_delay_seconds: float = 0.0,
         max_rate_limit_wait_seconds: int = 3600,
-        adaptive_delay_ms: int = 20,
     ) -> None:
         self.auth = auth
         self.api_base_url = auth.api_base_url.rstrip("/")
@@ -42,13 +42,7 @@ class ResilientGitHubClient:
         self.max_retries = max(max_retries, 5)
         self.rate_limit_buffer = rate_limit_buffer
         self.inter_request_delay_seconds = inter_request_delay_seconds
-        self.adaptive_delay_ms = adaptive_delay_ms
         self.max_rate_limit_wait_seconds = max_rate_limit_wait_seconds
-
-        self.total_api_calls: int = 0
-        self.rate_limit_remaining: Optional[int] = None
-        self.rate_limit_reset: Optional[int] = None
-        self.rate_limit_limit: Optional[int] = None
 
         self._local = threading.local()
         self._rate_limit_lock = threading.Lock()
@@ -57,56 +51,8 @@ class ResilientGitHubClient:
         self._org_remaining: Dict[str, int] = {}
         self._org_reset: Dict[str, float] = {}
         self._org_last_request_time: Dict[str, float] = {}
-        self._last_request_time: float = 0.0
         self._last_rate_limit_warn_time: Dict[str, float] = {}
         self._last_rate_limit_heartbeat_time: Dict[str, float] = {}
-
-    def _handle_rate_limit(self, response: requests.Response, org: Optional[str] = None) -> None:
-        """Inspect and log rate limit headers with per-org active pacing."""
-        org_key = org.strip().lower() if isinstance(org, str) and org.strip() else None
-        with self._rate_limit_lock:
-            self.total_api_calls += 1
-            remaining_str = response.headers.get("x-ratelimit-remaining") or response.headers.get("X-RateLimit-Remaining")
-            reset_str = response.headers.get("x-ratelimit-reset") or response.headers.get("X-RateLimit-Reset")
-            limit_str = response.headers.get("x-ratelimit-limit") or response.headers.get("X-RateLimit-Limit")
-
-            if remaining_str is not None and str(remaining_str).isdigit():
-                parsed_rem = int(remaining_str)
-                self.rate_limit_remaining = parsed_rem
-                if org_key:
-                    self._org_remaining[org_key] = parsed_rem
-            if reset_str is not None and str(reset_str).isdigit():
-                parsed_res = int(reset_str)
-                self.rate_limit_reset = parsed_res
-                if org_key:
-                    self._org_reset[org_key] = float(parsed_res)
-            if limit_str is not None and str(limit_str).isdigit():
-                self.rate_limit_limit = int(limit_str)
-
-            rem = self.rate_limit_remaining
-            res = self.rate_limit_reset
-            lim = self.rate_limit_limit
-
-        if rem is not None:
-            if rem <= 5:
-                now = int(time.time())
-                wait_seconds = max(1, (res - now) + 2) if res else 60
-                logger.warning(
-                    "GitHub API primary rate limit critically low (%s/%s remaining). Pausing for %d seconds...",
-                    rem, lim or "unknown", wait_seconds
-                )
-                self._sleep_with_heartbeat(wait_seconds, scope=org or "")
-            elif rem < 100 and rem % 25 == 0:
-                logger.warning(
-                    "GitHub API rate limit capacity: %s / %s calls remaining.",
-                    rem, lim or "unknown"
-                )
-
-        if self.adaptive_delay_ms > 0 and not is_shutting_down():
-            if rem is not None and rem < 500:
-                interruptible_sleep((self.adaptive_delay_ms * 2) / 1000.0, sleep_fn=time.sleep)
-            elif rem is not None and rem < 1000:
-                interruptible_sleep((self.adaptive_delay_ms / 2) / 1000.0, sleep_fn=time.sleep)
 
     @property
     def session(self) -> requests.Session:
@@ -131,7 +77,7 @@ class ResilientGitHubClient:
             session.headers.update({
                 "Accept": "application/vnd.github+json",
                 "X-GitHub-Api-Version": "2022-11-28",
-                "User-Agent": "Repo360-Platform/1.0",
+                "User-Agent": USER_AGENT,
             })
             register_closable(session)
             self._local.session = session
@@ -219,7 +165,6 @@ class ResilientGitHubClient:
                         else:
                             pacing_wait = 0.0
                             self._org_last_request_time[scope_key] = now
-                        self._last_request_time = self._org_last_request_time[scope_key]
                     else:
                         pacing_wait = 0.0
                     break
@@ -231,11 +176,16 @@ class ResilientGitHubClient:
         if pacing_wait > 0.0:
             interruptible_sleep(pacing_wait, sleep_fn=time.sleep)
 
-    def _next_url(self, resp: requests.Response) -> Optional[str]:
-        """Extract next pagination URL, rejecting foreign host redirections."""
+    def _next_url(self, resp: requests.Response, seen: Optional[Set[str]] = None) -> Optional[str]:
+        """Extract next pagination URL, rejecting foreign hosts and stopping on repeated links."""
         url = resp.links.get("next", {}).get("url")
         if url and urlparse(url).netloc != self.host:
             raise RuntimeError(f"Refusing to follow pagination link to foreign host: {urlparse(url).netloc}")
+        if url and seen is not None:
+            if url in seen:
+                logger.warning("Pagination cycle detected at %s; stopping to avoid an endless loop.", urlparse(url).path)
+                return None
+            seen.add(url)
         return url
 
     @staticmethod
@@ -262,17 +212,21 @@ class ResilientGitHubClient:
         json_data: Optional[Dict[str, Any]] = None,
         headers_override: Optional[Dict[str, str]] = None,
         allow_404: bool = False,
-        allow_403: bool = False,
         installation_id: Optional[int | str] = None,
     ) -> requests.Response:
         """Perform request with automatic token resolution, retries, and rate limit handling."""
         if path.startswith("http://") or path.startswith("https://"):
+            if urlparse(path).netloc != self.host:
+                raise RuntimeError(
+                    f"Refusing to send GitHub credentials to foreign host: {urlparse(path).netloc}"
+                )
             url = path
         else:
             url = f"{self.api_base_url}/{path.lstrip('/')}"
 
         target_org = org or self._extract_org_from_path(url)
         org_key = target_org.lower() if target_org else None
+        refreshed_after_401 = False
 
         for attempt in range(self.max_retries + 1):
             if is_shutting_down():
@@ -323,24 +277,18 @@ class ResilientGitHubClient:
 
             rem = resp.headers.get("X-RateLimit-Remaining")
             rst = resp.headers.get("X-RateLimit-Reset")
-            lim = resp.headers.get("X-RateLimit-Limit")
-            with self._rate_limit_lock:
-                self.total_api_calls += 1
-                if rem is not None and rem.isdigit():
-                    self.rate_limit_remaining = int(rem)
-                    if org_key:
+            if org_key and ((rem is not None and rem.isdigit()) or (rst is not None and rst.isdigit())):
+                with self._rate_limit_lock:
+                    if rem is not None and rem.isdigit():
                         self._org_remaining[org_key] = int(rem)
-                if rst is not None and rst.isdigit():
-                    self.rate_limit_reset = int(rst)
-                    if org_key:
+                    if rst is not None and rst.isdigit():
                         self._org_reset[org_key] = float(rst)
-                if lim is not None and lim.isdigit():
-                    self.rate_limit_limit = int(lim)
 
             if resp.status_code in (404, 409, 410) and allow_404:
                 return resp
 
-            if resp.status_code == 401 and attempt < self.max_retries:
+            if resp.status_code == 401 and not refreshed_after_401 and attempt < self.max_retries:
+                refreshed_after_401 = True
                 logger.info("GitHub installation token refreshed on 401 response; retrying...")
                 self.auth.get_installation_token(
                     installation_id=installation_id,
@@ -351,19 +299,13 @@ class ResilientGitHubClient:
 
             wait = self._rate_limit_wait(resp)
             if wait is None:
-                if resp.status_code == 403 and allow_403:
-                    return resp
                 return resp
 
             if attempt == self.max_retries:
                 break
 
-            is_secondary = (
-                resp.status_code == 429
-                or "secondary rate limit" in resp.text.lower()
-                or "abuse detection" in resp.text.lower()
-                or "please wait" in resp.text.lower()
-            )
+            body_lower = resp.text.lower()
+            is_secondary = resp.status_code == 429 or any(m in body_lower for m in _SECONDARY_LIMIT_MARKERS)
             retry_after_hdr = resp.headers.get("Retry-After") or resp.headers.get("retry-after")
             if retry_after_hdr and retry_after_hdr.isdigit():
                 actual_wait = float(int(retry_after_hdr) + 1)
@@ -430,7 +372,7 @@ class ResilientGitHubClient:
         if retry_after and retry_after.isdigit():
             return int(retry_after) + 1
         text = resp.text.lower()
-        if "secondary rate limit" in text or "abuse detection" in text or "please wait" in text:
+        if any(marker in text for marker in _SECONDARY_LIMIT_MARKERS):
             return 60
         if resp.headers.get("X-RateLimit-Remaining") == "0":
             reset = int(resp.headers.get("X-RateLimit-Reset", "0"))
@@ -472,11 +414,8 @@ class ResilientGitHubClient:
             org=target_org,
             params=params,
             allow_404=allow_404,
-            allow_403=allow_403,
             installation_id=installation_id,
         )
-        if resp is None:
-            return None
         if resp.status_code in (404, 409, 410) and allow_404:
             return None
         if resp.status_code == 403 and allow_403:
@@ -484,17 +423,14 @@ class ResilientGitHubClient:
         resp.raise_for_status()
         try:
             return resp.json()
-        except Exception:
+        except ValueError:
             return None
-
-    def get_response(self, org: str, path: str, params: Optional[Dict[str, Any]] = None) -> requests.Response:
-        """Perform authenticated GET request returning raw Response."""
-        return self._send("GET", path, org=org, params=params)
 
     def paginate(self, org: str, path: str, params: Optional[Dict[str, Any]] = None) -> Iterator[Dict[str, Any]]:
         """Paginate through a standard GitHub list endpoint."""
         url: Optional[str] = path
         query: Optional[Dict[str, Any]] = {**(params or {}), "per_page": 100}
+        seen: Set[str] = set()
         while url:
             resp = self._send("GET", url, org=org, params=query)
             if resp.status_code in EMPTY_RESOURCE_STATUSES:
@@ -505,7 +441,7 @@ class ResilientGitHubClient:
                 yield from data
             elif isinstance(data, dict):
                 logger.warning("paginate received dict response from %s instead of list: keys=%s", url, list(data.keys()))
-            url, query = self._next_url(resp), None
+            url, query = self._next_url(resp, seen), None
 
     def paginate_enveloped(
         self, org: str, path: str, envelope_key: str, params: Optional[Dict[str, Any]] = None
@@ -513,6 +449,7 @@ class ResilientGitHubClient:
         """Paginate through an enveloped GitHub endpoint (e.g. runner-groups, workflow_runs)."""
         url: Optional[str] = path
         query: Optional[Dict[str, Any]] = {**(params or {}), "per_page": 100}
+        seen: Set[str] = set()
         while url:
             resp = self._send("GET", url, org=org, params=query)
             if resp.status_code in EMPTY_RESOURCE_STATUSES:
@@ -525,68 +462,7 @@ class ResilientGitHubClient:
                     yield from items
             elif isinstance(data, list):
                 yield from data
-            url, query = self._next_url(resp), None
-
-    def list_paginated(
-        self,
-        path: str,
-        params: Optional[Dict[str, Any]] = None,
-        per_page: int = 100,
-        max_pages: Optional[int] = 250,
-        installation_id: Optional[int | str] = None,
-        org: Optional[str] = None,
-    ) -> list[Any]:
-        """Paginate through a GitHub API list endpoint supporting 10,000+ items."""
-        all_items: list[Any] = []
-        page = 1
-        query_params = dict(params or {})
-        query_params["per_page"] = per_page
-
-        while max_pages is None or page <= max_pages:
-            query_params["page"] = page
-            data = self.get(
-                path,
-                params=query_params,
-                installation_id=installation_id,
-                org=org,
-            )
-            if not data or not isinstance(data, list):
-                break
-            all_items.extend(data)
-            if len(data) < per_page:
-                break
-            page += 1
-
-        return all_items
-
-    def stream_paginated(
-        self,
-        path: str,
-        params: Optional[Dict[str, Any]] = None,
-        per_page: int = 100,
-        installation_id: Optional[int | str] = None,
-        org: Optional[str] = None,
-    ) -> Iterator[Any]:
-        """Stream items page-by-page yielding individual entities in O(1) memory."""
-        page = 1
-        query_params = dict(params or {})
-        query_params["per_page"] = per_page
-
-        while True:
-            query_params["page"] = page
-            data = self.get(
-                path,
-                params=query_params,
-                installation_id=installation_id,
-                org=org,
-            )
-            if not data or not isinstance(data, list):
-                break
-            for item in data:
-                yield item
-            if len(data) < per_page:
-                break
-            page += 1
+            url, query = self._next_url(resp, seen), None
 
     def graphql(
         self,
@@ -624,8 +500,6 @@ class ResilientGitHubClient:
             headers_override=headers,
             installation_id=installation_id,
         )
-        if resp is None:
-            return {}
         resp.raise_for_status()
         data = resp.json()
         if isinstance(data, dict) and "errors" in data and not data.get("data"):

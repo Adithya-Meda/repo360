@@ -1,4 +1,4 @@
-﻿"""Unit tests for Excel report generator."""
+"""Unit tests for Excel report generator."""
 
 import os
 import tempfile
@@ -6,7 +6,7 @@ import openpyxl
 import pytest
 
 from repo360.reporters.excel_reporter import ExcelReporter
-from tests.conftest import create_mock_results
+from repo360.mock_generator import create_mock_results
 from repo360.validator import RepoTarget
 
 
@@ -103,7 +103,6 @@ def test_formula_injection_defense() -> None:
         current_state="-old",
         recommended_state="@calc",
         explanation="=cmd|'/C calc'!A0",
-        remediation_command="-rm -rf /",
         documentation_url="https://example.com",
         org_name="=MALICIOUS_ORG",
         repo_name="@malicious_repo",
@@ -130,7 +129,7 @@ def test_local_timestamp_dd_mm_yyyy_format() -> None:
     from repo360.reporters.base_reporter import BaseReporter
 
     ts = BaseReporter.get_local_timestamp()
-    match = re.match(r"^(\d{2})-(\d{2})-(\d{4})\s+\d{2}:\d{2}:\d{2}(?:\s+[A-Za-z0-9_-]+)?$", ts)
+    match = re.match(r"^(\d{2})-(\d{2})-(\d{4})\s+\d{2}:\d{2}:\d{2}(?:\s+(?:[A-Za-z0-9_-]+|UTC[+-]\d{2}:\d{2}))?$", ts)
     assert match is not None, f"Timestamp '{ts}' does not match DD-MM-YYYY pattern."
     day, month, year = int(match.group(1)), int(match.group(2)), int(match.group(3))
     assert 1 <= day <= 31
@@ -794,3 +793,51 @@ def test_audit_cli_default_no_ai_writes_ai_not_enabled_workbook(monkeypatch, cap
     ]
     assert "AI Executive Risk & Governance Narrative (AI Not Enabled)" in sum_vals
     assert AI_NOT_ENABLED_MESSAGE in sum_vals
+
+
+def test_write_table_truncates_at_excel_row_limit_with_notice(monkeypatch) -> None:
+    """Sheets larger than Excel's row limit must be truncated with a visible notice instead of crashing."""
+    from openpyxl import Workbook
+
+    from repo360.activity import reporter as activity_reporter
+
+    monkeypatch.setattr(activity_reporter, "EXCEL_MAX_ROWS", 10)
+    ws = Workbook().active
+    last = activity_reporter.write_table(ws, 1, ("A", "B"), [[i, f"v{i}"] for i in range(50)])
+
+    assert last == 9
+    assert "42 additional rows omitted" in ws.cell(row=10, column=1).value
+
+
+def test_cell_text_is_clamped_to_excel_limit() -> None:
+    from repo360.activity.reporter import EXCEL_MAX_CELL_CHARS, safe_cell
+    from repo360.reporters.base_reporter import BaseReporter
+
+    huge = "x" * (EXCEL_MAX_CELL_CHARS + 500)
+    for sanitized in (safe_cell(huge), BaseReporter.sanitize_spreadsheet_value(huge)):
+        assert len(sanitized) == EXCEL_MAX_CELL_CHARS
+        assert sanitized.endswith("[truncated]")
+
+
+def test_findings_sheet_truncates_at_excel_row_limit(monkeypatch, tmp_path) -> None:
+    from openpyxl import load_workbook
+
+    from repo360.checks.base import CheckResult, CheckSeverity, CheckStatus, Persona
+    from repo360.reporters import excel_reporter
+
+    monkeypatch.setattr(excel_reporter, "EXCEL_MAX_ROWS", 6)
+    findings = [
+        CheckResult(
+            check_id="dependabot_configuration", check_name="Dependabot", persona=Persona.REPO_ADMIN,
+            category="Security", status=CheckStatus.FAIL, severity=CheckSeverity.HIGH,
+            org_name="org", repo_name=f"repo-{i}", current_state="missing",
+            recommended_state="add", explanation="needed",
+        )
+        for i in range(10)
+    ]
+    out = tmp_path / "r.xlsx"
+    excel_reporter.ExcelReporter().generate(findings, str(out))
+
+    ws = load_workbook(out)["Repo_Admin_Findings"]
+    assert ws.cell(row=5, column=2).value == "repo-3"
+    assert "6 additional findings omitted" in ws.cell(row=6, column=1).value

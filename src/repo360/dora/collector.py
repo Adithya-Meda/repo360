@@ -7,7 +7,7 @@ import re
 import statistics
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote
 
@@ -41,7 +41,6 @@ from .models import (
 logger = logging.getLogger("repo360.dora")
 
 # Explicit word-boundary regexes prevent commit titles or CI check names from masquerading as deploys
-DEPLOY_KEYWORDS = ("deploy", "release", "prod", "publish", "cd", "delivery")
 _DEPLOY_WORKFLOW_RE = re.compile(
     r"(?:^|[\s_\-./\[])(deploy(?:ment|s)?|release|prod(?:uction)?|publish|cd|delivery|rollout)(?:$|[\s_\-./\]])",
     re.IGNORECASE,
@@ -313,6 +312,7 @@ def _collect_repo_deployments_graphql(
     """
     deployments: List[DeploymentRecord] = []
     cursor: Optional[str] = None
+    seen_cursors: Set[str] = set()
     while True:
         data = client.graphql(org, query, {"owner": org, "name": repo, "cursor": cursor})
         if not isinstance(data, dict):
@@ -372,9 +372,11 @@ def _collect_repo_deployments_graphql(
             return deployments
 
         page_info = conn.get("pageInfo") or {}
-        if not page_info.get("hasNextPage"):
+        next_cursor = page_info.get("endCursor")
+        if not page_info.get("hasNextPage") or not next_cursor or next_cursor in seen_cursors:
             break
-        cursor = page_info.get("endCursor")
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
     return deployments
 
 
@@ -446,8 +448,8 @@ def collect_repo_deployments(
             statuses = client.get(org, f"/repos/{org}/{repo}/deployments/{dep_id}/statuses")
             if isinstance(statuses, list):
                 status_state, completed_at = _resolve_deployment_status(statuses)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Optional enrichment lookup skipped: %s", exc)
         return DeploymentRecord(
             event_type="Deployment",
             event_id=dep_id,
@@ -867,7 +869,7 @@ def _collect_incident_issues(
 
     try:
         endpoint = f"/repos/{org}/{repo}/issues"
-        since_str = since.strftime("%Y-%m-%dT%H:%M:%SZ")
+        since_str = since.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         params = {"state": "all", "since": since_str, "sort": "created", "direction": "desc"}
         for issue in client.paginate(org, endpoint, params):
             if "pull_request" in issue:

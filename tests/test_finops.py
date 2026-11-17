@@ -1,9 +1,8 @@
-﻿"""Unit and integration tests for Repo360 FinOps storage & artifact profiling."""
+"""Unit and integration tests for Repo360 FinOps storage & artifact profiling."""
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import MagicMock, patch
-import pytest
+from unittest.mock import MagicMock
 import requests
 from openpyxl import load_workbook
 
@@ -13,22 +12,18 @@ from repo360.finops.models import (
     FinOpsConfig,
     PackageRecord,
     RepoStorageProfile,
-    format_bytes_to_gb,
     format_bytes_to_mb,
 )
 from repo360.finops.collector import (
     build_finops_rows,
     collect_org_packages,
     collect_repo_artifacts,
-    collect_repo_caches,
-    profile_single_repo,
 )
 from repo360.finops.reporter import write_finops_workbook
 
 
 def test_byte_formatters():
     assert format_bytes_to_mb(1024 * 1024 * 50) == 50.0
-    assert format_bytes_to_gb(1024 * 1024 * 1024 * 2) == 2.0
 
 
 def test_artifact_record_properties():
@@ -328,8 +323,6 @@ def test_finops_retention_rounding_precision_lfs_and_billing(tmp_path: Path):
     from repo360.finops.collector import (
         build_billing_rows,
         collect_finops_data,
-        collect_org_billing,
-        collect_org_lfs_usage,
     )
     from repo360.finops.models import format_kb_to_mb
 

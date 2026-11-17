@@ -36,6 +36,9 @@ from .models import (
 )
 
 logger = logging.getLogger("repo360.finops")
+
+# Runaway guard for cursor pagination (cycle detection already stops repeated cursors)
+GRAPHQL_PAGE_SAFETY_LIMIT = 5000
 PACKAGE_TYPES = ("container", "npm", "maven", "rubygems", "docker", "nuget")
 
 
@@ -277,7 +280,7 @@ def collect_org_packages(
         try:
             cursor: Optional[str] = None
             seen_cursors: Set[str] = set()
-            for _ in range(50):
+            for _ in range(GRAPHQL_PAGE_SAFETY_LIMIT):
                 data = client.graphql(org, gql_query, {"org": org, "cursor": cursor})
                 pkgs_conn = (data.get("data") or {}).get("organization", {}).get("packages") or {}
                 nodes = pkgs_conn.get("nodes") or []
@@ -466,11 +469,6 @@ def _parse_lfs_pointer(text: str) -> Optional[Tuple[Optional[str], int]]:
     return oid, int(size_match.group(1))
 
 
-def _parse_lfs_pointer_size(text: str) -> Optional[int]:
-    parsed = _parse_lfs_pointer(text)
-    return parsed[1] if parsed else None
-
-
 def _matches_lfs_pattern(path: str, patterns: List[str]) -> bool:
     norm = path.lstrip("/")
     name = norm.rsplit("/", 1)[-1]
@@ -539,7 +537,7 @@ def collect_org_repo_assets(
     try:
         cursor: Optional[str] = None
         seen: Set[str] = set()
-        for _ in range(100):
+        for _ in range(GRAPHQL_PAGE_SAFETY_LIMIT):
             data = client.graphql(org, gql_repos, {"org": org, "cursor": cursor})
             repos_conn = (data.get("data") or {}).get("organization", {}).get("repositories") or {}
             nodes = repos_conn.get("nodes") or []
@@ -681,17 +679,6 @@ def collect_org_repo_assets(
         except Exception as err:
             logger.debug("Failed inspecting Git LFS tree for %s/%s: %s", org, repo_name, err)
     return lfs_by_repo, releases_by_repo
-
-
-def collect_org_lfs_usage(
-    client: ResilientGitHubClient,
-    org: str,
-    target_repos: Set[str],
-    errors_out: Optional[List[str]] = None,
-) -> Dict[str, List[Tuple[str, int]]]:
-    """Detect Git LFS tracked pointer objects and byte footprints per repository."""
-    lfs_by_repo, _ = collect_org_repo_assets(client, org, target_repos, errors_out=errors_out)
-    return lfs_by_repo
 
 
 def collect_org_retention_days(client: ResilientGitHubClient, org: str) -> Optional[int]:

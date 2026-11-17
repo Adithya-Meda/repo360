@@ -16,11 +16,15 @@ jobs:
     steps:
       - name: "Checkout Repository"
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
 
       - name: "Run Repo360 Action"
         uses: ./
         with:
           app_id: ${{ vars.REPO360_APP_ID }}
           private_key: ${{ secrets.REPO360_APP_PRIVATE_KEY }}
+          collect_audit: "true"
           require_ai: "yes"
           ai_api_key: ${{ secrets.AI_API_KEY }}
+          ai_model: ${{ vars.AI_MODEL }}

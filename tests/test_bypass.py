@@ -1,9 +1,8 @@
-﻿"""Unit and integration tests for Repo360 Push Protection & Ruleset Bypass Ledger."""
+"""Unit and integration tests for Repo360 Push Protection & Ruleset Bypass Ledger."""
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
-import pytest
 import requests
 from openpyxl import load_workbook
 
@@ -20,7 +19,6 @@ from repo360.bypass.collector import (
     collect_repo_push_bypasses,
     collect_repo_ruleset_bypasses,
     profile_repo_bypasses,
-    resolve_ruleset_metadata,
 )
 from repo360.bypass.reporter import write_bypass_workbook
 
@@ -79,7 +77,6 @@ def test_repo_bypass_profile_aggregation():
         )
     )
 
-    assert profile.total_bypasses == 2
     assert profile.unique_actors == {"engineer-a", "engineer-b"}
 
 

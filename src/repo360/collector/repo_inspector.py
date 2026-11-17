@@ -15,6 +15,24 @@ from .client import Repo360Client
 
 logger = logging.getLogger(__name__)
 
+MAX_INSTALLATION_REPO_PAGES = 2000
+
+
+def _dedupe_repositories(repos: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Drop duplicates that offset pagination can return when repositories change mid-listing."""
+    seen: Set[Any] = set()
+    unique: List[Dict[str, Any]] = []
+    for repo in repos:
+        key = repo.get("id") or repo.get("full_name") or repo.get("name")
+        if key is None:
+            unique.append(repo)
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(repo)
+    return unique
+
 
 class RepoInspector:
     """Collects metadata, settings, and file contents from GitHub."""
@@ -397,11 +415,12 @@ class RepoInspector:
         self,
         installation_id: Optional[int | str] = None,
         per_page: int = 100,
-        max_pages: int = 50,
+        max_pages: int = MAX_INSTALLATION_REPO_PAGES,
     ) -> List[Dict[str, Any]]:
         """List all repositories accessible to a specific or current GitHub App installation.
 
         Fetches remaining pages concurrently when page 1 reveals ``total_count > per_page``.
+        ``max_pages`` is a runaway guard (200,000 repositories by default); hitting it is logged.
         """
         first_data = self.client.get(
             "/installation/repositories",
@@ -424,7 +443,15 @@ class RepoInspector:
             return all_repos
 
         if total_count and total_count > len(all_repos):
-            last_page = min(max_pages, math.ceil(total_count / per_page))
+            needed_pages = math.ceil(total_count / per_page)
+            if needed_pages > max_pages:
+                logger.warning(
+                    "Installation exposes %d repositories; only the first %d pages (%d repositories) will be audited.",
+                    total_count,
+                    max_pages,
+                    max_pages * per_page,
+                )
+            last_page = min(max_pages, needed_pages)
             remaining_pages = list(range(2, last_page + 1))
 
             def _fetch_page(p: int) -> List[Dict[str, Any]]:
@@ -447,7 +474,7 @@ class RepoInspector:
             )
             for batch in page_batches:
                 all_repos.extend(batch)
-            return all_repos
+            return _dedupe_repositories(all_repos)
 
         page = 2
         while page <= max_pages:
@@ -466,8 +493,10 @@ class RepoInspector:
             if len(repos) < per_page:
                 break
             page += 1
+        else:
+            logger.warning("Repository listing stopped at the %d-page safety limit; results may be incomplete.", max_pages)
 
-        return all_repos
+        return _dedupe_repositories(all_repos)
 
     def get_repo_metadata(self, org: str, repo: str) -> Optional[Dict[str, Any]]:
         """Fetch repository details with thread-safe caching."""
@@ -805,15 +834,15 @@ class RepoInspector:
             for fn in tasks:
                 try:
                     fn()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Optional enrichment lookup skipped: %s", exc)
             return
 
         def _safe_run(fn: Callable[[], Any]) -> None:
             try:
                 fn()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Optional enrichment lookup skipped: %s", exc)
 
         map_concurrent(
             tasks,

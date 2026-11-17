@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 from repo360.activity.collector import fetch_team_access
-from repo360.bypass.collector import collect_bypass_data, profile_repo_bypasses
+from repo360.bypass.collector import collect_bypass_data
 from repo360.bypass.models import BypassConfig
 from repo360.collector.client import Repo360Client
 from repo360.collector.repo_inspector import RepoInspector
@@ -367,7 +367,6 @@ def test_client_pacing_wait_is_bounded_and_does_not_accumulate():
     org = "test-org"
     client._org_remaining[org.lower()] = 800  # Sets delay to 0.15s
 
-    import time
     with patch("repo360.common.client.interruptible_sleep") as mock_sleep:
         # Simulate 20 rapid calls
         for _ in range(20):

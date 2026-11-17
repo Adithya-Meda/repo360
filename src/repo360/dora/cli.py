@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
+from ..common.timezones import file_timestamp
 from ..auth.github_app_auth import GitHubAppAuth
 from ..common.cli import add_common_scan_arguments
 from ..common.client import ResilientGitHubClient
@@ -228,7 +229,7 @@ def run_dora_cli(argv: Optional[List[str]] = None) -> int:
 
     end = datetime.now(timezone.utc)
     since = datetime(1970, 1, 1, tzinfo=timezone.utc) if cfg.lookback_days == 0 else end - timedelta(days=cfg.lookback_days)
-    stamp = end.strftime("%Y%m%d_%H%M%S")
+    stamp = file_timestamp(end)
 
     org_filter = [o.strip() for o in args.org.split(",") if o.strip()] if args.org else None
     discovered_orgs = discover_app_organizations(auth=auth, org_filter=org_filter)

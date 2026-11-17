@@ -1,4 +1,4 @@
-﻿"""Unit and integration tests for Repo360 Actions self-hosted runners analytics."""
+"""Unit and integration tests for Repo360 Actions self-hosted runners analytics."""
 
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
@@ -26,9 +26,7 @@ def test_runner_job_metrics_calculations():
     m.total_queue_seconds = 250.0
     m.queue_durations = [10.0, 20.0, 40.0, 80.0, 100.0]
 
-    assert m.completed_jobs == 10
     assert m.success_rate == 80.0
-    assert m.failure_rate == 20.0
     assert m.total_compute_hours == 0.33
     assert m.avg_duration_minutes == 4.0
     assert m.min_duration_minutes == 1.0
@@ -42,9 +40,7 @@ def test_runner_job_metrics_calculations():
 
 def test_runner_job_metrics_empty():
     m = RunnerJobMetrics()
-    assert m.completed_jobs == 0
     assert m.success_rate == "N/A"
-    assert m.failure_rate == "N/A"
     assert m.avg_duration_minutes == "N/A"
     assert m.median_duration_minutes == "N/A"
     assert m.min_duration_minutes == "N/A"
@@ -182,10 +178,8 @@ def test_runners_hardened_isolation_ephemeral_and_pooled_metrics(tmp_path):
     since = now - timedelta(days=30)
 
     jm = RunnerJobMetrics(successful_jobs=4, failed_jobs=1, cancelled_jobs=5, total_jobs=10)
-    assert jm.completed_jobs == 10
     assert jm.decisive_jobs == 5
     assert jm.success_rate == 80.0
-    assert jm.failure_rate == 20.0
 
     class _ForbiddenResp:
         status_code = 403

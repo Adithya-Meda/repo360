@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 from collections import Counter, defaultdict
+from copy import copy
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -27,7 +29,7 @@ from .models import (
     ActivityConfig,
 )
 
-FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+logger = logging.getLogger("repo360.reporter")
 NAVY = "1F3864"
 HEADER_FILL = PatternFill("solid", fgColor=NAVY)
 HEADER_FONT = Font(bold=True, color="FFFFFF")
@@ -35,6 +37,8 @@ BAND_FILL = PatternFill("solid", fgColor="F2F2F2")
 THIN = Side(style="thin", color="BFBFBF")
 BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 CENTER = Alignment(horizontal="center", vertical="center")
+LEFT = Alignment(horizontal="left", vertical="center")
+CENTERED_VALUES = frozenset({"Yes", "No", "Unknown", "None", "Complete", "Partial", "N/A", "Online", "Offline", "Idle", "Busy"})
 
 STATUS_STYLES = {
     "Active": ("C6EFCE", "006100"),
@@ -47,9 +51,12 @@ EMPTY_CELL_MESSAGES = {
     "Average Commits per Active Month": "No months",
     f"First Activity ({LOCAL_TZ_NAME})": "No activity",
     f"Last Activity ({LOCAL_TZ_NAME})": "No activity",
-    "First Activity (IST)": "No activity",
-    "Last Activity (IST)": "No activity",
     "Days Since Last Activity": "No activity",
+}
+_EMPTY_CELL_MESSAGE_VALUES = tuple(dict.fromkeys(EMPTY_CELL_MESSAGES.values()))
+STATUS_STYLE_OBJECTS = {
+    status: (PatternFill("solid", fgColor=fill), Font(bold=True, color=font))
+    for status, (fill, font) in STATUS_STYLES.items()
 }
 
 LEFT_HEADERS = {
@@ -91,10 +98,6 @@ CENTER_HEADERS = {
     f"First Activity ({LOCAL_TZ_NAME})",
     f"Last Activity ({LOCAL_TZ_NAME})",
     f"First Seen ({LOCAL_TZ_NAME})",
-    "Created (IST)",
-    "First Activity (IST)",
-    "Last Activity (IST)",
-    "First Seen (IST)",
     "Days Since Last Activity",
     "Average Commits per Active Month",
     "PR Cohort Merge Rate (%)",
@@ -110,11 +113,25 @@ CENTER_HEADERS = {
 }
 
 
+EXCEL_MAX_ROWS = 1_048_576
+EXCEL_MAX_CELL_CHARS = 32_767
+_TRUNCATION_SUFFIX = " ...[truncated]"
+AUTOFIT_SAMPLE_ROWS = 2000
+
+
+def clamp_cell_text(value: str) -> str:
+    """Truncate text to Excel's per-cell character limit so workbooks never open as corrupted."""
+    if len(value) <= EXCEL_MAX_CELL_CHARS:
+        return value
+    return value[: EXCEL_MAX_CELL_CHARS - len(_TRUNCATION_SUFFIX)] + _TRUNCATION_SUFFIX
+
+
 def safe_cell(value: Any, header: Optional[str] = None) -> Any:
-    """Sanitize spreadsheet cell values against formula injection and fill defaults."""
+    """Sanitize spreadsheet cell values against formula injection, enforce Excel's cell size limit, and fill defaults."""
     if (value is None or value == "") and header in EMPTY_CELL_MESSAGES:
         value = EMPTY_CELL_MESSAGES[header]
     if isinstance(value, str):
+        value = clamp_cell_text(value)
         val_strip = value.strip()
         if val_strip in ("-", "--", "---", "N/A", "None", ""):
             return value
@@ -149,6 +166,37 @@ def write_empty_table(ws, top: int, headers: Tuple[str, ...], message: str) -> N
     autofit(ws)
 
 
+class CellStyler:
+    """Apply openpyxl styles through a per-combination cache.
+
+    openpyxl hashes every style object on each assignment, which dominates runtime on
+    large sheets. Each unique (font, fill, border, alignment) combination is resolved once
+    on a real cell and its compact style array is copied onto later cells. Pass long-lived
+    style objects (module or instance constants): the cache is keyed by object identity,
+    and one styler must only be used within a single workbook.
+    """
+
+    def __init__(self) -> None:
+        self._cache: Dict[Tuple[int, int, int, int], Tuple[Any, Tuple[Any, ...]]] = {}
+
+    def apply(self, cell, font=None, fill=None, border=None, alignment=None) -> None:
+        key = (id(font), id(fill), id(border), id(alignment))
+        cached = self._cache.get(key)
+        if cached is not None:
+            cell._style = copy(cached[0])
+            return
+        if font is not None:
+            cell.font = font
+        if fill is not None:
+            cell.fill = fill
+        if border is not None:
+            cell.border = border
+        if alignment is not None:
+            cell.alignment = alignment
+        # Holding the style objects keeps their ids stable for the cache key
+        self._cache[key] = (copy(cell._style), (font, fill, border, alignment))
+
+
 def write_table(
     ws,
     top: int,
@@ -163,35 +211,53 @@ def write_table(
         cell.fill, cell.font, cell.border = HEADER_FILL, HEADER_FONT, BORDER
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
+    capacity = EXCEL_MAX_ROWS - top - 1
+    omitted = 0
+    if len(rows) > capacity:
+        omitted = len(rows) - capacity
+        rows = rows[:capacity]
+        logger.warning(
+            "Sheet '%s' exceeds Excel's row limit; %d rows omitted from the workbook.", ws.title, omitted
+        )
+
+    styler = CellStyler()
     for row_idx, row in enumerate(rows, start=top + 1):
-        banded = (row_idx - top) % 2 == 0
+        band_fill = BAND_FILL if (row_idx - top) % 2 == 0 else None
         for col_idx, value in enumerate(row, start=1):
             header = headers[col_idx - 1] if col_idx - 1 < len(headers) else ""
             cell = ws.cell(row=row_idx, column=col_idx, value=safe_cell(value, header))
-            cell.border = BORDER
-            if banded:
-                cell.fill = BAND_FILL
             val_str = str(value).strip() if value is not None else ""
             if header in LEFT_HEADERS:
-                cell.alignment = Alignment(horizontal="left", vertical="center")
+                alignment = LEFT
             elif (
                 isinstance(value, (int, float))
                 or header in CENTER_HEADERS
-                or val_str in ("Yes", "No", "Unknown", "None", "Complete", "Partial", "N/A", "Online", "Offline", "Idle", "Busy")
-                or value in EMPTY_CELL_MESSAGES.values()
+                or val_str in CENTERED_VALUES
+                or value in _EMPTY_CELL_MESSAGE_VALUES
             ):
-                cell.alignment = CENTER
+                alignment = CENTER
+            else:
+                alignment = None
+            styler.apply(cell, fill=band_fill, border=BORDER, alignment=alignment)
 
-        if status_col is not None and row[status_col] in STATUS_STYLES:
-            fill, font = STATUS_STYLES[row[status_col]]
-            cell = ws.cell(row=row_idx, column=status_col + 1)
-            cell.fill, cell.font, cell.alignment = (
-                PatternFill("solid", fgColor=fill),
-                Font(bold=True, color=font),
-                CENTER,
+        if status_col is not None and row[status_col] in STATUS_STYLE_OBJECTS:
+            status_fill, status_font = STATUS_STYLE_OBJECTS[row[status_col]]
+            styler.apply(
+                ws.cell(row=row_idx, column=status_col + 1),
+                font=status_font,
+                fill=status_fill,
+                border=BORDER,
+                alignment=CENTER,
             )
 
     last_row = top + len(rows)
+    if omitted:
+        notice = ws.cell(
+            row=last_row + 1,
+            column=1,
+            value=f"{omitted:,} additional rows omitted: Excel supports at most {EXCEL_MAX_ROWS:,} rows per sheet.",
+        )
+        notice.font = Font(italic=True, color="9C0006")
     if bar_col is not None and rows:
         letter = get_column_letter(bar_col + 1)
         ws.conditional_formatting.add(
@@ -204,7 +270,9 @@ def write_table(
 def autofit(ws, skip_rows: int = 0) -> None:
     """Automatically fit column widths based on content length."""
     widths: Dict[int, int] = defaultdict(int)
-    for row in ws.iter_rows(min_row=skip_rows + 1):
+    # Widths are capped at 48, so a bounded sample keeps autofit O(1) for very large sheets
+    sample_end = min(ws.max_row, skip_rows + AUTOFIT_SAMPLE_ROWS)
+    for row in ws.iter_rows(min_row=skip_rows + 1, max_row=sample_end):
         for cell in row:
             if cell.value is not None:
                 widths[cell.column] = max(widths[cell.column], len(str(cell.value)))
@@ -311,7 +379,7 @@ def write_activity_workbook(
     curr_row = write_table(summary, 4, ("Metric", "Value"), kpis) + 2
 
     curr_row = section_title(summary, curr_row, advisory_title)
-    summary.cell(curr_row, 1, advisory_text)
+    summary.cell(curr_row, 1, safe_cell(advisory_text))
     summary.cell(curr_row, 1).font = Font(name="Calibri", size=10, italic=True)
     summary.row_dimensions[curr_row].height = 28
     curr_row += 2

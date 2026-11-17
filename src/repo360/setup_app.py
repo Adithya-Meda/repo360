@@ -19,6 +19,7 @@ import http.server
 import json
 import logging
 import os
+import re
 import secrets
 import socket
 import socketserver
@@ -55,15 +56,18 @@ logger = logging.getLogger("setup-wizard")
 LOOPBACK_HOST = "127.0.0.1"
 PORT = 8989
 CALLBACK_URL = f"http://{LOOPBACK_HOST}:{PORT}/callback"
+_MANIFEST_CODE_RE = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
 
 def _normalize_github_domain(domain: str) -> str:
-    """Normalize a GitHub base URL to scheme + host without trailing slashes."""
+    """Normalize a GitHub base URL to ``https://host`` (HTTPS is enforced to protect the manifest code and App key)."""
     cleaned = (domain or "https://github.com").strip().strip("\"'").rstrip("/")
     if not cleaned.startswith(("http://", "https://")):
         cleaned = f"https://{cleaned}"
     parsed = urllib.parse.urlparse(cleaned)
-    return f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else cleaned
+    if parsed.scheme == "http":
+        logger.warning("Upgrading insecure GitHub domain %s to HTTPS.", parsed.netloc)
+    return f"https://{parsed.netloc}" if parsed.netloc else cleaned
 
 
 def _normalize_org_name(org_name: str) -> str:
@@ -215,9 +219,8 @@ class ManifestCallbackHandler(http.server.BaseHTTPRequestHandler):
     conversion_result: dict | None = None
     session_nonce: str = secrets.token_urlsafe(32)
 
-    def log_message(self, fmt: str, *args) -> None:
+    def log_message(self, *_args) -> None:
         """Suppress standard HTTP server access logs."""
-        pass
 
     def do_GET(self) -> None:
         """Handle initial browser landing and GitHub callback redirect."""
@@ -379,10 +382,17 @@ class ManifestCallbackHandler(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(error_html.encode("utf-8"))
                 return
 
-            if ManifestCallbackHandler.session_nonce and not secrets.compare_digest(state, ManifestCallbackHandler.session_nonce):
+            expected_nonce = ManifestCallbackHandler.session_nonce
+            if not expected_nonce or not secrets.compare_digest(state, expected_nonce):
                 self.send_response(403)
                 self.end_headers()
                 self.wfile.write(b"Security Error: Invalid or expired state nonce.")
+                return
+
+            if not _MANIFEST_CODE_RE.fullmatch(code):
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(b"Security Error: Malformed manifest code.")
                 return
 
             conversion_endpoint = f"{self.api_domain}/app-manifests/{code}/conversions"
@@ -472,7 +482,7 @@ class ManifestCallbackHandler(http.server.BaseHTTPRequestHandler):
                 logger.error("Failed to convert manifest code: %s", err)
                 error_html = _render_error_page(
                     "App Conversion Failed",
-                    str(err),
+                    "GitHub did not accept the App manifest conversion request.",
                     "Please return to your terminal to inspect the error log or retry.",
                 )
                 self.send_response(500)
@@ -618,12 +628,6 @@ def run_wizard(
     install_url = f"{github_domain}/organizations/{clean_org}/settings/apps/{app_slug}/installations"
 
     key_path = save_private_key(pem_key, app_slug=app_slug)
-    try:
-        local_secrets = os.path.join(os.getcwd(), "secrets")
-        if os.path.isdir(local_secrets) or os.path.isfile(".env"):
-            save_private_key(pem_key, app_slug=app_slug, dest_dir=local_secrets)
-    except Exception:
-        pass
 
     print("\n" + "=" * 65)
     print("  STEP 1: GITHUB APP CREATED")
@@ -662,7 +666,11 @@ def run_wizard(
         elif choice != "s":
             print("Querying GitHub API for active installations...")
             for _ in range(3):
-                installations = auth.discover_installations()
+                try:
+                    installations = auth.discover_installations(force_refresh=True)
+                except RuntimeError as err:
+                    logger.debug("Installation discovery attempt failed: %s", err)
+                    installations = []
                 if installations:
                     matched = [
                         i for i in installations
@@ -671,6 +679,11 @@ def run_wizard(
                     selected = matched[0] if matched else installations[0]
                     installation_id = int(selected["id"])
                     org_login = selected.get("account", {}).get("login", clean_org)
+                    if not matched:
+                        print(
+                            f"-> [WARN] No installation found for '{clean_org}' yet; "
+                            f"using the installation on '{org_login}'. Re-run setup after installing on '{clean_org}' if needed."
+                        )
                     print(f"-> [SUCCESS] Auto-detected Installation ID: {installation_id} for '{org_login}'!")
                     break
                 if is_shutting_down():

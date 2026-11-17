@@ -8,8 +8,6 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Set
 
-VALID_PERSONAS = {"org_admin", "repo_admin", "contributor", "all"}
-
 DEFAULT_APP_CONFIG: Dict[str, Any] = {
     "github": {
         "api_base_url": "${REPO360_API_BASE_URL:-https://api.github.com}",

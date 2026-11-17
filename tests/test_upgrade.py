@@ -1,4 +1,4 @@
-﻿"""Unit tests for Repo360 upgrade module."""
+"""Unit tests for Repo360 upgrade module."""
 
 import json
 from pathlib import Path
@@ -16,13 +16,10 @@ from repo360.upgrade import (
     _parse_semver_tag,
     _prepare_windows_binaries,
     _restore_windows_binaries,
-    build_upgrade_command,
-    detect_installer,
     execute_upgrade,
     find_uv_executable,
     format_version_output,
     get_installation_details,
-    get_local_version_info,
     get_upgrade_commands,
     is_output_already_up_to_date,
     normalize_release_tag,
@@ -30,39 +27,7 @@ from repo360.upgrade import (
     resolve_release_target,
     run_upgrade_cli,
     run_version_cli,
-    verify_local_state,
 )
-
-
-def test_detect_installer_pipx():
-    with patch.object(sys, "prefix", "C:\\Users\\test\\AppData\\Local\\pipx\\venvs\\repo360"):
-        with patch("repo360.upgrade.find_pipx_executable", return_value="C:\\bin\\pipx.exe"):
-            installer, cmd = detect_installer()
-            assert installer == "pipx"
-            assert cmd == ["C:\\bin\\pipx.exe", "runpip", "repo360", "install", "--upgrade"]
-
-
-def test_detect_installer_pip_fallback():
-    with patch.object(sys, "prefix", "C:\\Python312"):
-        installer, cmd = detect_installer()
-        assert installer == "pip"
-        assert cmd == [sys.executable, "-m", "pip", "install", "--upgrade"]
-
-
-def test_build_upgrade_command():
-    installer, cmd = build_upgrade_command(
-        repo_url="https://github.com/Adithya-Meda/repo360.git",
-        installer_override="pip",
-    )
-    assert installer == "pip"
-    assert "git+https://github.com/Adithya-Meda/repo360.git" in cmd
-
-    installer, cmd = build_upgrade_command(
-        repo_url="https://github.com/Adithya-Meda/repo360.git",
-        installer_override="pipx",
-    )
-    assert installer == "pipx"
-    assert "git+https://github.com/Adithya-Meda/repo360.git" in cmd
 
 
 def test_execute_upgrade_dry_run(capsys):
@@ -79,22 +44,6 @@ def test_execute_upgrade_subprocess_success():
         ret = execute_upgrade([("pip", ["pip", "install", "pkg"])], dry_run=False)
         assert ret == 0
         assert mock_run.called
-
-
-def test_verify_local_state(capsys, tmp_path):
-    config_file = tmp_path / "config.json"
-    config_file.write_text("{}", encoding="utf-8")
-    secrets_dir = tmp_path / "secrets"
-    secrets_dir.mkdir()
-    (secrets_dir / "key.pem").write_text("dummy", encoding="utf-8")
-
-    with patch("repo360.upgrade.get_credentials_path", return_value=str(config_file)):
-        with patch("repo360.upgrade.get_secrets_dir", return_value=str(secrets_dir)):
-            verify_local_state()
-            captured = capsys.readouterr()
-            assert "[VERIFY]" in captured.out
-            assert "Configuration file" in captured.out
-            assert "1 private key detected" in captured.out
 
 
 def test_prepare_and_restore_windows_binaries(tmp_path):
@@ -272,7 +221,9 @@ def test_get_installation_details_and_force_commands() -> None:
     for key in ("version", "commit", "commit_short", "commit_source", "installer", "source_url", "package_path"):
         assert key in details
 
-    with patch("repo360.upgrade.get_installation_details", return_value={"installer": "uv"}):
+    with patch("repo360.upgrade.find_pipx_executable", return_value="pipx"), \
+         patch("repo360.upgrade._detect_pipx_backend", return_value="uv"), \
+         patch("repo360.upgrade._is_uv_tool_install", return_value=False):
         cmds = get_upgrade_commands(installer_override="pipx", force=True)
         joined = " ".join(cmds[0][1])
         assert "--reinstall-package=repo360" in joined
@@ -386,6 +337,20 @@ def test_run_upgrade_cli_forces_reinstall_when_stale_or_outdated() -> None:
         mock_cmds.assert_called_once()
         assert mock_cmds.call_args.kwargs.get("force") is True
         assert mock_cmds.call_args.kwargs.get("target_ref") == "v1.1.0"
+
+
+def test_run_upgrade_cli_pins_release_to_full_commit_sha() -> None:
+    """A release upgrade must install the immutable commit the tag resolved to, not the mutable tag."""
+    full_sha = "a" * 40
+    local_details = {"version": "v1.0.0", "commit": None, "is_dirty": False, "is_stale_snapshot": False}
+    target = ReleaseTarget(tag="v1.2.0", commit=full_sha, source="github-release")
+    fresh_result = UpgradeResult(0, already_up_to_date=False, version="v1.2.0", commit=full_sha)
+    with patch("repo360.upgrade.get_installation_details", return_value=local_details), \
+         patch("repo360.upgrade.get_upgrade_commands", return_value=[("pip", ["pip"])]) as mock_cmds, \
+         patch("repo360.upgrade.execute_upgrade", return_value=fresh_result), \
+         patch("repo360.upgrade.resolve_release_target", return_value=target):
+        assert run_upgrade_cli([]) == 0
+        assert mock_cmds.call_args.kwargs.get("target_ref") == full_sha
 
 
 def test_build_target_spec_pins_commit_and_preserves_existing_refs() -> None:

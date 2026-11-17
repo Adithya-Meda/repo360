@@ -6,7 +6,13 @@ import re
 from typing import Any, Dict, List
 import requests
 
-from ._helpers import get_permission_gap, is_http_forbidden, make_permission_skipped_result
+from ._helpers import (
+    get_permission_gap,
+    incomplete_workflow_coverage_result,
+    is_repository_workflow,
+    is_http_forbidden,
+    make_permission_skipped_result,
+)
 from .base import BaseCheck, CheckResult, CheckSeverity, CheckStatus, Persona
 from ..collector.repo_inspector import RepoInspector
 from ..common.text import pluralize
@@ -440,7 +446,7 @@ class WorkflowShaPinningCheck(BaseCheck):
     ) -> CheckResult:
         doc_url = "https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions#using-third-party-actions"
         try:
-            workflows = inspector.list_workflows(org, repo)
+            workflows = inspector.list_workflows(org, repo, default_branch)
         except requests.exceptions.HTTPError as err:
             if is_http_forbidden(err):
                 return make_permission_skipped_result(
@@ -469,13 +475,17 @@ class WorkflowShaPinningCheck(BaseCheck):
             )
 
         unpinned_actions: List[str] = []
+        unreadable: List[str] = []
+        inspected = 0
         for wf in workflows:
             wf_path = wf.get("path")
-            if not wf_path:
+            if not is_repository_workflow(wf):
                 continue
             content = inspector.get_file_content(org, repo, wf_path, default_branch)
             if not content:
+                unreadable.append(wf.get("name") or wf_path)
                 continue
+            inspected += 1
 
             for raw_line in content.splitlines():
                 clean_line = self._strip_yaml_comment(raw_line).strip()
@@ -508,6 +518,10 @@ class WorkflowShaPinningCheck(BaseCheck):
                 remediation_snippet_after="- uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1",
                 documentation_url="https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions#using-third-party-actions",
             )
+
+        coverage_gap = incomplete_workflow_coverage_result(self, org, repo, inspected, unreadable, doc_url)
+        if coverage_gap is not None:
+            return coverage_gap
 
         return CheckResult(
             check_id=self.check_id,
@@ -544,7 +558,7 @@ class WorkflowConcurrencyGroupsCheck(BaseCheck):
     ) -> CheckResult:
         doc_url = "https://docs.github.com/en/actions/using-jobs/using-concurrency"
         try:
-            workflows = inspector.list_workflows(org, repo)
+            workflows = inspector.list_workflows(org, repo, default_branch)
         except requests.exceptions.HTTPError as err:
             if is_http_forbidden(err):
                 return make_permission_skipped_result(
@@ -573,13 +587,17 @@ class WorkflowConcurrencyGroupsCheck(BaseCheck):
             )
 
         missing_concurrency: List[str] = []
+        unreadable: List[str] = []
+        inspected = 0
         for wf in workflows:
             wf_path = wf.get("path")
-            if not wf_path:
+            if not is_repository_workflow(wf):
                 continue
             content = inspector.get_file_content(org, repo, wf_path, default_branch)
             if not content:
+                unreadable.append(wf.get("name") or wf_path)
                 continue
+            inspected += 1
             has_concurrency_key = any(
                 re.match(r"^\s*concurrency\s*:", line.split("#", 1)[0])
                 for line in content.splitlines()
@@ -605,6 +623,10 @@ class WorkflowConcurrencyGroupsCheck(BaseCheck):
                 documentation_url="https://docs.github.com/en/actions/using-jobs/using-concurrency",
             )
 
+        coverage_gap = incomplete_workflow_coverage_result(self, org, repo, inspected, unreadable, doc_url)
+        if coverage_gap is not None:
+            return coverage_gap
+
         return CheckResult(
             check_id=self.check_id,
             check_name=self.check_name,
@@ -629,6 +651,10 @@ class DependabotConfigCheck(BaseCheck):
     persona = Persona.REPO_ADMIN
     category = "Security"
     severity = CheckSeverity.HIGH
+    ECOSYSTEM_PATTERN = re.compile(
+        r"^[ \t]*-?[ \t]*package-ecosystem[ \t]*:[ \t]*[\"']?([A-Za-z0-9_-]+)[\"']?[ \t]*(?:#.*)?$",
+        re.MULTILINE,
+    )
 
     def evaluate(
         self,
@@ -638,12 +664,52 @@ class DependabotConfigCheck(BaseCheck):
         default_branch: str,
         thresholds: Dict[str, Any],
     ) -> CheckResult:
-        has_dependabot = (
-            inspector.check_file_exists(org, repo, ".github/dependabot.yml", default_branch)
-            or inspector.check_file_exists(org, repo, ".github/dependabot.yaml", default_branch)
+        doc_url = "https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuring-dependabot-version-updates"
+        config_path = next(
+            (
+                path
+                for path in (".github/dependabot.yml", ".github/dependabot.yaml")
+                if inspector.check_file_exists(org, repo, path, default_branch)
+            ),
+            None,
         )
 
-        if has_dependabot:
+        if config_path:
+            content = inspector.get_file_content(org, repo, config_path, default_branch)
+            if not isinstance(content, str) or not content:
+                return CheckResult(
+                    check_id=self.check_id,
+                    check_name=self.check_name,
+                    persona=self.persona,
+                    category=self.category,
+                    status=CheckStatus.WARN,
+                    severity=self.severity,
+                    org_name=org,
+                    repo_name=repo,
+                    current_state=f"{config_path} exists but its contents could not be read for validation.",
+                    recommended_state="Grant 'contents: read' so the Dependabot configuration can be verified.",
+                    explanation="An unreadable configuration cannot be confirmed to enable any update ecosystem.",
+                    documentation_url=doc_url,
+                )
+            normalized = content.replace("\r\n", "\n").replace("\r", "\n")
+            ecosystems = sorted(set(self.ECOSYSTEM_PATTERN.findall(normalized)))
+            if not ecosystems:
+                return CheckResult(
+                    check_id=self.check_id,
+                    check_name=self.check_name,
+                    persona=self.persona,
+                    category=self.category,
+                    status=CheckStatus.FAIL,
+                    severity=self.severity,
+                    org_name=org,
+                    repo_name=repo,
+                    current_state=f"{config_path} defines no valid 'package-ecosystem' update entries.",
+                    recommended_state="Declare at least one update entry with a non-empty package-ecosystem.",
+                    explanation="A Dependabot file without valid update entries is rejected by GitHub and monitors nothing.",
+                    remediation_snippet_before="updates:\n  - package-ecosystem: \"\"",
+                    remediation_snippet_after="version: 2\nupdates:\n  - package-ecosystem: 'pip'\n    directory: '/'\n    schedule:\n      interval: 'weekly'",
+                    documentation_url=doc_url,
+                )
             return CheckResult(
                 check_id=self.check_id,
                 check_name=self.check_name,
@@ -653,7 +719,7 @@ class DependabotConfigCheck(BaseCheck):
                 severity=self.severity,
                 org_name=org,
                 repo_name=repo,
-                current_state="Dependabot configuration file found.",
+                current_state=f"Dependabot configured for: {', '.join(ecosystems)}.",
                 recommended_state="Keep package ecosystems updated in dependabot.yml.",
                 explanation="Dependabot automates patch updates for vulnerable dependencies.",
                 documentation_url="https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuring-dependabot-version-updates",

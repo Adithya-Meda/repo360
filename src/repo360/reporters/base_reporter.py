@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Any, Dict, Iterable, List
 
+from ..activity.reporter import clamp_cell_text
 from ..checks.base import CheckResult
 
 
@@ -25,7 +26,7 @@ class BaseReporter(ABC):
 
     @staticmethod
     def get_local_timestamp() -> str:
-        """Return formatted local timestamp with smart timezone detection in DD-MM-YYYY format (e.g. 04-11-2026 16:22:00 IST)."""
+        """Return formatted local timestamp with smart timezone detection in DD-MM-YYYY format (e.g. 04-11-2026 16:22:00 CET)."""
         from ..common.timezones import get_local_timezone, get_local_tz_name
         tz = get_local_timezone()
         now = datetime.now(tz)
@@ -40,6 +41,7 @@ class BaseReporter(ABC):
         or any whitespace preceding these formula execution characters.
         """
         if isinstance(value, str):
+            value = clamp_cell_text(value)
             stripped = value.lstrip(" \t\r\n")
             # Standalone "-" is safe as a placeholder; "-expr" can trigger formulas
             if stripped == "-":

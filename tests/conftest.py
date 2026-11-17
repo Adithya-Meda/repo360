@@ -2,15 +2,33 @@
 
 from __future__ import annotations
 
-from typing import List
+import os
+from typing import Iterator, List
 import pytest
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from repo360.checks.base import CheckResult, CheckSeverity, CheckStatus, Persona
+from repo360.auth.github_app_auth import GitHubAppAuth
 from repo360.validator import RepoTarget
-from repo360.mock_generator import create_mock_results
+
+_CREDENTIAL_ENV_PREFIXES = ("REPO360_", "AI_", "LLM_", "GEMINI_", "OPENAI_", "ANTHROPIC_")
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_environment(
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> Iterator[None]:
+    """Keep tests offline and isolated from the developer's real credentials and config."""
+    for key in list(os.environ):
+        if key.startswith(_CREDENTIAL_ENV_PREFIXES) and key != "REPO360_TIMEZONE":
+            monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("REPO360_CONFIG_DIR", str(tmp_path_factory.mktemp("repo360-config")))
+    if "real_clock_skew" not in request.keywords:
+        monkeypatch.setattr(GitHubAppAuth, "_calculate_clock_skew", lambda self: 0.0)
+    yield
 
 
 @pytest.fixture(scope="session")

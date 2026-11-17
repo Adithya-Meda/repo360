@@ -30,12 +30,6 @@ from .models import (
     is_plan_limitation,
 )
 
-RISK_TIER_STYLES = {
-    "High": ("FFC7CE", "9C0006"),
-    "Medium": ("FFEB9C", "9C5700"),
-    "Unknown (Partial)": ("FFEB9C", "9C5700"),
-    "Low": ("C6EFCE", "006100"),
-}
 
 
 def write_bypass_workbook(

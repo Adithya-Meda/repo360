@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, List, Optional, Set, Tuple
 
-from ..common.timezones import IST, LOCAL_TZ_NAME
+from ..common.timezones import LOCAL_TZ_NAME
 
 __all__ = [
     "RUNNER_HEADERS",
@@ -18,7 +18,6 @@ __all__ = [
     "RunnerJobMetrics",
     "OrgRunnerMetrics",
     "RunnersConfig",
-    "IST",
 ]
 
 RUNNER_HEADERS = (
@@ -122,10 +121,6 @@ class RunnerJobMetrics:
     last_job_time: Optional[datetime] = None
 
     @property
-    def completed_jobs(self) -> int:
-        return self.successful_jobs + self.failed_jobs + self.timed_out_jobs + self.cancelled_jobs + self.other_jobs
-
-    @property
     def decisive_jobs(self) -> int:
         """Completed jobs excluding cancelled/neutral outcomes for true pass/fail rate denominators."""
         return self.successful_jobs + self.failed_jobs + self.timed_out_jobs
@@ -133,10 +128,6 @@ class RunnerJobMetrics:
     @property
     def success_rate(self) -> Any:
         return round(self.successful_jobs / self.decisive_jobs * 100, 2) if self.decisive_jobs else "N/A"
-
-    @property
-    def failure_rate(self) -> Any:
-        return round((self.failed_jobs + self.timed_out_jobs) / self.decisive_jobs * 100, 2) if self.decisive_jobs else "N/A"
 
     @property
     def avg_duration_minutes(self) -> Any:

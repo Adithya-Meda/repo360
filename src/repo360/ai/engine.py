@@ -22,47 +22,51 @@ import threading
 import time
 import warnings
 from typing import Any, Callable, Dict, List, Optional, Tuple
-
-warnings.filterwarnings("ignore", category=SyntaxWarning)
-warnings.filterwarnings("ignore", category=UserWarning)
-warnings.filterwarnings("ignore", category=DeprecationWarning)
-warnings.filterwarnings("ignore", message=".*invalid escape sequence.*")
-warnings.filterwarnings("ignore", message=".*automatic function calling.*")
+from urllib.parse import urlparse
 
 from ..checks.base import CheckResult, CheckStatus
 from ..common.text import pluralize
 
 logger = logging.getLogger(__name__)
 
+LLM_REQUEST_TIMEOUT_SECONDS = 30
+
 
 class AIEngine:
     """Safe, resilient multi-provider LLM integration for governance analysis and remediation."""
 
     SENSITIVE_PATTERN = re.compile(
-        r"(ghp_[a-zA-Z0-9]{36}|ghs_[a-zA-Z0-9]{36}|-----BEGIN[^\-]+-----|bearer\s+[a-zA-Z0-9_\-\.]+)",
+        r"(-----BEGIN[A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END[A-Z0-9 ]*PRIVATE KEY-----|$)"
+        r"|-----BEGIN[^\-]+-----"
+        r"|github_pat_[A-Za-z0-9_]{20,}"
+        r"|gh[pousr]_[A-Za-z0-9]{30,}"
+        r"|\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"
+        r"|\bxox[abposr]-[A-Za-z0-9-]{10,}"
+        r"|\bAIza[0-9A-Za-z_\-]{35}\b"
+        r"|\bsk-(?:ant-|proj-)?[A-Za-z0-9_\-]{20,}"
+        r"|\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{5,}"
+        r"|bearer\s+[a-zA-Z0-9_\-\.]+"
+        r"|(?:password|passwd|pwd|secret|token|api[_-]?key)\s*[:=]\s*\S+)",
         re.IGNORECASE,
     )
 
+    # Fallbacks are only used when the user-selected model is unavailable; keep to current, cost-efficient models
     FALLBACK_MODELS_BY_PROVIDER: Dict[str, Tuple[str, ...]] = {
         "gemini": (
-            "gemini-3.5-flash",
             "gemini-3.5-flash-lite",
             "gemini-3.8-flash",
             "gemini-flash-latest",
         ),
         "openai": (
-            "gpt-4o",
-            "gpt-4o-mini",
-            "gpt-4-turbo",
+            "gpt-6-luna",
+            "gpt-6.1-sol",
         ),
         "anthropic": (
-            "claude-3-5-sonnet-20241022",
-            "claude-3-5-haiku-20241022",
-            "claude-3-haiku-20240307",
+            "claude-haiku-5-5",
+            "claude-sonnet-5-5",
         ),
     }
 
-    FALLBACK_MODELS = FALLBACK_MODELS_BY_PROVIDER["gemini"]
 
     SUPPORTED_REMEDIATION_CHECKS: frozenset[str] = frozenset({
         "copilot_instructions",
@@ -146,7 +150,10 @@ class AIEngine:
                         from google import genai
                         from google.genai import types
 
-                    self._client = genai.Client(api_key=self.api_key)
+                    self._client = genai.Client(
+                        api_key=self.api_key,
+                        http_options=types.HttpOptions(timeout=LLM_REQUEST_TIMEOUT_SECONDS * 1000),
+                    )
                     self._gen_config = types.GenerateContentConfig(
                         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
                     )
@@ -378,8 +385,9 @@ class AIEngine:
         """Verify OpenAI connection and active model quota via REST API."""
         import requests
 
-        base_url = self.base_url or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
-        url = f"{base_url.rstrip('/')}/chat/completions"
+        url = self._provider_endpoint("OPENAI_BASE_URL", "https://api.openai.com/v1", "chat/completions")
+        if not url:
+            return False, "Insecure or invalid OPENAI_BASE_URL (HTTPS required)"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "api-key": self.api_key,
@@ -395,7 +403,7 @@ class AIEngine:
                     "messages": [{"role": "user", "content": "ping"}],
                     "max_tokens": 5,
                 }
-                resp = requests.post(url, headers=headers, json=payload, timeout=10)
+                resp = requests.post(url, headers=headers, json=payload, timeout=LLM_REQUEST_TIMEOUT_SECONDS)
                 if resp.status_code == 200:
                     if candidate != self.model_name:
                         logger.info(
@@ -435,8 +443,9 @@ class AIEngine:
         """Verify Anthropic connection and active model quota via REST API."""
         import requests
 
-        base_url = self.base_url or os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1")
-        url = f"{base_url.rstrip('/')}/messages"
+        url = self._provider_endpoint("ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1", "messages")
+        if not url:
+            return False, "Insecure or invalid ANTHROPIC_BASE_URL (HTTPS required)"
         headers = {
             "x-api-key": self.api_key,
             "anthropic-version": "2023-06-01",
@@ -452,7 +461,7 @@ class AIEngine:
                     "max_tokens": 5,
                     "messages": [{"role": "user", "content": "ping"}],
                 }
-                resp = requests.post(url, headers=headers, json=payload, timeout=10)
+                resp = requests.post(url, headers=headers, json=payload, timeout=LLM_REQUEST_TIMEOUT_SECONDS)
                 if resp.status_code == 200:
                     if candidate != self.model_name:
                         logger.info(
@@ -487,6 +496,16 @@ class AIEngine:
         self.init_error = reason
         self.enabled = False
         return False, reason
+
+    def _provider_endpoint(self, env_name: str, default_base: str, suffix: str) -> Optional[str]:
+        """Build a provider endpoint URL, refusing to send API keys or audit data over plain HTTP."""
+        base = (self.base_url or os.getenv(env_name, "") or default_base).strip().rstrip("/")
+        parsed = urlparse(base)
+        is_loopback = (parsed.hostname or "") in ("localhost", "127.0.0.1", "::1")
+        if not parsed.netloc or not (parsed.scheme == "https" or (parsed.scheme == "http" and is_loopback)):
+            logger.warning("Refusing insecure or invalid %s value; AI provider calls disabled.", env_name)
+            return None
+        return f"{base}/{suffix}"
 
     def sanitize_text(self, text: str) -> str:
         """Redact sensitive tokens and key patterns before sending to LLM."""
@@ -653,8 +672,9 @@ class AIEngine:
 
         import requests
 
-        base_url = self.base_url or os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
-        url = f"{base_url.rstrip('/')}/chat/completions"
+        url = self._provider_endpoint("OPENAI_BASE_URL", "https://api.openai.com/v1", "chat/completions")
+        if not url:
+            return None
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "api-key": self.api_key,
@@ -669,7 +689,7 @@ class AIEngine:
                     "messages": [{"role": "user", "content": clean_prompt}],
                     "temperature": 0.2,
                 }
-                resp = requests.post(url, headers=headers, json=payload, timeout=20)
+                resp = requests.post(url, headers=headers, json=payload, timeout=LLM_REQUEST_TIMEOUT_SECONDS)
                 if resp.status_code == 200:
                     data = resp.json()
                     choices = data.get("choices", [])
@@ -695,8 +715,9 @@ class AIEngine:
 
         import requests
 
-        base_url = self.base_url or os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1")
-        url = f"{base_url.rstrip('/')}/messages"
+        url = self._provider_endpoint("ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1", "messages")
+        if not url:
+            return None
         headers = {
             "x-api-key": self.api_key,
             "anthropic-version": "2023-06-01",
@@ -712,7 +733,7 @@ class AIEngine:
                     "messages": [{"role": "user", "content": clean_prompt}],
                     "temperature": 0.2,
                 }
-                resp = requests.post(url, headers=headers, json=payload, timeout=20)
+                resp = requests.post(url, headers=headers, json=payload, timeout=LLM_REQUEST_TIMEOUT_SECONDS)
                 if resp.status_code == 200:
                     data = resp.json()
                     contents = data.get("content", [])
@@ -972,7 +993,7 @@ Output ONLY the code/configuration snippet inside code fences. Do not add introd
             default_advisory = f"High-risk bypass justification ('{comment_clean}'). Verify whether live {secret_clean} was exposed and revoke if verified."
         elif any(w in comment_lower for w in test_indicators):
             default_risk = "Low Risk"
-            default_advisory = f"Developer noted test/fixture credential. Confirm pattern is not used in production environments."
+            default_advisory = "Developer noted test/fixture credential. Confirm pattern is not used in production environments."
 
         if not self.is_available():
             return default_risk, default_advisory

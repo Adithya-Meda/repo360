@@ -51,7 +51,6 @@ class CheckResult:
     explanation: str
     remediation_snippet_before: str = ""
     remediation_snippet_after: str = ""
-    remediation_command: str = ""
     documentation_url: str = ""
     extra_details: Dict[str, Any] = field(default_factory=dict)
 

@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional, Set
 
-from ..common.timezones import IST, LOCAL_TZ_NAME
+from ..common.timezones import LOCAL_TZ_NAME
 
 __all__ = [
     "BYPASS_SUMMARY_HEADERS",
@@ -25,7 +25,6 @@ __all__ = [
     "BypassConfig",
     "classify_bypass_risk",
     "is_plan_limitation",
-    "IST",
 ]
 
 BYPASS_SUMMARY_HEADERS = ("Scope", "Category", "Metric", "Value", "Risk Context & Compliance Impact")
@@ -140,9 +139,6 @@ class RepoBypassProfile:
     ruleset_bypasses: List[RulesetBypassRecord] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
 
-    @property
-    def total_bypasses(self) -> int:
-        return len(self.push_bypasses) + len(self.ruleset_bypasses)
 
     @property
     def org_ruleset_bypasses(self) -> int:

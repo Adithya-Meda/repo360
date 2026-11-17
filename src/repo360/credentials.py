@@ -203,10 +203,16 @@ def resolve_runtime_credentials() -> Dict[str, Any]:
     )
 
     resolved_key = ""
-    if raw_key and raw_key.startswith("-----BEGIN"):
+    expanded_raw = os.path.expanduser(raw_key) if raw_key else ""
+    if raw_key.startswith("-----BEGIN"):
+        resolved_key = raw_key
+    elif raw_key and os.path.isfile(expanded_raw):
+        resolved_key = os.path.abspath(expanded_raw)
+    elif raw_key:
+        # Inline secret (e.g. base64-encoded PEM from CI); GitHubAppAuth validates and decodes it
         resolved_key = raw_key
     else:
-        found = find_private_key(key_path or raw_key)
+        found = find_private_key(key_path)
         if found:
             resolved_key = found
 

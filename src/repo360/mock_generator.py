@@ -27,7 +27,6 @@ def create_mock_results(targets: List[RepoTarget]) -> List[CheckResult]:
             explanation="Without org-level rulesets, branch security depends on disparate repository configurations.",
             remediation_snippet_before="Legacy individual repo branch protection or unmanaged branches.",
             remediation_snippet_after="Organization Settings -> Repository Rulesets -> New ruleset: Enforce on 'All repositories'.",
-            remediation_command="gh api --method POST /orgs/fintech-core/rulesets -f name='Standard Branch Governance'",
             documentation_url="https://docs.github.com/en/enterprise-cloud@latest/organizations/managing-organization-settings/managing-rulesets-for-repositories-in-your-organization",
         )
     )

@@ -111,6 +111,38 @@ def test_manifest_callback_handler_validates_state_and_exchanges_code() -> None:
     assert ManifestCallbackHandler.conversion_result == {"id": 12345, "slug": "repo360-test-org", "pem": "PEM"}
 
 
+@pytest.mark.parametrize(
+    ("nonce", "query", "status"),
+    [
+        ("", "code=abc&state=", 403),
+        ("good", "code=..%2F..%2Fapp%2Finstallations&state=good", 400),
+        ("good", "code=abc%3Fx%3D1&state=good", 400),
+    ],
+)
+def test_manifest_callback_rejects_missing_nonce_and_malformed_code(nonce: str, query: str, status: int) -> None:
+    """The callback must fail closed without a nonce and never splice untrusted path segments into API URLs."""
+    handler = ManifestCallbackHandler.__new__(ManifestCallbackHandler)
+    handler.api_domain = "https://api.github.com"
+    handler.send_response = MagicMock()
+    handler.send_header = MagicMock()
+    handler.end_headers = MagicMock()
+    handler.wfile = MagicMock()
+    ManifestCallbackHandler.session_nonce = nonce
+    ManifestCallbackHandler.conversion_result = None
+    handler.path = f"/callback?{query}"
+
+    with patch("repo360.setup_app.requests.post") as mock_post:
+        handler.do_GET()
+        mock_post.assert_not_called()
+    handler.send_response.assert_called_with(status)
+
+
+def test_normalize_github_domain_enforces_https() -> None:
+    from repo360.setup_app import _normalize_github_domain
+
+    assert _normalize_github_domain("http://ghe.internal.net") == "https://ghe.internal.net"
+
+
 def test_setup_app_main_keyboard_interrupt(capsys) -> None:
     """Verify that Ctrl+C in setup_app exits silently with code 130 and no extra text."""
     from repo360.common.interrupts import SHUTDOWN_EVENT, reset_shutdown
@@ -133,7 +165,7 @@ def test_setup_app_main_keyboard_interrupt(capsys) -> None:
             return next(responses)
         except StopIteration:
             SHUTDOWN_EVENT.set()
-            raise EOFError
+            raise EOFError from None
 
     try:
         with patch("sys.argv", ["repo360"]):

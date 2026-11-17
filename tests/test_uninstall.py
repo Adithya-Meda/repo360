@@ -122,6 +122,37 @@ def test_run_uninstall_cli_removes_related_dirs_and_preserves_reports(tmp_path: 
     assert "Note: To remove the GitHub App from your organization" in out
 
 
+def test_uninstall_never_wipes_custom_shared_config_dir(tmp_path: Path, monkeypatch) -> None:
+    """A REPO360_CONFIG_DIR pointing at a shared folder must only lose Repo360's own files."""
+    shared = tmp_path / "Documents"
+    (shared / "secrets").mkdir(parents=True)
+    (shared / "config.json").write_text("{}", encoding="utf-8")
+    (shared / "secrets" / "repo360.2026-01-01.private-key.pem").write_text("k", encoding="utf-8")
+    unrelated_secret = shared / "secrets" / "personal-ssh.pem"
+    unrelated_secret.write_text("keep", encoding="utf-8")
+    unrelated_doc = shared / "thesis.docx"
+    unrelated_doc.write_text("keep", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("REPO360_CONFIG_DIR", str(shared))
+
+    with (
+        patch("repo360.uninstall.find_pipx_executable", return_value=None),
+        patch("repo360.uninstall._find_pipx_venv_dir", return_value=None),
+        patch("repo360.uninstall.get_installation_details", return_value={"installer": "pip"}),
+        patch("repo360.uninstall.shutil.which", return_value=None),
+        patch("repo360.uninstall._requires_deferred_windows_cleanup", return_value=False),
+        patch("repo360.uninstall.subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")),
+    ):
+        plan = build_uninstall_plan(keep_config=False)
+        plan["scripts_dir"] = tmp_path / "scripts"
+        assert execute_uninstall(plan, dry_run=False, keep_config=False, delay_seconds=0) == 0
+
+    assert not (shared / "config.json").exists()
+    assert not (shared / "secrets" / "repo360.2026-01-01.private-key.pem").exists()
+    assert unrelated_secret.read_text(encoding="utf-8") == "keep"
+    assert unrelated_doc.read_text(encoding="utf-8") == "keep"
+
+
 def test_run_uninstall_cli_dry_run_and_keep_config_and_abort(tmp_path: Path, monkeypatch, capsys) -> None:
     """Verify --dry-run, prompt cancellation, and --keep-config preserve directories appropriately."""
     monkeypatch.chdir(tmp_path)
@@ -262,3 +293,16 @@ def test_execute_uninstall_delay_timer(tmp_path: Path) -> None:
         assert rc == 0
         mock_sleep.assert_called_once_with(7.0)
 
+
+
+def test_uninstall_never_rmtrees_custom_config_dir_named_repo360(tmp_path: Path, monkeypatch) -> None:
+    """A custom REPO360_CONFIG_DIR that happens to be named 'repo360' (e.g. a git clone) must not be wiped."""
+    from repo360.uninstall import _config_purge_targets
+
+    checkout = tmp_path / "src" / "repo360"
+    checkout.mkdir(parents=True)
+    (checkout / "config.json").write_text("{}", encoding="utf-8")
+    (checkout / "README.md").write_text("keep", encoding="utf-8")
+    monkeypatch.setenv("REPO360_CONFIG_DIR", str(checkout))
+
+    assert _config_purge_targets(checkout) == [checkout / "config.json"]

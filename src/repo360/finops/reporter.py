@@ -36,11 +36,6 @@ OPTIMIZATION_STYLES = {
     "High Waste": ("FFC7CE", "9C0006"),
 }
 
-SAVINGS_STYLES = {
-    "Low": ("C6EFCE", "006100"),
-    "Moderate": ("FFEB9C", "9C5700"),
-    "High": ("FFC7CE", "9C0006"),
-}
 
 
 def write_finops_workbook(

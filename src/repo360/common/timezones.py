@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import os
-from datetime import datetime, timezone, tzinfo
-from typing import Dict, Optional
+import time
+import zoneinfo
+from datetime import datetime, timedelta, timezone, tzinfo
+from typing import Dict, List, Optional
+
+logger = logging.getLogger("repo360.timezones")
 
 DATE_FMT = "%d-%m-%Y"
 
@@ -58,6 +63,66 @@ TZ_ALIASES: Dict[str, str] = {
 }
 
 
+_EPOCH = datetime(1970, 1, 1)
+
+
+class SystemLocalTimezone(tzinfo):
+    """The operating system's local timezone, resolving the UTC offset per instant.
+
+    Unlike ``datetime.now().astimezone().tzinfo`` (a fixed offset captured once), this applies
+    the OS daylight-saving rules to every timestamp, so historical data across a DST change is
+    converted correctly on Windows, macOS, and Linux without third-party dependencies.
+    """
+
+    @staticmethod
+    def _local_struct(timestamp: float) -> time.struct_time:
+        try:
+            return time.localtime(timestamp)
+        except (OSError, OverflowError, ValueError):
+            return time.localtime()
+
+    @classmethod
+    def _wall_time_instants(cls, naive: datetime) -> List[float]:
+        """Return every POSIX timestamp whose local wall time equals ``naive`` (two during DST fall-back)."""
+        try:
+            guess = time.mktime(naive.timetuple()[:8] + (-1,))
+        except (OSError, OverflowError, ValueError):
+            return []
+        wall = naive.timetuple()[:6]
+        return sorted(ts for ts in (guess - 3600, guess, guess + 3600) if cls._local_struct(ts)[:6] == wall) or [guess]
+
+    @classmethod
+    def _wall_time_timestamp(cls, dt: datetime) -> float:
+        """Map a local wall time to its POSIX timestamp, honouring PEP 495 ``fold`` for repeated hours."""
+        instants = cls._wall_time_instants(dt.replace(tzinfo=None))
+        if not instants:
+            return time.time()
+        return instants[-1] if dt.fold else instants[0]
+
+    def fromutc(self, dt: datetime) -> datetime:
+        utc_naive = dt.replace(tzinfo=None)
+        ts = (utc_naive - _EPOCH).total_seconds()
+        local_naive = utc_naive + timedelta(seconds=self._local_struct(ts).tm_gmtoff)
+        instants = self._wall_time_instants(local_naive.replace(microsecond=0))
+        fold = 1 if len(instants) > 1 and abs(instants[-1] - int(ts)) < 1 else 0
+        return local_naive.replace(tzinfo=self, fold=fold)
+
+    def utcoffset(self, dt: Optional[datetime]) -> timedelta:
+        ts = time.time() if dt is None else self._wall_time_timestamp(dt)
+        return timedelta(seconds=self._local_struct(ts).tm_gmtoff)
+
+    def dst(self, dt: Optional[datetime]) -> timedelta:
+        ts = time.time() if dt is None else self._wall_time_timestamp(dt)
+        return timedelta(hours=1) if self._local_struct(ts).tm_isdst > 0 else timedelta(0)
+
+    def tzname(self, dt: Optional[datetime]) -> str:
+        ts = time.time() if dt is None else self._wall_time_timestamp(dt)
+        return self._local_struct(ts).tm_zone or "UTC"
+
+    def __repr__(self) -> str:
+        return "SystemLocalTimezone()"
+
+
 def get_local_timezone() -> tzinfo:
     """Resolve system local timezone with support for REPO360_TIMEZONE / TZ environment variables."""
     tz_env = os.environ.get("REPO360_TIMEZONE") or os.environ.get("TZ")
@@ -65,12 +130,10 @@ def get_local_timezone() -> tzinfo:
         cleaned = tz_env.strip()
         mapped = TZ_ALIASES.get(cleaned.upper(), cleaned)
         try:
-            import zoneinfo
             return zoneinfo.ZoneInfo(mapped)
-        except Exception:
-            pass
-    local_tz = datetime.now().astimezone().tzinfo
-    return local_tz if local_tz is not None else timezone.utc
+        except (zoneinfo.ZoneInfoNotFoundError, ValueError, OSError):
+            logger.warning("Unknown timezone %r in REPO360_TIMEZONE/TZ; falling back to system local time.", tz_env)
+    return SystemLocalTimezone()
 
 
 def get_local_tz_name(dt: Optional[datetime] = None) -> str:
@@ -78,13 +141,27 @@ def get_local_tz_name(dt: Optional[datetime] = None) -> str:
     tz = get_local_timezone()
     ref_dt = dt or datetime.now(tz)
     raw_name = ref_dt.tzname() or "UTC"
-    return WINDOWS_TZ_MAP.get(raw_name, raw_name)
+    if raw_name in WINDOWS_TZ_MAP:
+        return WINDOWS_TZ_MAP[raw_name]
+    if " " in raw_name or raw_name[:1] in "+-":
+        # Unmapped Windows names ("Arabian Standard Time") and numeric IANA names ("+14") get a uniform label
+        offset = ref_dt.utcoffset() or timedelta(0)
+        total_minutes = int(offset.total_seconds() // 60)
+        sign = "+" if total_minutes >= 0 else "-"
+        hours, minutes = divmod(abs(total_minutes), 60)
+        return f"UTC{sign}{hours:02d}:{minutes:02d}"
+    return raw_name
 
 
 LOCAL_TZ = get_local_timezone()
 LOCAL_TZ_NAME = get_local_tz_name()
-# Backward-compatible alias for existing callers
+# Deprecated alias kept for backward compatibility; it is the local timezone, not India Standard Time
 IST = LOCAL_TZ
+
+
+def file_timestamp(dt: Optional[datetime] = None) -> str:
+    """Return a local-time ``YYYYMMDD_HHMMSS`` stamp for report file names."""
+    return (dt or datetime.now(timezone.utc)).astimezone(LOCAL_TZ).strftime("%Y%m%d_%H%M%S")
 
 
 def parse_ts(ts_str: str) -> datetime:
@@ -106,5 +183,7 @@ def fmt_timestamp(
     """Format datetime into local timezone string representation (DD-MM-YYYY HH:MM)."""
     if not dt:
         return default
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
     target_tz = tz or get_local_timezone()
     return dt.astimezone(target_tz).strftime("%d-%m-%Y %H:%M")

@@ -60,13 +60,37 @@ def test_client_secondary_rate_limit_retry(mock_sleep: MagicMock, mock_client: R
 
 
 def test_client_pagination(mock_client: Repo360Client) -> None:
-    """Test pagination helper aggregates multi-page results."""
-    page1 = [{"id": 1}, {"id": 2}]
-    page2 = [{"id": 3}]
+    """Test Link-header pagination aggregates multi-page results."""
+    page1 = MagicMock(status_code=200, headers={})
+    page1.json.return_value = [{"id": 1}, {"id": 2}]
+    page1.links = {"next": {"url": "https://api.github.com/orgs/test/repos?page=2"}}
+    page2 = MagicMock(status_code=200, headers={})
+    page2.json.return_value = [{"id": 3}]
+    page2.links = {}
 
-    with patch.object(mock_client, "get", side_effect=[page1, page2]):
-        items = mock_client.list_paginated("/orgs/test/repos", per_page=2, max_pages=2)
-        assert len(items) == 3
+    with patch.object(mock_client.session, "get", side_effect=[page1, page2]):
+        items = list(mock_client.paginate("test", "/orgs/test/repos"))
+        assert [i["id"] for i in items] == [1, 2, 3]
+
+
+def test_client_refuses_foreign_host_urls(mock_client: Repo360Client) -> None:
+    """Credentials must never be sent to a host other than the configured GitHub API host."""
+    with patch.object(mock_client.session, "get") as mock_get:
+        with pytest.raises(RuntimeError, match="foreign host"):
+            mock_client.get("https://evil.example.com/repos/org/x")
+        mock_get.assert_not_called()
+
+
+def test_client_refreshes_token_only_once_on_persistent_401(mock_client: Repo360Client) -> None:
+    """A revoked installation must fail fast instead of refreshing the token on every retry."""
+    unauthorized = MagicMock(status_code=401, headers={}, text="Bad credentials")
+    unauthorized.raise_for_status.side_effect = requests.HTTPError("401")
+
+    with patch.object(mock_client.session, "get", return_value=unauthorized) as mock_get:
+        with pytest.raises(requests.HTTPError):
+            mock_client.get("/repos/org/repo")
+        assert mock_get.call_count == 2
+        assert mock_client.auth.get_installation_token.call_count == 1
 
 
 def test_repo_inspector_file_content(mock_client: Repo360Client) -> None:
@@ -220,3 +244,33 @@ def test_repo_inspector_tree_cache_missing_file_zero_http_calls(mock_client: Rep
         assert mock_get.call_count == 0
 
 
+
+
+def test_paginate_stops_on_link_cycle(mock_client: Repo360Client) -> None:
+    """A server returning a repeating 'next' link must not trap the scan in an endless loop."""
+    page = MagicMock(status_code=200, headers={})
+    page.json.return_value = [{"id": 1}]
+    page.links = {"next": {"url": "https://api.github.com/orgs/test/repos?page=2"}}
+
+    with patch.object(mock_client.session, "get", return_value=page) as mock_get:
+        items = list(mock_client.paginate("test", "/orgs/test/repos"))
+    assert mock_get.call_count == 2
+    assert len(items) == 2
+
+
+def test_installation_repositories_are_not_capped_at_5000(mock_client: Repo360Client) -> None:
+    """Large installations (> 50 pages) must be fully discovered and de-duplicated."""
+    total = 7_250
+
+    def fake_get(path, params=None, **kwargs):
+        page = params["page"]
+        start = (page - 1) * 100
+        repos = [{"id": i, "name": f"r{i}"} for i in range(start, min(start + 100, total))]
+        if page == 2:
+            repos.append({"id": 0, "name": "r0"})
+        return {"total_count": total, "repositories": repos}
+
+    inspector = RepoInspector(client=mock_client)
+    with patch.object(mock_client, "get", side_effect=fake_get):
+        repos = inspector.list_installation_repositories(installation_id=1)
+    assert len(repos) == total

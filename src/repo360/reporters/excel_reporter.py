@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Dict, List, Optional
 from openpyxl import Workbook
@@ -9,9 +10,12 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from .base_reporter import BaseReporter
+from ..activity.reporter import EXCEL_MAX_ROWS, CellStyler
 from ..checks.base import CheckResult, CheckSeverity, CheckStatus, Persona
 from ..common.concurrency import AI_NOT_ENABLED_MESSAGE
 from ..common.text import pluralize
+
+logger = logging.getLogger("repo360.reporter")
 
 
 class ExcelReporter(BaseReporter):
@@ -19,8 +23,6 @@ class ExcelReporter(BaseReporter):
 
     def __init__(self) -> None:
         self.font_title = Font(name="Calibri", size=16, bold=True, color="1F497D")
-        self.font_subtitle = Font(name="Calibri", size=11, italic=True, color="595959")
-        self.font_section = Font(name="Calibri", size=13, bold=True, color="1F497D")
         self.font_header = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
         self.font_data = Font(name="Calibri", size=11)
         self.font_bold = Font(name="Calibri", size=11, bold=True)
@@ -42,32 +44,38 @@ class ExcelReporter(BaseReporter):
 
         thin = Side(border_style="thin", color="D9D9D9")
         self.border_cell = Border(left=thin, right=thin, top=thin, bottom=thin)
+        self.align_top_wrap = Alignment(vertical="top", wrap_text=True)
+        self.align_center_top = Alignment(horizontal="center", vertical="top")
+
+    def _status_fill(self, status: CheckStatus) -> PatternFill:
+        if status == CheckStatus.PASS:
+            return self.fill_pass
+        if status == CheckStatus.WARN:
+            return self.fill_warn
+        if status == CheckStatus.FAIL:
+            return self.fill_fail
+        return self.fill_skip
+
+    def _severity_fill(self, severity: CheckSeverity) -> PatternFill:
+        if severity == CheckSeverity.CRITICAL:
+            return self.fill_fail
+        if severity == CheckSeverity.HIGH:
+            return self.fill_sev_high
+        if severity == CheckSeverity.MEDIUM:
+            return self.fill_warn
+        return self.fill_sev_low
 
     def _apply_status_style(self, cell, status: CheckStatus) -> None:
         """Apply color-coded badge style to status cell."""
-        if status == CheckStatus.PASS:
-            cell.fill = self.fill_pass
-        elif status == CheckStatus.WARN:
-            cell.fill = self.fill_warn
-        elif status == CheckStatus.FAIL:
-            cell.fill = self.fill_fail
-        else:
-            cell.fill = self.fill_skip
+        cell.fill = self._status_fill(status)
         cell.font = self.font_bold
-        cell.alignment = Alignment(horizontal="center", vertical="top")
+        cell.alignment = self.align_center_top
 
     def _apply_severity_style(self, cell, severity: CheckSeverity) -> None:
         """Apply subtle color-coded badge styling to severity cells."""
-        if severity == CheckSeverity.CRITICAL:
-            cell.fill = self.fill_fail
-        elif severity == CheckSeverity.HIGH:
-            cell.fill = self.fill_sev_high
-        elif severity == CheckSeverity.MEDIUM:
-            cell.fill = self.fill_warn
-        else:
-            cell.fill = self.fill_sev_low
+        cell.fill = self._severity_fill(severity)
         cell.font = self.font_bold
-        cell.alignment = Alignment(horizontal="center", vertical="top")
+        cell.alignment = self.align_center_top
 
     @staticmethod
     def _estimate_row_height(
@@ -781,6 +789,12 @@ class ExcelReporter(BaseReporter):
             "compliant",
         }
 
+        omitted = max(0, len(findings) - (EXCEL_MAX_ROWS - 2))
+        if omitted:
+            logger.warning("Sheet '%s' exceeds Excel's row limit; %d findings omitted from the workbook.", ws.title, omitted)
+            findings = findings[: EXCEL_MAX_ROWS - 2]
+
+        styler = CellStyler()
         for row_idx, f in enumerate(findings, start=2):
             target_file = self.infer_target_file(f.check_id)
 
@@ -835,27 +849,19 @@ class ExcelReporter(BaseReporter):
             row_values_cache.append((row_idx, values, f.status))
             use_zebra = row_idx % 2 == 1
 
+            zebra_fill = self.fill_zebra if use_zebra else None
             for col_idx, val in enumerate(values, start=1):
                 cell = ws.cell(row=row_idx, column=col_idx, value=val)
-                cell.font = self.font_data
-                cell.border = self.border_cell
-                cell.alignment = Alignment(vertical="top", wrap_text=True)
-
-                if use_zebra and col_idx not in (5, 6):
-                    cell.fill = self.fill_zebra
-
+                font, fill, alignment = self.font_data, zebra_fill, self.align_top_wrap
                 if col_idx == 5:
-                    self._apply_status_style(cell, f.status)
+                    font, fill, alignment = self.font_bold, self._status_fill(f.status), self.align_center_top
                 elif col_idx == 6:
+                    alignment = self.align_center_top
                     if f.status in (CheckStatus.WARN, CheckStatus.FAIL):
-                        self._apply_severity_style(cell, f.severity)
-                    else:
-                        if use_zebra:
-                            cell.fill = self.fill_zebra
-                        cell.alignment = Alignment(horizontal="center", vertical="top")
+                        font, fill = self.font_bold, self._severity_fill(f.severity)
                 elif val == "-":
-                    cell.font = self.font_muted
-                    cell.alignment = Alignment(horizontal="center", vertical="top")
+                    font, alignment = self.font_muted, self.align_center_top
+                styler.apply(cell, font=font, fill=fill, border=self.border_cell, alignment=alignment)
 
         col_widths = self._auto_adjust_columns(
             ws,
@@ -867,3 +873,10 @@ class ExcelReporter(BaseReporter):
                 values, col_widths, min_height=min_h, max_height=140.0
             )
         ws.auto_filter.ref = f"A1:K{len(findings) + 1}"
+        if omitted:
+            notice = ws.cell(
+                row=len(findings) + 2,
+                column=1,
+                value=f"{omitted:,} additional findings omitted: Excel supports at most {EXCEL_MAX_ROWS:,} rows per sheet.",
+            )
+            notice.font = self.font_italic

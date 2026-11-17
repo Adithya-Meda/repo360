@@ -24,7 +24,6 @@ import requests
 from . import __version__ as PACKAGE_VERSION
 from .common.interrupts import run_interruptible_subprocess
 from .common.text import pluralize
-from .credentials import get_credentials_path, get_secrets_dir
 
 logger = logging.getLogger("repo360.upgrade")
 
@@ -32,6 +31,7 @@ DEFAULT_REPO_URL = "https://github.com/Adithya-Meda/repo360.git"
 _VALID_GIT_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
 _SEMVER_TAG_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
 _HEX_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
+_FULL_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 
 
 def _posix_bin_candidates(exe_name: str) -> List[Path]:
@@ -111,8 +111,8 @@ def find_uv_executable() -> Optional[str]:
             bundled = Path(str(find_bin()))
             if bundled.is_file():
                 return str(bundled)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Best-effort step skipped: %s", exc)
 
     return _first_existing_file(candidates)
 
@@ -153,8 +153,8 @@ def _detect_pipx_backend() -> str:
             backend = str(meta_data.get("backend") or "").strip().lower()
             if backend in ("uv", "pip"):
                 return backend
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Best-effort step skipped: %s", exc)
 
     info = get_installation_details()
     installer = str(info.get("installer") or "").lower()
@@ -175,22 +175,6 @@ def _build_target_spec(repo_url: str, target_ref: Optional[str] = None) -> str:
     if target_ref and "@" not in clean_url and "#" not in clean_url:
         return f"git+{clean_url}@{target_ref.strip()}"
     return f"git+{clean_url}"
-
-
-def detect_installer() -> Tuple[str, List[str]]:
-    """Detect whether Repo360 is running within pipx or standard pip/virtualenv.
-
-    Returns:
-        Tuple of (installer_name, base_command_tokens).
-    """
-    prefix = sys.prefix.lower()
-    pipx_bin = find_pipx_executable()
-
-    if "pipx" in prefix and pipx_bin:
-        # Upgrade in place via 'pipx runpip' to avoid Windows file locks on python.exe
-        return "pipx", [pipx_bin, "runpip", _detect_pipx_venv_name(), "install", "--upgrade"]
-
-    return "pip", [sys.executable, "-m", "pip", "install", "--upgrade"]
 
 
 def get_upgrade_commands(
@@ -265,23 +249,6 @@ def get_upgrade_commands(
     return commands
 
 
-def build_upgrade_command(
-    repo_url: str = DEFAULT_REPO_URL,
-    installer_override: Optional[str] = None,
-) -> Tuple[str, List[str]]:
-    """Construct the primary shell command to upgrade Repo360 to the latest version.
-
-    Args:
-        repo_url: Git repository clone URL.
-        installer_override: Force 'pipx' or 'pip'.
-
-    Returns:
-        Tuple of (installer_type, command_list).
-    """
-    candidates = get_upgrade_commands(repo_url, installer_override)
-    return candidates[0][0], candidates[0][1]
-
-
 def _parse_github_owner_repo(repo_url: str) -> Optional[Tuple[str, str]]:
     """Extract (owner, repo) from a GitHub HTTPS repository URL."""
     if not repo_url:
@@ -338,8 +305,8 @@ def _fetch_commit_summary(
                 "date": str(committer_date or author_date),
                 "subject": subject,
             }
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Best-effort step skipped: %s", exc)
     return None
 
 
@@ -578,8 +545,8 @@ def resolve_commit_target(
                         if len(parts) == 2 and parts[1].strip() == "HEAD" and parts[0].strip():
                             sha = parts[0].strip()
                             return ReleaseTarget(tag=ref_label, commit=sha, source="git-head")
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Best-effort step skipped: %s", exc)
         summary = _fetch_commit_summary(repo_url, "HEAD", timeout=5.0)
         if summary and summary.get("sha"):
             return ReleaseTarget(tag=ref_label, commit=summary["sha"], source="github-head")
@@ -600,8 +567,8 @@ def resolve_commit_target(
                     parts = line.strip().split(None, 1)
                     if len(parts) == 2 and parts[0].strip():
                         return ReleaseTarget(tag=clean_ref, commit=parts[0].strip(), source="git-branch")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Best-effort step skipped: %s", exc)
 
     summary = _fetch_commit_summary(repo_url, clean_ref, timeout=5.0)
     if summary and summary.get("sha"):
@@ -695,8 +662,8 @@ def _get_git_commit_details(repo_dir: Path) -> Dict[str, Any]:
         )
         if branch_res.returncode == 0 and branch_res.stdout.strip():
             details["branch"] = branch_res.stdout.strip()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Best-effort step skipped: %s", exc)
 
     try:
         status_res = run_interruptible_subprocess(
@@ -708,15 +675,10 @@ def _get_git_commit_details(repo_dir: Path) -> Dict[str, Any]:
         )
         if status_res.returncode == 0 and status_res.stdout.strip():
             details["is_dirty"] = True
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Best-effort step skipped: %s", exc)
 
     return details
-
-
-def _git_head_for_dir(repo_dir: Path) -> Optional[str]:
-    """Return git HEAD commit SHA for a specific directory without falling back to CWD."""
-    return _get_git_commit_details(repo_dir).get("commit")
 
 
 def _hash_python_tree(root_dir: Path) -> Dict[str, str]:
@@ -826,8 +788,8 @@ def get_installation_details() -> Dict[str, Any]:
                         kind = "editable local git" if editable else "local git"
                         dirty_suffix = ", dirty" if is_dirty else ""
                         commit_source = f"direct_url.json ({kind}{dirty_suffix})"
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Best-effort step skipped: %s", exc)
 
     if not version:
         version = PACKAGE_VERSION
@@ -1029,8 +991,8 @@ def _invalidate_package_bytecache() -> None:
 
     try:
         importlib.invalidate_caches()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Best-effort step skipped: %s", exc)
 
     if removed:
         logger.debug("Invalidated %s after upgrade.", pluralize(len(removed), "__pycache__ directory", "__pycache__ directories", include_count=True))
@@ -1088,8 +1050,8 @@ def execute_upgrade(candidates: List[Tuple[str, List[str]]], dry_run: bool = Fal
     else:
         try:
             importlib.invalidate_caches()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Best-effort step skipped: %s", exc)
 
     post_version, post_commit = get_local_version_info()
 
@@ -1118,26 +1080,6 @@ def execute_upgrade(candidates: List[Tuple[str, List[str]]], dry_run: bool = Fal
     )
     print(f"\n\033[91m[FAIL]\033[0m Upgrade failed ({chosen_strategy}): {last_error}\n")
     return UpgradeResult(1, already_up_to_date=False, version=local_version, commit=local_commit)
-
-
-def verify_local_state() -> None:
-    """Verify that user credentials and configurations remain intact post-upgrade."""
-    config_file = Path(get_credentials_path())
-    secrets_dir = Path(get_secrets_dir())
-
-    config_ok = config_file.is_file()
-    pem_count = len(list(secrets_dir.glob("*.pem"))) if secrets_dir.is_dir() else 0
-
-    print("\033[96m[VERIFY]\033[0m Verifying configuration integrity:")
-    if config_ok:
-        print(f"  Configuration file : \033[92m[OK]\033[0m {config_file}")
-    else:
-        print(f"  Configuration file : \033[93m[NOTICE]\033[0m Not configured yet (run 'repo360 setup')")
-
-    if pem_count > 0:
-        print(f"  GitHub App keys    : \033[92m[OK]\033[0m {pluralize(pem_count, 'private key', include_count=True)} detected in {secrets_dir}")
-    else:
-        print(f"  GitHub App keys    : \033[93m[NOTICE]\033[0m No stored private keys found in {secrets_dir}")
 
 
 def format_version_output(details: Dict[str, Any]) -> str:
@@ -1244,7 +1186,8 @@ def run_upgrade_cli(argv: Optional[List[str]] = None) -> int:
                     "Check network connectivity and try again."
                 )
             return 1
-        install_ref = target.tag
+        # Install the immutable commit behind the tag so a re-pointed tag cannot swap the installed code
+        install_ref = target.commit if target.commit and _FULL_SHA_RE.match(target.commit) else target.tag
         target_label = target.tag
 
     if (

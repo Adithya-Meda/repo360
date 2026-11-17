@@ -1,4 +1,4 @@
-﻿"""Unit tests for Repo360 global timezone and timestamp normalization engine."""
+"""Unit tests for Repo360 global timezone and timestamp normalization engine."""
 
 from __future__ import annotations
 
@@ -8,11 +8,10 @@ from unittest.mock import patch
 
 import pytest
 
+
 from repo360.common.timezones import (
-    DATE_FMT,
     IST,
     LOCAL_TZ,
-    LOCAL_TZ_NAME,
     WINDOWS_TZ_MAP,
     fmt_timestamp,
     get_local_timezone,
@@ -114,16 +113,50 @@ def test_fmt_timestamp_none_and_custom_defaults():
     assert fmt_timestamp(None, default="N/A") == "N/A"
 
 
-def test_backward_compatibility_aliases():
-    """Verify legacy IST exports remain fully functional across all modules."""
-    from repo360.activity.models import IST as ACT_IST
-    from repo360.bypass.models import IST as BYPASS_IST
-    from repo360.dora.models import IST as DORA_IST
-    from repo360.finops.models import IST as FINOPS_IST
-    from repo360.runners.models import IST as RUNNERS_IST
+def test_backward_compatibility_alias():
+    """The deprecated ``IST`` name must alias the configured local timezone, never a hardcoded India zone."""
+    assert IST is LOCAL_TZ
 
-    assert ACT_IST == LOCAL_TZ
-    assert BYPASS_IST == LOCAL_TZ
-    assert DORA_IST == LOCAL_TZ
-    assert FINOPS_IST == LOCAL_TZ
-    assert RUNNERS_IST == LOCAL_TZ
+
+@pytest.mark.parametrize(
+    ("tz_spec", "zone"),
+    [("EST5EDT", "America/New_York"), ("UTC0", "UTC")],
+)
+def test_system_local_timezone_applies_dst_per_instant(tz_spec, zone):
+    """Without overrides, conversions must follow OS DST rules per timestamp (not one fixed startup offset)."""
+    import subprocess
+    import sys
+
+    script = (
+        "from datetime import datetime, timedelta, timezone\n"
+        "from zoneinfo import ZoneInfo\n"
+        "from repo360.common.timezones import SystemLocalTimezone\n"
+        "tz, ref = SystemLocalTimezone(), ZoneInfo(%r)\n"
+        "base = datetime(2026, 1, 1, tzinfo=timezone.utc)\n"
+        "bad = 0\n"
+        "for m in range(0, 366 * 24 * 2):\n"
+        "    p = base + timedelta(minutes=30 * m)\n"
+        "    a, b = p.astimezone(tz), p.astimezone(ref)\n"
+        "    bad += (a.strftime('%%Y-%%m-%%d %%H:%%M'), a.utcoffset()) != (b.strftime('%%Y-%%m-%%d %%H:%%M'), b.utcoffset())\n"
+        "    bad += a.astimezone(timezone.utc) != p\n"
+        "print(bad)\n"
+    ) % zone
+    env = {k: v for k, v in os.environ.items() if k not in ("REPO360_TIMEZONE",)}
+    env["TZ"] = tz_spec
+    out = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True, timeout=120, check=True)
+    assert out.stdout.strip() == "0"
+
+
+@pytest.mark.parametrize("bad_tz", ["Asia", "America", ":UTC", "Not/A_Zone"])
+def test_invalid_timezone_env_falls_back_without_crashing(bad_tz):
+    """Zone directory names and glibc-style TZ values must not crash module import or resolution."""
+    with patch.dict(os.environ, {"REPO360_TIMEZONE": bad_tz}):
+        tz = get_local_timezone()
+        assert datetime.now(tz).tzinfo is not None
+
+
+def test_numeric_zone_names_get_uniform_utc_offset_label():
+    with patch.dict(os.environ, {"REPO360_TIMEZONE": "Pacific/Kiritimati"}):
+        assert get_local_tz_name() == "UTC+14:00"
+    with patch.dict(os.environ, {"REPO360_TIMEZONE": "America/Sao_Paulo"}):
+        assert get_local_tz_name() == "UTC-03:00"

@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, List, Optional
 
+from ..common.timezones import file_timestamp
 from ..auth.github_app_auth import GitHubAppAuth
 from ..common.cli import add_common_scan_arguments
 from ..common.client import ResilientGitHubClient
@@ -150,7 +151,7 @@ def run_bypass_cli(argv: Optional[List[str]] = None) -> int:
 
     end = datetime.now(timezone.utc)
     since = datetime(1970, 1, 1, tzinfo=timezone.utc) if cfg.lookback_days == 0 else end - timedelta(days=cfg.lookback_days)
-    stamp = end.strftime("%Y%m%d_%H%M%S")
+    stamp = file_timestamp(end)
 
     org_filter = [o.strip() for o in args.org.split(",") if o.strip()] if args.org else None
     discovered_orgs = discover_app_organizations(auth=auth, org_filter=org_filter)
@@ -171,9 +172,11 @@ def run_bypass_cli(argv: Optional[List[str]] = None) -> int:
     )
     orgs = sorted(set(discovered_orgs) | {org for org, _ in targets}, key=str.lower)
 
-    if not targets and not orgs:
-        print("\033[91m[FAIL] No repositories or organizations discovered to analyze.\033[0m\n")
-        return 1
+    if not targets:
+        print(
+            "\033[93m[WARN]\033[0m No accessible repositories discovered; the report will contain organization-level data only. "
+            "Check the GitHub App's repository access settings."
+        )
 
     for org_name in orgs:
         perms = auth.get_installation_permissions(org_name)

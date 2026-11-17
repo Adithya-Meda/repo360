@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
-from ..common.timezones import IST, LOCAL_TZ_NAME
+from ..common.timezones import LOCAL_TZ_NAME
 
 __all__ = [
     "FINOPS_SUMMARY_HEADERS",
@@ -17,7 +17,6 @@ __all__ = [
     "FINOPS_BILLING_HEADERS",
     "OrgBillingSummary",
     "FinOpsConfig",
-    "IST",
 ]
 
 FINOPS_SUMMARY_HEADERS = ("Scope", "Category", "Metric", "Value", "Optimization / Impact")
@@ -116,11 +115,6 @@ def format_bytes_to_mb(size_in_bytes: int) -> float:
 def format_kb_to_mb(size_in_kb: int) -> float:
     """Convert KiB to MiB rounded with precision preservation for small repositories."""
     return _round_mb(size_in_kb / 1024)
-
-
-def format_bytes_to_gb(size_in_bytes: int) -> float:
-    """Convert bytes to GiB rounded to 2 decimal places."""
-    return round(size_in_bytes / (1024 * 1024 * 1024), 2)
 
 
 @dataclass
@@ -401,8 +395,5 @@ class FinOpsConfig:
     timeout_seconds: int = 30
     max_retries: int = 5
     include_archived: bool = False
-    stale_cache_days: int = 30
-    retention_threshold_days: int = 85
-    large_repo_mb: float = 2000.0
     output_dir: str = "./repo360-output"
     file_prefix: str = "repo360_finops"

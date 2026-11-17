@@ -46,6 +46,46 @@ def test_jwt_generation(test_rsa_key_pem: str) -> None:
     assert decoded["exp"] > time.time()
 
 
+@pytest.mark.real_clock_skew
+@patch("requests.head")
+def test_jwt_compensates_for_local_clock_skew(mock_head: MagicMock, test_rsa_key_pem: str) -> None:
+    """A local clock running ahead of GitHub must not produce JWTs GitHub considers expired/future-dated."""
+    import email.utils
+
+    server_now = time.time() - 400
+    mock_head.return_value = MagicMock(headers={"Date": email.utils.formatdate(server_now, usegmt=True)})
+
+    auth = GitHubAppAuth(app_id=1, private_key=test_rsa_key_pem)
+    decoded = jwt.decode(auth.generate_jwt(expiration_seconds=300), options={"verify_signature": False})
+
+    assert abs(decoded["iat"] - (server_now - 60)) < 5
+    assert abs(decoded["exp"] - (server_now + 300)) < 5
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["http://ghe.example.com/api/v3", "ftp://api.github.com", "https://user:pw@api.github.com", "not-a-url"],
+)
+def test_auth_rejects_insecure_or_malformed_api_base_url(url: str, test_rsa_key_pem: str) -> None:
+    """Installation tokens must only ever be sent over HTTPS to a clean API origin."""
+    with pytest.raises(ValueError):
+        GitHubAppAuth(app_id=1, private_key=test_rsa_key_pem, api_base_url=url)
+
+
+@patch("requests.get")
+def test_discover_installations_raises_on_rejected_credentials(mock_get: MagicMock, test_rsa_key_pem: str) -> None:
+    """Bad App credentials must surface as an explicit error, not as 'no installations found'."""
+    import requests as _requests
+
+    unauthorized = MagicMock(status_code=401)
+    unauthorized.raise_for_status.side_effect = _requests.HTTPError("401", response=unauthorized)
+    mock_get.return_value = unauthorized
+
+    auth = GitHubAppAuth(app_id=1, private_key=test_rsa_key_pem)
+    with pytest.raises(RuntimeError, match="rejected the App credentials"):
+        auth.discover_installations()
+
+
 @patch("requests.post")
 def test_token_caching(mock_post: MagicMock, test_rsa_key_pem: str) -> None:
     """Ensure installation token is cached and reused until near expiry."""

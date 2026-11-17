@@ -1,12 +1,9 @@
 ﻿"""Unit tests for user credentials and configuration manager."""
 
-import json
 import os
 import tempfile
-import pytest
 
 from repo360.credentials import (
-    find_private_key,
     get_credentials_path,
     get_secrets_dir,
     get_user_config_dir,
@@ -156,3 +153,20 @@ def test_resolve_runtime_credentials_no_default_model() -> None:
         finally:
             os.environ.pop("REPO360_CONFIG_DIR", None)
 
+
+
+def test_inline_base64_private_key_is_not_replaced_by_local_key(monkeypatch, tmp_path, test_rsa_key_pem) -> None:
+    """A base64 PEM supplied via CI env must be used as-is, never swapped for an unrelated key on disk."""
+    import base64
+
+    from repo360.auth.github_app_auth import GitHubAppAuth
+
+    monkeypatch.setenv("REPO360_CONFIG_DIR", str(tmp_path))
+    save_private_key("-----BEGIN PRIVATE KEY-----\nSTALE\n-----END PRIVATE KEY-----", app_slug="other-app")
+    encoded = base64.b64encode(test_rsa_key_pem.encode("utf-8")).decode("ascii")
+    monkeypatch.setenv("REPO360_APP_ID", "1")
+    monkeypatch.setenv("REPO360_APP_PRIVATE_KEY", encoded)
+
+    creds = resolve_runtime_credentials()
+    assert creds["private_key"] == encoded
+    assert GitHubAppAuth(app_id=1, private_key=creds["private_key"])._private_key_pem.startswith("-----BEGIN")

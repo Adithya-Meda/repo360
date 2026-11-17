@@ -1,11 +1,10 @@
 ﻿"""End-to-end integration tests for Repo360 CLI execution."""
 
 import os
-import sys
 import tempfile
 from unittest.mock import patch
 
-from repo360.main import main, run_audit_cli
+from repo360.main import main
 
 
 def test_bare_repo360_shows_help_without_executing_audit(capsys) -> None:

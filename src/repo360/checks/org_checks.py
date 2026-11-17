@@ -35,8 +35,14 @@ class OrgRulesetsCheck(BaseCheck):
         if perm_err and not rulesets:
             return make_permission_skipped_result(self, org, perm_err, doc_url)
 
-        active_rulesets = [r for r in rulesets if r.get("enforcement") == "active"]
+        # Tag/push rulesets do not govern branches; only branch-targeting rulesets count toward adoption
+        active_rulesets = [
+            r for r in rulesets if r.get("enforcement") == "active" and r.get("target", "branch") == "branch"
+        ]
         evaluate_rulesets = [r for r in rulesets if r.get("enforcement") == "evaluate"]
+        non_branch_active = [
+            r for r in rulesets if r.get("enforcement") == "active" and r.get("target", "branch") != "branch"
+        ]
 
         if active_rulesets:
             return CheckResult(
@@ -54,7 +60,17 @@ class OrgRulesetsCheck(BaseCheck):
                 documentation_url=doc_url,
             )
 
-        if evaluate_rulesets:
+        if evaluate_rulesets or non_branch_active:
+            if non_branch_active and not evaluate_rulesets:
+                state = (
+                    f"{pluralize(len(non_branch_active), 'active organization ruleset', include_count=True)} "
+                    "target only tags or pushes; no branch ruleset is enforced."
+                )
+            else:
+                state = (
+                    f"{pluralize(len(evaluate_rulesets), 'organization ruleset', include_count=True)} found in "
+                    "'evaluate' (dry-run) mode; none actively enforced on branches."
+                )
             return CheckResult(
                 check_id=self.check_id,
                 check_name=self.check_name,
@@ -64,8 +80,8 @@ class OrgRulesetsCheck(BaseCheck):
                 severity=CheckSeverity.MEDIUM,
                 org_name=org,
                 repo_name="Organization-Wide",
-                current_state=f"{pluralize(len(evaluate_rulesets), 'organization ruleset', include_count=True)} found in 'evaluate' (dry-run) mode; none actively enforced.",
-                recommended_state="Switch tested organization rulesets from 'Evaluate' to 'Active' enforcement.",
+                current_state=state,
+                recommended_state="Actively enforce an organization ruleset targeting default and release branches.",
                 explanation="Rulesets in evaluate mode log policy matches without blocking non-compliant pushes or merges.",
                 remediation_snippet_before="Enforcement status: Evaluate (non-blocking)",
                 remediation_snippet_after="Enforcement status: Active",
@@ -100,7 +116,6 @@ class OrgRulesetsCheck(BaseCheck):
             explanation="Without org-level rulesets, branch security depends on disparate repository configurations which creates compliance drift.",
             remediation_snippet_before="Legacy individual repo branch protection or unmanaged branches.",
             remediation_snippet_after="Organization Settings -> Repository Rulesets -> New ruleset: Enforce on 'All repositories' with required pull request reviews & linear history.",
-            remediation_command="gh api --method POST /orgs/{org}/rulesets -f name='Standard Branch Governance'",
             documentation_url=doc_url,
         )
 
@@ -195,7 +210,6 @@ class OrgSecretScanningPushProtectionCheck(BaseCheck):
             explanation="Exposing secrets in Git history requires costly credential revocation and poses high breach risk.",
             remediation_snippet_before="Push protection: Disabled (developers can push raw API keys/tokens)",
             remediation_snippet_after="Organization Settings -> Code security and analysis -> Secret scanning & Push protection: Checked and enforced for new repos.",
-            remediation_command="gh api --method PATCH /orgs/{org} -F 'secret_scanning_push_protection_custom_link=https://wiki.internal/security'",
             documentation_url=doc_url,
         )
 
@@ -356,7 +370,6 @@ class OrgDefaultWorkflowPermissionsCheck(BaseCheck):
                 explanation="Allowing Actions tokens to approve pull requests weakens human peer-review separation of duties.",
                 remediation_snippet_before="can_approve_pull_request_reviews: true",
                 remediation_snippet_after="Organization Settings -> Actions -> General -> Uncheck 'Allow GitHub Actions to create and approve pull requests'",
-                remediation_command="gh api --method PUT /orgs/{org}/actions/permissions/workflow -F default_workflow_permissions='read' -F can_approve_pull_request_reviews=false",
                 documentation_url=doc_url,
             )
 
@@ -374,7 +387,6 @@ class OrgDefaultWorkflowPermissionsCheck(BaseCheck):
             explanation="Read/write tokens allow any compromised workflow dependency to push code or alter releases.",
             remediation_snippet_before="Workflow permissions: Read and write permissions",
             remediation_snippet_after="Organization Settings -> Actions -> General -> Workflow permissions: 'Read repository contents and packages permissions'",
-            remediation_command="gh api --method PUT /orgs/{org}/actions/permissions/workflow -F default_workflow_permissions='read'",
             documentation_url="https://docs.github.com/en/enterprise-cloud@latest/actions/security-guides/automatic-token-authentication",
         )
 

@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..common.timezones import IST, LOCAL_TZ_NAME
+from ..common.timezones import LOCAL_TZ_NAME
 
 __all__ = [
     "DORA_SUMMARY_HEADERS",
@@ -26,7 +26,6 @@ __all__ = [
     "FleetDORASummary",
     "DORAConfig",
     "compute_fleet_dora_summary",
-    "IST",
 ]
 
 DORA_SUMMARY_HEADERS = ("Scope", "Category", "Metric", "Value", "DORA Benchmark Tier", "Industry Standard Context")
@@ -447,7 +446,6 @@ class DeploymentRecord:
     completed_at: Optional[datetime] = None
     stream_key: str = ""
     is_rework: bool = False
-    failure_source: str = ""
     lead_time_source: str = ""
 
 
@@ -557,9 +555,6 @@ class RepoDORAMetrics:
     def total_deploys(self) -> int:
         return len(self.completed_deployments)
 
-    @property
-    def in_progress_deploys(self) -> int:
-        return sum(1 for d in self.deployments if d.status not in ("SUCCESS", "FAILURE"))
 
     @property
     def successful_deploys(self) -> int:

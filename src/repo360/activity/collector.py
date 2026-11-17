@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote
 
 from ..common.client import ResilientGitHubClient
-from ..common.concurrency import map_concurrent, resolve_worker_count
+from ..common.concurrency import map_concurrent
 from ..common.timezones import fmt_timestamp, parse_ts
 from .models import (
     LOCAL_TZ,
@@ -31,83 +29,6 @@ from .models import (
 )
 
 logger = logging.getLogger("repo360.activity")
-
-
-def resolve_activity_targets(
-    client: ResilientGitHubClient,
-    entries: List[Tuple[str, str]],
-    cfg: ActivityConfig,
-) -> Tuple[List[Tuple[str, str]], List[Tuple[str, str]], Dict[Tuple[str, str], Dict[str, Any]]]:
-    """Resolve and expand target repositories (including '*' wildcard) with metadata cache."""
-    org_wildcards = {org.lower(): org for org, repo in entries if repo == "*"}
-    specific_repos = [(org, repo) for org, repo in entries if repo != "*"]
-
-    targets: List[Tuple[str, str]] = []
-    failures: List[Tuple[str, str]] = []
-    metadata_cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
-
-    def _expand_org(original_org: str) -> Tuple[List[Tuple[str, str]], Dict[Tuple[str, str], Dict[str, Any]], Optional[Tuple[str, str]]]:
-        org_targets: List[Tuple[str, str]] = []
-        org_meta: Dict[Tuple[str, str], Dict[str, Any]] = {}
-        try:
-            for repo_data in client.paginate(original_org, f"/orgs/{original_org}/repos", {"type": "all"}):
-                repo_name = repo_data.get("name")
-                if not repo_name:
-                    continue
-                if repo_data.get("archived") and not cfg.include_archived:
-                    continue
-                if repo_data.get("fork") and not cfg.include_forks:
-                    continue
-                org_targets.append((original_org, repo_name))
-                org_meta[(original_org.casefold(), repo_name.casefold())] = repo_data
-            return org_targets, org_meta, None
-        except Exception as exc:
-            logger.error("Failed expanding wildcard for org %s: %s", original_org, exc)
-            return org_targets, org_meta, (f"{original_org}/*", str(exc))
-
-    wildcard_batches = map_concurrent(
-        list(org_wildcards.values()),
-        _expand_org,
-        max_workers=min(8, len(org_wildcards)) if org_wildcards else 1,
-        max_cap=8,
-        thread_name_prefix="act-wildcards",
-    )
-    for org_targets, org_meta, fail_item in wildcard_batches:
-        targets.extend(org_targets)
-        metadata_cache.update(org_meta)
-        if fail_item:
-            failures.append(fail_item)
-
-    def _fetch_specific(pair: Tuple[str, str]) -> Tuple[Optional[Tuple[str, str]], Optional[Dict[str, Any]], Optional[Tuple[str, str]]]:
-        org, repo = pair
-        try:
-            repo_data = client.get(org, f"/repos/{org}/{repo}")
-            if repo_data.get("archived") and not cfg.include_archived:
-                return None, None, None
-            if repo_data.get("fork") and not cfg.include_forks:
-                return None, None, None
-            return (org, repo), repo_data, None
-        except Exception as exc:
-            logger.warning("Repository %s/%s inaccessible: %s", org, repo, exc)
-            return None, None, (f"{org}/{repo}", str(exc))
-
-    specific_results = map_concurrent(
-        specific_repos,
-        _fetch_specific,
-        max_workers=resolve_worker_count(cfg.max_workers, len(specific_repos), max_cap=24) if specific_repos else 1,
-        max_cap=24,
-        thread_name_prefix="act-specific",
-    )
-    for target_pair, repo_data, fail_item in specific_results:
-        if target_pair and repo_data is not None:
-            org, repo = target_pair
-            targets.append((org, repo))
-            metadata_cache[(org.casefold(), repo.casefold())] = repo_data
-        if fail_item:
-            failures.append(fail_item)
-
-    targets.sort(key=lambda t: (t[0].lower(), t[1].lower()))
-    return targets, failures, metadata_cache
 
 
 def collect_pull_requests_graphql(
@@ -179,6 +100,7 @@ def collect_pull_requests_graphql(
     }
     """
     cursor = None
+    seen_cursors: Set[str] = set()
     while True:
         data = client.graphql(org, query, {"owner": org, "name": repo, "cursor": cursor})
         repo_data = (data.get("data") or {}).get("repository")
@@ -206,7 +128,11 @@ def collect_pull_requests_graphql(
             reviews_nodes = list(reviews_conn.get("nodes") or [])
             rev_page_info = reviews_conn.get("pageInfo") or {}
             pr_node_id = pr.get("id")
+            seen_review_cursors: Set[str] = set()
             while rev_page_info.get("hasNextPage") and rev_page_info.get("endCursor") and pr_node_id:
+                if rev_page_info["endCursor"] in seen_review_cursors:
+                    break
+                seen_review_cursors.add(rev_page_info["endCursor"])
                 extra = client.graphql(
                     org,
                     reviews_page_query,
@@ -234,9 +160,11 @@ def collect_pull_requests_graphql(
                 report.review_hours.append((first_review - created).total_seconds() / 3600)
 
         page_info = (repo_data.get("pullRequests") or {}).get("pageInfo") or {}
-        if not page_info.get("hasNextPage"):
+        next_cursor = page_info.get("endCursor")
+        if not page_info.get("hasNextPage") or not next_cursor or next_cursor in seen_cursors:
             break
-        cursor = page_info.get("endCursor")
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
 
     return True
 
@@ -441,8 +369,8 @@ def collect_repository(
                     branch_rules = client.get(org, f"{base}/rules/branches/{quote(branch, safe='')}")
                     if isinstance(branch_rules, list) and branch_rules:
                         protected.append(f"{branch} (Ruleset)")
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Optional enrichment lookup skipped: %s", exc)
             report.protected_branches = tuple(sorted(protected, key=str.casefold))
             report.protected = "Yes" if report.protected_branches else "No"
         except Exception as exc:
@@ -461,16 +389,19 @@ def collect_repository(
             else:
                 report.codeowners = "No"
         except Exception:
+            lookup_failed = False
             for path in (".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"):
                 try:
-                    content = client.get(org, f"{base}/contents/{quote(path, safe='/')}", {"ref": branch})
+                    content = client.get(org, f"{base}/contents/{quote(path, safe='/')}", {"ref": branch}, allow_404=True)
                     if isinstance(content, dict) and content.get("type") == "file":
                         report.codeowners, report.codeowners_path = "Yes", path
                         break
-                except Exception:
-                    continue
+                except Exception as exc:
+                    lookup_failed = True
+                    logger.debug("CODEOWNERS lookup failed for %s/%s at %s: %s", org, repo, path, exc)
             else:
-                report.codeowners = "No"
+                # Only a confirmed 404 on every location proves absence; API/permission errors stay "Unknown"
+                report.codeowners = "Unknown" if lookup_failed else "No"
 
     return report
 
@@ -875,8 +806,8 @@ def build_management_tables(
         opened = sum(result.cohort_opened for result in selected)
         merged = sum(result.cohort_merged for result in selected)
 
-        def add(category: str, metric: str, value: Any, definition: str) -> None:
-            kpis.append([org, category, metric, value, definition])
+        def add(category: str, metric: str, value: Any, definition: str, _org: str = org) -> None:
+            kpis.append([_org, category, metric, value, definition])
 
         add(
             "User Adoption",
@@ -1034,28 +965,3 @@ def build_management_tables(
     return tables
 
 
-def load_history(path: Path) -> Dict[str, Any]:
-    """Load historical adoption trend snapshots."""
-    if not path.is_file():
-        return {"version": 1, "snapshots": []}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(data, dict) and data.get("version") == 1 and isinstance(data.get("snapshots"), list):
-            return data
-    except Exception as exc:
-        logger.debug("Could not read adoption history from %s: %s", path, exc)
-    return {"version": 1, "snapshots": []}
-
-
-def save_history(path: Path, data: Dict[str, Any]) -> None:
-    """Safely persist adoption history snapshots."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(f".{path.name}.tmp")
-    try:
-        with open(temp, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-        temp.replace(path)
-    except Exception as exc:
-        logger.debug("Failed saving adoption history: %s", exc)
-        if temp.exists():
-            temp.unlink(missing_ok=True)

@@ -41,6 +41,11 @@ def test_org_rulesets_check() -> None:
     inspector.get_org_rulesets.return_value = [{"name": "Dry Run Ruleset", "enforcement": "evaluate"}]
     assert check.evaluate(inspector, "org", {}).status == CheckStatus.WARN
 
+    inspector.get_org_rulesets.return_value = [{"name": "Tags only", "enforcement": "active", "target": "tag"}]
+    tag_only = check.evaluate(inspector, "org", {})
+    assert tag_only.status == CheckStatus.WARN
+    assert "no branch ruleset" in tag_only.current_state
+
     inspector.get_org_rulesets.return_value = []
     inspector.get_org_info.return_value = None
     assert check.evaluate(inspector, "org", {}).status == CheckStatus.FAIL
@@ -283,10 +288,41 @@ def test_dependabot_config_check() -> None:
     check = DependabotConfigCheck()
 
     inspector.check_file_exists.return_value = True
-    assert check.evaluate(inspector, "org", "repo", "main", {}).status == CheckStatus.PASS
+    inspector.get_file_content.return_value = (
+        "version: 2\nupdates:\n  - package-ecosystem: \"pip\"  # python\n    directory: /\n  - package-ecosystem: github-actions\n"
+    )
+    res = check.evaluate(inspector, "org", "repo", "main", {})
+    assert res.status == CheckStatus.PASS
+    assert "github-actions, pip" in res.current_state
+
+    inspector.get_file_content.return_value = 'version: 2\nupdates:\n  - package-ecosystem: ""\n'
+    assert check.evaluate(inspector, "org", "repo", "main", {}).status == CheckStatus.FAIL
+
+    inspector.get_file_content.return_value = None
+    assert check.evaluate(inspector, "org", "repo", "main", {}).status == CheckStatus.WARN
 
     inspector.check_file_exists.return_value = False
     assert check.evaluate(inspector, "org", "repo", "main", {}).status == CheckStatus.FAIL
+
+
+def test_workflow_checks_never_pass_with_unreadable_workflows() -> None:
+    """Partial inspection coverage must surface as WARN/SKIPPED, never as a compliant PASS."""
+    from repo360.checks.repo_checks import WorkflowConcurrencyGroupsCheck, WorkflowShaPinningCheck
+
+    inspector = MagicMock()
+    inspector.get_permission_error.return_value = None
+    inspector.list_workflows.return_value = [
+        {"name": "ci", "path": ".github/workflows/ci.yml"},
+        {"name": "release", "path": ".github/workflows/release.yml"},
+    ]
+    good = "concurrency:\n  group: x\njobs:\n  a:\n    steps:\n      - uses: actions/checkout@" + "a" * 40 + "\n"
+    for check in (WorkflowShaPinningCheck(), WorkflowConcurrencyGroupsCheck()):
+        inspector.get_file_content.side_effect = [good, None]
+        assert check.evaluate(inspector, "org", "repo", "main", {}).status == CheckStatus.WARN
+        inspector.get_file_content.side_effect = [None, None]
+        assert check.evaluate(inspector, "org", "repo", "main", {}).status == CheckStatus.SKIPPED
+        inspector.get_file_content.side_effect = [good, good]
+        assert check.evaluate(inspector, "org", "repo", "main", {}).status == CheckStatus.PASS
 
 
 def test_contributor_checks() -> None:
@@ -403,3 +439,28 @@ def test_org_rulesets_403_diagnostics(
         assert snippet in res.current_state
     for snippet in unexpected_snippets:
         assert snippet not in res.current_state
+
+
+def test_dependabot_check_accepts_crlf_configs() -> None:
+    inspector = MagicMock()
+    inspector.check_file_exists.return_value = True
+    inspector.get_file_content.return_value = 'version: 2\r\nupdates:\r\n  - package-ecosystem: "pip"\r\n    directory: /\r\n'
+    assert DependabotConfigCheck().evaluate(inspector, "org", "repo", "main", {}).status == CheckStatus.PASS
+
+
+def test_workflow_checks_ignore_dynamic_and_deleted_workflows() -> None:
+    """GitHub-managed dynamic workflows and deleted workflows have no file and must not be flagged as unreadable."""
+    from repo360.checks.repo_checks import WorkflowConcurrencyGroupsCheck, WorkflowShaPinningCheck
+
+    inspector = MagicMock()
+    inspector.get_permission_error.return_value = None
+    inspector.list_workflows.return_value = [
+        {"name": "ci", "path": ".github/workflows/ci.yml", "state": "active"},
+        {"name": "pages-build-deployment", "path": "dynamic/pages/pages-build-deployment", "state": "active"},
+        {"name": "old", "path": ".github/workflows/old.yml", "state": "deleted"},
+    ]
+    good = "concurrency:\n  group: x\njobs:\n  a:\n    steps:\n      - uses: actions/checkout@" + "a" * 40 + "\n"
+    inspector.get_file_content.side_effect = lambda org, repo, path, ref: good if path.endswith("ci.yml") else None
+    for check in (WorkflowShaPinningCheck(), WorkflowConcurrencyGroupsCheck()):
+        assert check.evaluate(inspector, "org", "repo", "develop", {}).status == CheckStatus.PASS
+    inspector.list_workflows.assert_called_with("org", "repo", "develop")

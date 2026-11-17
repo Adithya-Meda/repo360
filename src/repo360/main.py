@@ -2,15 +2,6 @@
 
 from __future__ import annotations
 
-import warnings
-
-# Silence third-party SDK syntax/deprecation warnings (e.g. google-genai) on Python 3.12+
-warnings.filterwarnings("ignore", category=SyntaxWarning)
-warnings.filterwarnings("ignore", category=UserWarning)
-warnings.filterwarnings("ignore", category=DeprecationWarning)
-warnings.filterwarnings("ignore", message=".*invalid escape sequence.*")
-warnings.filterwarnings("ignore", message=".*automatic function calling.*")
-
 import argparse
 import concurrent.futures
 import logging
@@ -29,6 +20,19 @@ from .common.interrupts import (
 
 # Arm Ctrl+C handlers and silent excepthook before importing heavy SDKs
 install_signal_handlers()
+
+
+def _load_local_env() -> None:
+    """Load ``./.env`` from the current working directory without overriding real environment variables."""
+    env_path = os.path.join(os.getcwd(), ".env")
+    if os.path.isfile(env_path):
+        from dotenv import load_dotenv
+
+        load_dotenv(env_path, override=False)
+
+
+# Must run before importing modules that resolve settings at import time (e.g. REPO360_TIMEZONE)
+_load_local_env()
 
 from .ai import AIEngine, resolve_ai_cli_flag
 from .auth.github_app_auth import GitHubAppAuth
@@ -51,6 +55,7 @@ from .common.concurrency import (
     resolve_worker_count,
 )
 from .reporters.excel_reporter import ExcelReporter
+from .common.timezones import file_timestamp
 from .validator import ConfigValidator, RepoTarget
 
 try:
@@ -569,11 +574,11 @@ Usage:
 
 Analytics & Intelligence Commands:
   audit       Security, governance, and CI/CD compliance audit across repositories
-  activity    Contributor activity metrics — commits, pull requests, reviews, and issues
-  runners     Self-hosted runner fleet analytics — availability, compute hours, and queue latency
-  finops      Storage and cost profiling — quotas, artifact retention, and package registries
-  dora        DORA delivery metrics — Deployment Frequency, Lead Time, Change Failure Rate, MTTR
-  bypass      Push-protection and ruleset bypass audit ledger — actor, type, and timestamp records
+  activity    Contributor activity metrics - commits, pull requests, reviews, and issues
+  runners     Self-hosted runner fleet analytics - availability, compute hours, and queue latency
+  finops      Storage and cost profiling - quotas, artifact retention, and package registries
+  dora        DORA delivery metrics - Deployment Frequency, Lead Time, Change Failure Rate, MTTR
+  bypass      Push-protection and ruleset bypass audit ledger - actor, type, and timestamp records
 
 Configuration & Lifecycle Commands:
   setup       Register the GitHub App and configure credentials
@@ -644,12 +649,17 @@ def _run_health_cli() -> int:
 
 
 def _run_interruptible_command(fn: Callable[[], int]) -> int:
-    """Install fast signal/watchdog handlers, run ``fn()``, and finalize Ctrl+C exit silently."""
+    """Run a subcommand with Ctrl+C handling and a clean error boundary (no raw tracebacks for operators)."""
     install_signal_handlers()
     try:
         return fn()
     except KeyboardInterrupt:
         return finalize_interrupt_exit(130)
+    except Exception as exc:
+        if os.getenv("REPO360_DEBUG", "").strip().lower() in ("1", "true", "yes"):
+            raise
+        _print_failure_banner(f"{type(exc).__name__}: {exc}\n  (Set REPO360_DEBUG=1 for a full traceback.)")
+        return 1
 
 
 def main() -> int:
@@ -727,20 +737,9 @@ def main() -> int:
         return finalize_interrupt_exit(130)
 
 
-def run_audit_cli() -> int:
-    """Dedicated entrypoint for programmatic governance audit execution."""
-    return _run_interruptible_command(_run_cli)
-
-
 def _run_cli() -> int:
     """CLI orchestrator."""
     start_time = time.time()
-    try:
-        from dotenv import load_dotenv
-
-        load_dotenv()
-    except ImportError:
-        pass
 
     parser = argparse.ArgumentParser(
         prog="repo360 audit",
@@ -780,6 +779,7 @@ def _run_cli() -> int:
     )
 
     results: List[CheckResult] = []
+    installed_org_logins: List[str] = []
 
     if args.mock_mode:
         logger.info("Running in offline mock mode (simulating Repo360 audit results)...")
@@ -1002,7 +1002,7 @@ def _run_cli() -> int:
             )
     elif not ai_not_enabled:
         unique_orgs = sorted(
-            set(installed_org_logins if "installed_org_logins" in locals() else [])
+            set(installed_org_logins)
             | {t.org_name for t in targets}
         )
         org_scope_str = ", ".join(unique_orgs)
@@ -1019,7 +1019,7 @@ def _run_cli() -> int:
             executive_summary = AIEngine.build_deterministic_executive_summary(results, org_scope_str)
             active_model = "Deterministic Policy Engine"
 
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    timestamp = file_timestamp()
     prefix = app_config.get("reporting", {}).get("report_prefix", "repo360_audit")
 
     xlsx_path = os.path.join(output_dir, f"{prefix}_{timestamp}.xlsx")
@@ -1043,7 +1043,7 @@ def _run_cli() -> int:
         report_paths,
         ai_engine=ai_engine,
         elapsed_seconds=elapsed,
-        orgs=installed_org_logins if 'installed_org_logins' in locals() else None,
+        orgs=installed_org_logins,
     )
 
     return 0

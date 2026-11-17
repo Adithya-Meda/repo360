@@ -38,6 +38,39 @@ def test_sanitize_text() -> None:
     assert "[REDACTED_CREDENTIAL]" in sanitized_bearer
 
 
+@pytest.mark.parametrize(
+    "secret",
+    [
+        "github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyz0123456789",
+        "gho_" + "a" * 36,
+        "ghu_" + "b" * 36,
+        "AKIAIOSFODNN7EXAMPLE",
+        "xoxb-1234567890-abcdefghij",
+        "sk-proj-" + "c" * 32,
+        "eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiIxMjMifQ.c2lnbmF0dXJlLXZhbHVl",
+        "password=Sup3rS3cret!",
+        "-----BEGIN RSA PRIVATE KEY-----\nMIIEow\n-----END RSA PRIVATE KEY-----",
+    ],
+)
+def test_sanitize_text_redacts_common_credential_formats(secret: str) -> None:
+    """Bypass justifications and audit text may contain live secrets; none may reach a third-party LLM."""
+    sanitized = AIEngine(api_key="", enabled=False).sanitize_text(f"justification: {secret} end")
+    assert secret not in sanitized
+    assert "[REDACTED_CREDENTIAL]" in sanitized
+
+
+def test_provider_endpoint_rejects_plain_http(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Provider API keys and audit data must never be sent over plain HTTP to remote hosts."""
+    engine = AIEngine(api_key="k", model_name="gpt-4o", provider="openai", enabled=True)
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://proxy.example.com/v1")
+    assert engine._provider_endpoint("OPENAI_BASE_URL", "https://api.openai.com/v1", "chat/completions") is None
+    with patch("requests.post") as mock_post:
+        assert engine.verify_connection()[0] is False
+        mock_post.assert_not_called()
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://proxy.example.com/v1")
+    assert engine._provider_endpoint("OPENAI_BASE_URL", "x", "chat/completions") == "https://proxy.example.com/v1/chat/completions"
+
+
 @patch("google.genai.Client")
 def test_generate_executive_summary_success(mock_client_cls: MagicMock) -> None:
     """Verify executive summary generation with mocked Gemini client."""
@@ -444,11 +477,8 @@ def test_init_ai_engine_overrides() -> None:
     eng = init_ai_engine(no_ai=True)
     assert eng.enabled is False
 
-    try:
+    with pytest.raises(RuntimeError, match="--require-ai"):
         init_ai_engine(require_ai=True, no_ai=True)
-        assert False, "Should have raised RuntimeError"
-    except RuntimeError as exc:
-        assert "--require-ai" in str(exc)
 
 
 @patch("google.genai.Client")

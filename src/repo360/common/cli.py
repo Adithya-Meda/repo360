@@ -25,8 +25,6 @@ def make_bounded_int_parser(min_value: int, max_value: Optional[int] = None) -> 
     return _parse
 
 
-parse_non_negative_int = make_bounded_int_parser(0)
-parse_positive_int = make_bounded_int_parser(1)
 parse_workers_arg = make_bounded_int_parser(0, 32)
 parse_days_in_year_arg = make_bounded_int_parser(1, 365)
 parse_lookback_arg = make_bounded_int_parser(0)

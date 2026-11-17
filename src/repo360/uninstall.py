@@ -8,6 +8,7 @@ repo360-output.
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import shutil
 import stat
@@ -22,7 +23,10 @@ from .common.interrupts import interruptible_input, run_interruptible_subprocess
 from .credentials import resolve_user_config_dir
 from .upgrade import find_pipx_executable, get_installation_details
 
+logger = logging.getLogger("repo360.uninstall")
+
 PROTECTED_REPORT_DIR_NAME = "repo360-output"
+_OWNED_CONFIG_DIR_NAMES = frozenset({".repo360", "repo360"})
 
 # Baseline settling duration (3.0s) + additional confirmation grace timer (4.0s)
 DEFAULT_UNINSTALL_SETTLING_DELAY_SECONDS: float = 3.0
@@ -205,7 +209,11 @@ def _safe_rmtree(target: Path) -> Tuple[bool, str]:
         return False, f"Refused to delete protected path: {target}"
 
     if target.is_symlink() or target.is_file():
-        target.unlink()
+        try:
+            target.unlink()
+        except PermissionError:
+            os.chmod(target, stat.S_IWRITE | stat.S_IREAD)
+            target.unlink()
         return True, f"Removed {target}"
 
     kwargs: Dict[str, Any] = (
@@ -246,8 +254,8 @@ def _find_pipx_venv_dir(pipx_bin: Optional[str]) -> Optional[Path]:
                 cand = Path(res.stdout.strip().splitlines()[0]) / "repo360"
                 if cand.is_dir():
                     return cand
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Best-effort step skipped: %s", exc)
 
     home = Path.home()
     candidates: List[Path] = []
@@ -378,6 +386,23 @@ def _cleanup_stale_staged_binaries(scripts_dir: Path) -> List[str]:
     return removed
 
 
+def _config_purge_targets(config_dir: Path) -> List[Path]:
+    """Return the Repo360-owned paths to delete for a config directory.
+
+    Only the default ``~/.repo360`` directory is removed recursively. A custom
+    ``REPO360_CONFIG_DIR`` is never recursively deleted (it may be a shared folder or a
+    checkout); only the files Repo360 itself writes there (``config.json`` and
+    ``secrets/*.private-key.pem``) are removed, followed by now-empty directories.
+    """
+    if not os.getenv("REPO360_CONFIG_DIR") and config_dir.name.casefold() in _OWNED_CONFIG_DIR_NAMES:
+        return [config_dir]
+    targets = [config_dir / "config.json"]
+    secrets_dir = config_dir / "secrets"
+    if secrets_dir.is_dir():
+        targets.extend(sorted(secrets_dir.glob("*.private-key.pem")))
+    return [p for p in targets if p.exists()]
+
+
 def build_uninstall_plan(keep_config: bool = False) -> Dict[str, Any]:
     """Collect all directories, shims, and protected report paths involved in uninstallation."""
     config_dir = Path(resolve_user_config_dir())
@@ -392,8 +417,11 @@ def build_uninstall_plan(keep_config: bool = False) -> Dict[str, Any]:
         bin_shim = None
 
     dirs_to_delete: List[Path] = []
+    config_targets: List[Path] = []
     if not keep_config and config_dir.exists() and not _is_protected_path(config_dir):
-        dirs_to_delete.append(config_dir)
+        config_targets = _config_purge_targets(config_dir)
+        if config_targets:
+            dirs_to_delete.append(config_dir)
     if pipx_venv_dir and pipx_venv_dir.exists() and not _is_protected_path(pipx_venv_dir):
         dirs_to_delete.append(pipx_venv_dir)
 
@@ -406,6 +434,7 @@ def build_uninstall_plan(keep_config: bool = False) -> Dict[str, Any]:
 
     return {
         "config_dir": config_dir,
+        "config_targets": config_targets,
         "pipx_bin": pipx_bin,
         "pipx_venv_dir": pipx_venv_dir,
         "strategy": strategy,
@@ -474,7 +503,12 @@ def _print_uninstall_plan(plan: Dict[str, Any], keep_config: bool) -> None:
     if keep_config:
         print(f"  [KEEP] Config    : {config_dir} (--keep-config enabled)")
     elif config_dir in plan["dirs_to_delete"]:
-        print(f"  [DEL]  Config    : {config_dir} (credentials, config.json, secrets)")
+        targets = plan.get("config_targets") or [config_dir]
+        if targets == [config_dir]:
+            print(f"  [DEL]  Config    : {config_dir} (credentials, config.json, secrets)")
+        else:
+            for target in targets:
+                print(f"  [DEL]  Config    : {target}")
     else:
         print(f"  [INFO] Config    : {config_dir} (not present)")
 
@@ -517,10 +551,17 @@ def execute_uninstall(
 
     config_dir: Path = plan["config_dir"]
     if not keep_config and config_dir.exists():
-        ok, msg = _safe_rmtree(config_dir)
-        if not ok:
-            print(f"\033[91m[FAIL]\033[0m {msg}")
-            exit_code = 1
+        for target in plan.get("config_targets") or _config_purge_targets(config_dir):
+            ok, msg = _safe_rmtree(target)
+            if not ok:
+                print(f"\033[91m[FAIL]\033[0m {msg}")
+                exit_code = 1
+        for leftover in (config_dir / "secrets", config_dir):
+            if leftover.is_dir() and not _is_protected_path(leftover):
+                try:
+                    leftover.rmdir()
+                except OSError:
+                    logger.debug("Kept non-empty directory %s", leftover)
 
     _cleanup_stale_staged_binaries(plan["scripts_dir"])
 

@@ -209,8 +209,8 @@ def resolve_ruleset_metadata(
                         rs_id = rs["id"]
                         rs_name = rs.get("name") or f"Org Ruleset #{rs_id}"
                         org_map[rs_id] = ("Organization", rs_name)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Optional enrichment lookup skipped: %s", exc)
         if ruleset_cache is not None:
             ruleset_cache[org_key] = org_map
         meta_map.update(org_map)
@@ -234,8 +234,8 @@ def resolve_ruleset_metadata(
                     else:
                         scope = "Organization" if rs_id in meta_map else "Repository"
                     meta_map[rs_id] = (scope, rs_name)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Optional enrichment lookup skipped: %s", exc)
 
     if ruleset_cache is not None:
         ruleset_cache[repo_key] = meta_map
@@ -324,8 +324,8 @@ def collect_repo_ruleset_bypasses(
                             evaluations = detailed.get("rule_evaluations") or []
                         if actor == "Unknown" and detailed.get("actor_name"):
                             actor = detailed["actor_name"]
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Optional enrichment lookup skipped: %s", exc)
 
             bypassed_names: List[str] = []
             org_ruleset_names: List[str] = []
@@ -476,8 +476,8 @@ def collect_bypass_data(
                 perms = get_perms(org_name)
                 if isinstance(perms, dict) and perms:
                     push_allowed_by_org[org_name.lower()] = perms.get("secret_scanning_alerts") in ("read", "write")
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Optional enrichment lookup skipped: %s", exc)
 
     for org_name in orgs:
         try:
@@ -490,8 +490,8 @@ def collect_bypass_data(
                         "Organization '%s' is on GitHub Free plan: branch rulesets on private repositories require GitHub Team or Enterprise Cloud.",
                         org_name,
                     )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Optional enrichment lookup skipped: %s", exc)
 
     # Shared cache for ruleset definitions across all target evaluations
     ruleset_cache: Dict[str, Dict[int, Tuple[str, str]]] = {}
@@ -506,8 +506,8 @@ def collect_bypass_data(
                         rs_id = rs["id"]
                         rs_name = rs.get("name") or f"Org Ruleset #{rs_id}"
                         org_map[rs_id] = ("Organization", rs_name)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Optional enrichment lookup skipped: %s", exc)
         ruleset_cache[org_key] = org_map
 
     org_push_bypasses: Dict[str, Dict[str, List[PushProtectionBypassRecord]]] = {}

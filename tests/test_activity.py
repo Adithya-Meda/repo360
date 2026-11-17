@@ -1,16 +1,12 @@
-﻿"""Unit and integration tests for Repo360 user activity scraper."""
+"""Unit and integration tests for Repo360 user activity scraper."""
 
-import os
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock, patch
-import pytest
+from unittest.mock import MagicMock
 
 from repo360.activity.models import (
     Activity,
     ActivityConfig,
-    fmt_timestamp,
     is_bot,
-    parse_ts,
 )
 from repo360.activity.collector import (
     build_org_rows,
@@ -323,9 +319,13 @@ def test_activity_hardened_dormancy_partial_errors_reviews_and_normalization():
         fetch_team_access,
     )
 
-    # 2026-10-31 20:00 UTC == 2026-11-01 01:30 IST
-    boundary_act = Activity()
-    boundary_act.add("commits", datetime(2026, 10, 31, 20, 0, tzinfo=timezone.utc))
+    from unittest.mock import patch
+    from zoneinfo import ZoneInfo
+
+    # Month bucketing follows the configured local timezone: 2026-10-31 20:00 UTC == 2026-11-01 01:30 in Asia/Kolkata
+    with patch("repo360.activity.models.LOCAL_TZ", ZoneInfo("Asia/Kolkata")):
+        boundary_act = Activity()
+        boundary_act.add("commits", datetime(2026, 10, 31, 20, 0, tzinfo=timezone.utc))
     assert (2026, 11) in boundary_act.commit_months
 
     end = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)

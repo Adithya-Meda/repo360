@@ -234,7 +234,7 @@ def collect_runners_and_metrics(
 
             run_params = {
                 "status": "completed",
-                "created": f">={since.strftime('%Y-%m-%d')}",
+                "created": f">={since.astimezone(timezone.utc).strftime('%Y-%m-%d')}",
             }
             for run_item in client.paginate_enveloped(
                 org, f"/repos/{org}/{repo}/actions/runs", "workflow_runs", params=run_params

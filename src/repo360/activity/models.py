@@ -9,7 +9,6 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..common.timezones import (
     DATE_FMT,
-    IST,
     LOCAL_TZ,
     LOCAL_TZ_NAME,
     fmt_timestamp,
@@ -38,7 +37,6 @@ __all__ = [
     "is_bot",
     "fmt_timestamp",
     "parse_ts",
-    "IST",
     "DATE_FMT",
 ]
 
@@ -202,4 +200,3 @@ class ActivityConfig:
     max_retries: int = 5
     output_dir: str = "./repo360-output"
     file_prefix: str = "repo360_activity"
-    history_file: Optional[str] = None

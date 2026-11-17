@@ -114,15 +114,26 @@ All reports are written to `./repo360-output/`.
 repo360 upgrade
 
 # Install or switch to a specific release tag (upgrades or downgrades)
-repo360 upgrade --tag v1.1.0
+repo360 upgrade --tag v1.2.0
 ```
-Stored credentials and GitHub App private keys in `~/.repo360/` are automatically preserved across upgrades.
+Release upgrades install the exact commit the release tag resolves to, so a re-pointed tag cannot change the code you install. Stored credentials and GitHub App private keys in `~/.repo360/` are automatically preserved across upgrades.
 
 #### 5. Uninstall
 ```bash
 repo360 uninstall
 ```
-Removes the installed `repo360` package, isolated virtual environment, and `~/.repo360/` configuration and secrets while preserving generated reports in `./repo360-output/`.
+Removes the installed `repo360` package, isolated virtual environment, and `~/.repo360/` configuration and secrets while preserving generated reports in `./repo360-output/`. If `REPO360_CONFIG_DIR` points to a custom directory, only the files Repo360 created there (`config.json` and `secrets/*.private-key.pem`) are removed — the directory itself is never deleted.
+
+#### 6. Configuration Reference
+| Variable | Purpose |
+| --- | --- |
+| `REPO360_APP_ID`, `REPO360_APP_PRIVATE_KEY` (PEM or base64 PEM), `REPO360_APP_PRIVATE_KEY_PATH`, `REPO360_APP_INSTALLATION_ID` | GitHub App credentials (override `~/.repo360/config.json`) |
+| `REPO360_API_BASE_URL` | GitHub API endpoint (HTTPS required) |
+| `REPO360_CONFIG_DIR` | Alternate location for `config.json` and `secrets/` |
+| `REPO360_TIMEZONE` / `TZ` | IANA timezone (e.g. `Asia/Kolkata`, `America/New_York`) for report timestamps |
+| `REPO360_DEBUG=1` | Show full tracebacks instead of the concise failure banner |
+
+A `.env` file in the current working directory is also loaded; real environment variables always take precedence.
 
 ---
 
@@ -165,7 +176,7 @@ jobs:
 
     steps:
       - name: "Run Repo360 Action"
-        uses: Adithya-Meda/repo360@main # Pin to a release tag in production (e.g. @v1.1.0)
+        uses: Adithya-Meda/repo360@main # Pin to a release tag or commit SHA in production (e.g. @v1.2.0)
         with:
           app_id: ${{ vars.REPO360_APP_ID }}
           private_key: ${{ secrets.REPO360_APP_PRIVATE_KEY }}
