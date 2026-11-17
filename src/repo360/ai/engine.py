@@ -158,6 +158,15 @@ class AIEngine:
                         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
                     )
                     logger.info("AI Engine initialized using Gemini (model: %s)", self.model_name)
+                except ModuleNotFoundError as err:
+                    if "google" in str(err).lower():
+                        msg = "google-genai is not installed (run 'pipx inject repo360 google-genai' or 'pip install repo360[ai]')"
+                        logger.warning("Could not initialize Google GenAI client: %s. Falling back to deterministic mode.", msg)
+                        self.init_error = msg
+                    else:
+                        logger.warning("Could not initialize Google GenAI client: %s. Falling back to deterministic mode.", err)
+                        self.init_error = f"Package initialization failed: {err}"
+                    self.enabled = False
                 except Exception as err:
                     logger.warning("Could not initialize Google GenAI client: %s. Falling back to deterministic mode.", err)
                     self.init_error = f"Package initialization failed: {err}"

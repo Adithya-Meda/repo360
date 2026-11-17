@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from datetime import datetime, timezone
 from unittest.mock import patch
 
@@ -118,6 +119,7 @@ def test_backward_compatibility_alias():
     assert IST is LOCAL_TZ
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX TZ variable is not supported on Windows CRT")
 @pytest.mark.parametrize(
     ("tz_spec", "zone"),
     [("EST5EDT", "America/New_York"), ("UTC0", "UTC")],
@@ -126,6 +128,7 @@ def test_system_local_timezone_applies_dst_per_instant(tz_spec, zone):
     """Without overrides, conversions must follow OS DST rules per timestamp (not one fixed startup offset)."""
     import subprocess
     import sys
+    from pathlib import Path
 
     script = (
         "from datetime import datetime, timedelta, timezone\n"
@@ -143,6 +146,8 @@ def test_system_local_timezone_applies_dst_per_instant(tz_spec, zone):
     ) % zone
     env = {k: v for k, v in os.environ.items() if k not in ("REPO360_TIMEZONE",)}
     env["TZ"] = tz_spec
+    src_dir = str(Path(__file__).resolve().parent.parent / "src")
+    env["PYTHONPATH"] = f"{src_dir}{os.pathsep}{env.get('PYTHONPATH', '')}".rstrip(os.pathsep)
     out = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True, timeout=120, check=True)
     assert out.stdout.strip() == "0"
 
