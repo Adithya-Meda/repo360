@@ -362,6 +362,7 @@ def run_audit(
     completed_lock = threading.Lock()
     completed_count = 0
     stop_event = threading.Event()
+    queued_ai_keys: set[str] = set()
 
     ai_futures: List[concurrent.futures.Future] = []
     ai_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
@@ -422,13 +423,17 @@ def run_audit(
                         )
                         repo_res.append(res)
                         if (
-                            ai_executor
-                            and ai_engine
+                            ai_engine
                             and not stop_event.is_set()
                             and ai_engine.is_eligible_for_remediation(res)
                         ):
                             res.extra_details["_tech_stack"] = dict(tech_stack)
-                            pending_ai_items.append((res, dict(tech_stack)))
+                            get_fn = getattr(ai_engine, "get_cached_remediation", None)
+                            cached = get_fn(res.check_id, tech_stack) if callable(get_fn) else None
+                            if isinstance(cached, str) and cached:
+                                ai_engine.apply_cached_remediation(res, cached, tech_stack)
+                            elif ai_executor and is_ai_live(ai_engine):
+                                pending_ai_items.append((res, dict(tech_stack)))
                     except Exception as err:
                         logger.warning(
                             "Check %s failed on %s/%s: %s",
@@ -454,13 +459,17 @@ def run_audit(
                         )
                         repo_res.append(res)
                         if (
-                            ai_executor
-                            and ai_engine
+                            ai_engine
                             and not stop_event.is_set()
                             and ai_engine.is_eligible_for_remediation(res)
                         ):
                             res.extra_details["_tech_stack"] = dict(tech_stack)
-                            pending_ai_items.append((res, dict(tech_stack)))
+                            get_fn = getattr(ai_engine, "get_cached_remediation", None)
+                            cached = get_fn(res.check_id, tech_stack) if callable(get_fn) else None
+                            if isinstance(cached, str) and cached:
+                                ai_engine.apply_cached_remediation(res, cached, tech_stack)
+                            elif ai_executor and is_ai_live(ai_engine):
+                                pending_ai_items.append((res, dict(tech_stack)))
                     except Exception as err:
                         logger.warning(
                             "Check %s failed on %s/%s: %s",
@@ -482,6 +491,22 @@ def run_audit(
 
             if ai_executor and not stop_event.is_set() and is_ai_live(ai_engine):
                 for res_item, stack_item in pending_ai_items:
+                    # 1. Fast apply if it became cached while in pending
+                    get_fn = getattr(ai_engine, "get_cached_remediation", None)
+                    cached = get_fn(res_item.check_id, stack_item) if callable(get_fn) else None
+                    if isinstance(cached, str) and cached:
+                        ai_engine.apply_cached_remediation(res_item, cached, stack_item)
+                        continue
+
+                    # 2. Deduplicate submission by canonical remediation key
+                    key_fn = getattr(ai_engine, "get_remediation_cache_key", None)
+                    cache_key = key_fn(res_item.check_id, stack_item) if callable(key_fn) else None
+                    if isinstance(cache_key, str) and cache_key in queued_ai_keys:
+                        # Already queued in ai_executor!
+                        continue
+                    if isinstance(cache_key, str):
+                        queued_ai_keys.add(cache_key)
+
                     fut = ai_executor.submit(ai_engine.enrich_remediation, res_item, stack_item)
                     ai_futures.append(fut)
 

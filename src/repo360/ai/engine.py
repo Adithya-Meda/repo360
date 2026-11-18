@@ -128,6 +128,7 @@ class AIEngine:
         self._cache_lock = threading.Lock()
         self._cache_cond = threading.Condition(self._cache_lock)
         self._in_flight_keys: set[str] = set()
+        self._pending_results_by_key: Dict[str, List[Tuple[Any, str]]] = {}
         self._prompt_cache: Dict[str, str] = {}
         self._prompt_cache_max_entries: int = 512
         self._prompt_in_flight: set[str] = set()
@@ -1011,20 +1012,20 @@ Keep it factual, authoritative, professional, and actionable. Do not use filler 
         cache_key = self.get_remediation_cache_key(result.check_id, tech_stack)
         primary_lang, primary_fw, manifests = self.extract_canonical_stack(tech_stack)
 
-        # Wait for any in-flight request with the same cache key
         with self._cache_lock:
-            while cache_key in self._in_flight_keys:
-                self._cache_cond.wait(timeout=10.0)
-                cached_text = self._remediation_cache.get(cache_key)
-                if cached_text:
-                    self._apply_remediation(result, cached_text, primary_lang)
-                    return
-
+            # 1. Fast-path: already synthesized and cached
             cached_text = self._remediation_cache.get(cache_key)
             if cached_text:
                 self._apply_remediation(result, cached_text, primary_lang)
                 return
 
+            # 2. Non-blocking fan-out: another worker is actively synthesizing this key.
+            # Register this result to receive the snippet upon completion without blocking the thread pool.
+            if cache_key in self._in_flight_keys:
+                self._pending_results_by_key.setdefault(cache_key, []).append((result, primary_lang))
+                return
+
+            # 3. First requester becomes the synthesizer
             self._in_flight_keys.add(cache_key)
 
         cleaned_text = ""
@@ -1069,6 +1070,10 @@ Output ONLY the code/configuration snippet inside code fences. Do not add introd
             with self._cache_lock:
                 if cleaned_text:
                     self._remediation_cache[cache_key] = cleaned_text
+                    for pending_res, pending_lang in self._pending_results_by_key.pop(cache_key, []):
+                        self._apply_remediation(pending_res, cleaned_text, pending_lang)
+                else:
+                    self._pending_results_by_key.pop(cache_key, None)
                 self._in_flight_keys.discard(cache_key)
                 self._cache_cond.notify_all()
 

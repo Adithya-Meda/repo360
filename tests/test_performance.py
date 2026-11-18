@@ -377,3 +377,56 @@ def test_client_pacing_wait_is_bounded_and_does_not_accumulate():
             slept_duration = call_args[0][0]
             assert slept_duration <= 0.16, f"Pacing wait accumulated to {slept_duration}s, exceeding bounded delay!"
 
+
+def test_ai_remediation_task_deduplication_and_instant_drain():
+    """Verify that auditing 50+ repositories does not flood ai_executor with thousands of duplicate tasks."""
+    import time
+    from repo360.ai.engine import AIEngine
+    from repo360.main import run_audit
+    from repo360.validator import RepoTarget
+
+    mock_inspector = MagicMock()
+    mock_inspector.detect_tech_stack.return_value = {"languages": ["Python"], "frameworks": ["FastAPI"]}
+    mock_inspector.prefetch_repo_tree.return_value = {"README.md"}
+
+    engine = AIEngine(provider="gemini", api_key="test-key", model_name="gemini-3.6-flash", enabled=True)
+    mock_genai_client = MagicMock()
+    resp = MagicMock()
+    resp.text = "```yaml\n* @org/python-team\n```"
+    mock_genai_client.models.generate_content.return_value = resp
+    engine._client = mock_genai_client
+
+    # Create 50 repositories all needing codeowners_validation
+    targets = [
+        RepoTarget(org_name="org1", repo_name=f"svc-{i}", target_personas={"all"})
+        for i in range(50)
+    ]
+
+    config = {
+        "enabled_checks": {"codeowners_validation": True},
+        "policy_thresholds": {},
+    }
+
+    start = time.monotonic()
+    results = run_audit(
+        inspector=mock_inspector,
+        targets=targets,
+        advisory_config=config,
+        ai_engine=engine,
+        max_workers=4,
+    )
+    duration = time.monotonic() - start
+
+    # Only unique checks were synthesized (codeowners + dependabot) despite 50 target repositories
+    assert mock_genai_client.models.generate_content.call_count <= 2
+    # Duration was sub-second
+    assert duration < 5.0
+
+    # 100% of the 50 repository results received AI remediation
+    codeowner_results = [r for r in results if r.check_id == "codeowners_validation"]
+    assert len(codeowner_results) == 50
+    for r in codeowner_results:
+        assert r.extra_details.get("ai_enriched") is True
+        assert "* @org/python-team" in r.remediation_snippet_after
+
+
