@@ -910,8 +910,8 @@ class RepoInspector:
         prefix_lower = path_lower + "/"
         return any(p.lower().startswith(prefix_lower) for p in tree_set)
 
-    def has_org_default_issue_templates(self, org: str) -> bool:
-        """Check if organization-level default issue templates exist in org/.github repository."""
+    def get_org_default_issue_template_path(self, org: str) -> Optional[str]:
+        """Return the matched path of default issue templates in org/.github, if any."""
         candidates = (
             ".github/ISSUE_TEMPLATE",
             ".github/issue_template",
@@ -926,10 +926,17 @@ class RepoInspector:
             "docs/ISSUE_TEMPLATE.md",
             "docs/issue_template.md",
         )
-        return any(self.check_org_default_file_exists(org, p) for p in candidates)
+        for p in candidates:
+            if self.check_org_default_file_exists(org, p):
+                return f"{p}/" if not p.lower().endswith(".md") else p
+        return None
 
-    def has_org_default_pr_template(self, org: str) -> bool:
-        """Check if organization-level default pull request template exists in org/.github repository."""
+    def has_org_default_issue_templates(self, org: str) -> bool:
+        """Check if organization-level default issue templates exist in org/.github repository."""
+        return self.get_org_default_issue_template_path(org) is not None
+
+    def get_org_default_pr_template_path(self, org: str) -> Optional[str]:
+        """Return the matched path of default PR template in org/.github, if any."""
         candidates = (
             ".github/PULL_REQUEST_TEMPLATE.md",
             ".github/pull_request_template.md",
@@ -944,16 +951,33 @@ class RepoInspector:
             "docs/PULL_REQUEST_TEMPLATE",
             "docs/pull_request_template",
         )
-        return any(self.check_org_default_file_exists(org, p) for p in candidates)
+        for p in candidates:
+            if self.check_org_default_file_exists(org, p):
+                return f"{p}/" if not p.lower().endswith(".md") else p
+        return None
 
-    def has_org_default_contributing(self, org: str) -> bool:
-        """Check if organization-level default CONTRIBUTING.md exists in org/.github repository."""
+    def has_org_default_pr_template(self, org: str) -> bool:
+        """Check if organization-level default pull request template exists in org/.github repository."""
+        return self.get_org_default_pr_template_path(org) is not None
+
+    def get_org_default_contributing_path(self, org: str) -> Optional[str]:
+        """Return the matched path of default CONTRIBUTING.md in org/.github, if any."""
         candidates = (
             "CONTRIBUTING.md",
             ".github/CONTRIBUTING.md",
             "docs/CONTRIBUTING.md",
+            "contributing.md",
+            ".github/contributing.md",
+            "docs/contributing.md",
         )
-        return any(self.check_org_default_file_exists(org, p) for p in candidates)
+        for p in candidates:
+            if self.check_org_default_file_exists(org, p):
+                return p
+        return None
+
+    def has_org_default_contributing(self, org: str) -> bool:
+        """Check if organization-level default CONTRIBUTING.md exists in org/.github repository."""
+        return self.get_org_default_contributing_path(org) is not None
 
     def prefetch_repo_audit_context(
         self,

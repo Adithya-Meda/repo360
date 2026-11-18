@@ -105,6 +105,16 @@ def is_repository_workflow(workflow: Dict[str, Any]) -> bool:
     return path.startswith(".github/workflows/") and state in (None, "active")
 
 
+def get_org_default_issue_template_path(inspector: Any, org: str) -> Optional[str]:
+    """Return the matched path of org default issue templates in org/.github, if any."""
+    getter = getattr(inspector, "get_org_default_issue_template_path", None)
+    if callable(getter):
+        val = getter(org)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return None
+
+
 def check_org_default_issue_templates(inspector: Any, org: str) -> bool:
     """Check if organization-level default issue templates exist in org/.github repo, ignoring unconfigured mocks."""
     checker = getattr(inspector, "has_org_default_issue_templates", None)
@@ -112,7 +122,17 @@ def check_org_default_issue_templates(inspector: Any, org: str) -> bool:
         val = checker(org)
         if isinstance(val, bool):
             return val
-    return False
+    return get_org_default_issue_template_path(inspector, org) is not None
+
+
+def get_org_default_pr_template_path(inspector: Any, org: str) -> Optional[str]:
+    """Return the matched path of org default PR template in org/.github, if any."""
+    getter = getattr(inspector, "get_org_default_pr_template_path", None)
+    if callable(getter):
+        val = getter(org)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return None
 
 
 def check_org_default_pr_template(inspector: Any, org: str) -> bool:
@@ -122,7 +142,17 @@ def check_org_default_pr_template(inspector: Any, org: str) -> bool:
         val = checker(org)
         if isinstance(val, bool):
             return val
-    return False
+    return get_org_default_pr_template_path(inspector, org) is not None
+
+
+def get_org_default_contributing_path(inspector: Any, org: str) -> Optional[str]:
+    """Return the matched path of org default CONTRIBUTING.md in org/.github, if any."""
+    getter = getattr(inspector, "get_org_default_contributing_path", None)
+    if callable(getter):
+        val = getter(org)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return None
 
 
 def check_org_default_contributing(inspector: Any, org: str) -> bool:
@@ -132,4 +162,4 @@ def check_org_default_contributing(inspector: Any, org: str) -> bool:
         val = checker(org)
         if isinstance(val, bool):
             return val
-    return False
+    return get_org_default_contributing_path(inspector, org) is not None

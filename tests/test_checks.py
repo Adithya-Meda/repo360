@@ -843,3 +843,98 @@ def test_repo_inspector_org_default_repo_not_found_caching() -> None:
     assert inspector.has_org_default_issue_templates("no-dot-github-org") is False
     assert inspector.has_org_default_pr_template("no-dot-github-org") is False
     assert client.get.call_count == 1  # Exactly 1 call was made and cached as None
+
+
+def test_dynamic_path_discovery_multi_location_files() -> None:
+    """Verify dynamic path discovery accurately captures target files across root, docs, and .github."""
+    from repo360.checks.contributor_checks import (
+        DevcontainersCheck,
+        IssueTemplatesCheck,
+        PullRequestTemplatesCheck,
+        SetupDocumentationCheck,
+    )
+    import threading
+
+    inspector = MagicMock()
+
+    # 1. Issue Templates: root directory ISSUE_TEMPLATE/
+    issue_check = IssueTemplatesCheck()
+    inspector.check_file_exists.side_effect = lambda org, repo, path, ref="main": path == "ISSUE_TEMPLATE"
+    res = issue_check.evaluate(inspector, "org", "repo", "main", {})
+    assert res.status == CheckStatus.PASS
+    assert res.extra_details["target_file"] == "ISSUE_TEMPLATE/"
+
+    # 1b. Issue Templates: docs directory docs/ISSUE_TEMPLATE/
+    inspector.check_file_exists.side_effect = lambda org, repo, path, ref="main": path == "docs/ISSUE_TEMPLATE"
+    res = issue_check.evaluate(inspector, "org", "repo", "main", {})
+    assert res.status == CheckStatus.PASS
+    assert res.extra_details["target_file"] == "docs/ISSUE_TEMPLATE/"
+
+    # 1c. Issue Templates: inherited from org with custom path docs/ISSUE_TEMPLATE
+    inspector.check_file_exists.side_effect = None
+    inspector.check_file_exists.return_value = False
+    inspector.get_org_default_issue_template_path.return_value = "docs/ISSUE_TEMPLATE/"
+    res = issue_check.evaluate(inspector, "org", "repo", "main", {})
+    assert res.status == CheckStatus.PASS
+    assert res.extra_details["target_file"] == "docs/ISSUE_TEMPLATE/ (Org-Inherited)"
+    inspector.get_org_default_issue_template_path.return_value = None
+
+    # 2. PR Templates: root directory PULL_REQUEST_TEMPLATE/
+    pr_check = PullRequestTemplatesCheck()
+    inspector.check_file_exists.side_effect = lambda org, repo, path, ref="main": path == "PULL_REQUEST_TEMPLATE"
+    inspector.get_file_content.return_value = None
+    res = pr_check.evaluate(inspector, "org", "repo", "main", {})
+    assert res.status == CheckStatus.PASS
+    assert res.extra_details["target_file"] == "PULL_REQUEST_TEMPLATE/"
+
+    # 2b. PR Templates: docs file docs/PULL_REQUEST_TEMPLATE.md
+    inspector.check_file_exists.side_effect = lambda org, repo, path, ref="main": path == "docs/PULL_REQUEST_TEMPLATE.md"
+    inspector.get_file_content.return_value = "## Checklist\n- [ ] Tests passing"
+    res = pr_check.evaluate(inspector, "org", "repo", "main", {})
+    assert res.status == CheckStatus.PASS
+    assert res.extra_details["target_file"] == "docs/PULL_REQUEST_TEMPLATE.md"
+
+    # 2c. PR Templates: inherited from org with root PULL_REQUEST_TEMPLATE.md
+    inspector.check_file_exists.side_effect = None
+    inspector.check_file_exists.return_value = False
+    inspector.get_org_default_pr_template_path.return_value = "PULL_REQUEST_TEMPLATE.md"
+    res = pr_check.evaluate(inspector, "org", "repo", "main", {})
+    assert res.status == CheckStatus.PASS
+    assert res.extra_details["target_file"] == "PULL_REQUEST_TEMPLATE.md (Org-Inherited)"
+    inspector.get_org_default_pr_template_path.return_value = None
+
+    # 3. Setup Documentation: docs/README.md and .github/CONTRIBUTING.md
+    setup_check = SetupDocumentationCheck()
+    inspector.check_file_exists.side_effect = lambda org, repo, path, ref="main": path in ("docs/README.md", ".github/CONTRIBUTING.md")
+    res = setup_check.evaluate(inspector, "org", "repo", "main", {})
+    assert res.status == CheckStatus.PASS
+    assert res.extra_details["target_file"] == "docs/README.md / .github/CONTRIBUTING.md"
+    assert "docs/README.md and .github/CONTRIBUTING.md present" in res.current_state
+
+    # 3b. Setup Documentation: .github/README.md only with setup section
+    inspector.check_file_exists.side_effect = lambda org, repo, path, ref="main": path == ".github/README.md"
+    inspector.get_file_content.side_effect = lambda org, repo, path, ref="main": "## Quickstart\nRun make test" if path == ".github/README.md" else ""
+    res = setup_check.evaluate(inspector, "org", "repo", "main", {})
+    assert res.status == CheckStatus.PASS
+    assert res.extra_details["target_file"] == ".github/README.md"
+    assert ".github/README.md contains setup/getting-started documentation" in res.current_state
+
+    # 3c. Setup Documentation: README.md and inherited docs/CONTRIBUTING.md
+    inspector.check_file_exists.side_effect = lambda org, repo, path, ref="main": path == "README.md"
+    inspector.get_org_default_contributing_path.return_value = "docs/CONTRIBUTING.md"
+    res = setup_check.evaluate(inspector, "org", "repo", "main", {})
+    assert res.status == CheckStatus.PASS
+    assert res.extra_details["target_file"] == "README.md / docs/CONTRIBUTING.md (Org-Inherited)"
+    inspector.get_org_default_contributing_path.return_value = None
+
+    # 4. Devcontainers: subfolder devcontainer discovered from tree cache
+    dev_check = DevcontainersCheck()
+    inspector.check_file_exists.side_effect = None
+    inspector.check_file_exists.return_value = False
+    inspector.get_file_content.side_effect = None
+    inspector.get_file_content.return_value = '{"name": "Python DevContainer", "image": "python:3.12"}'
+    inspector._cache_lock = threading.RLock()
+    inspector._repo_tree_cache = {("org", "repo", "main"): {".devcontainer/python/devcontainer.json"}}
+    res = dev_check.evaluate(inspector, "org", "repo", "main", {})
+    assert res.status == CheckStatus.PASS
+    assert res.extra_details["target_file"] == ".devcontainer/python/devcontainer.json"

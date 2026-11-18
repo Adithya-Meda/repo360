@@ -8,6 +8,9 @@ from ._helpers import (
     check_org_default_contributing,
     check_org_default_issue_templates,
     check_org_default_pr_template,
+    get_org_default_contributing_path,
+    get_org_default_issue_template_path,
+    get_org_default_pr_template_path,
 )
 from .base import BaseCheck, CheckResult, CheckSeverity, CheckStatus, Persona
 from ..collector.repo_inspector import RepoInspector
@@ -36,6 +39,18 @@ class DevcontainersCheck(BaseCheck):
             devcontainer_file = ".devcontainer/devcontainer.json"
         elif inspector.check_file_exists(org, repo, ".devcontainer.json", default_branch):
             devcontainer_file = ".devcontainer.json"
+        else:
+            tree_set = None
+            cache_lock = getattr(inspector, "_cache_lock", None)
+            tree_cache = getattr(inspector, "_repo_tree_cache", None)
+            if cache_lock is not None and isinstance(tree_cache, dict):
+                with cache_lock:
+                    tree_set = tree_cache.get((org, repo, default_branch))
+            if tree_set:
+                devcontainer_file = next(
+                    (p for p in sorted(tree_set) if p.startswith(".devcontainer/") and p.endswith("/devcontainer.json")),
+                    None,
+                )
 
         has_devcontainer_dir = inspector.check_file_exists(org, repo, ".devcontainer", default_branch)
         target_file = devcontainer_file or ".devcontainer/devcontainer.json"
@@ -253,10 +268,17 @@ class IssueTemplatesCheck(BaseCheck):
             ),
             None,
         )
-        has_dir = (
-            inspector.check_file_exists(org, repo, ".github/ISSUE_TEMPLATE", default_branch)
-            or inspector.check_file_exists(org, repo, "ISSUE_TEMPLATE", default_branch)
-            or inspector.check_file_exists(org, repo, "docs/ISSUE_TEMPLATE", default_branch)
+        found_dir = next(
+            (
+                d
+                for d in (
+                    ".github/ISSUE_TEMPLATE",
+                    "ISSUE_TEMPLATE",
+                    "docs/ISSUE_TEMPLATE",
+                )
+                if inspector.check_file_exists(org, repo, d, default_branch)
+            ),
+            None,
         )
 
         if found_file:
@@ -293,7 +315,8 @@ class IssueTemplatesCheck(BaseCheck):
                 extra_details={"target_file": found_file},
             )
 
-        if has_dir:
+        if found_dir:
+            dir_target = f"{found_dir}/"
             return CheckResult(
                 check_id=self.check_id,
                 check_name=self.check_name,
@@ -307,10 +330,12 @@ class IssueTemplatesCheck(BaseCheck):
                 recommended_state="Keep issue forms updated with triage labels.",
                 explanation="Structured issue templates prompt contributors for exact reproduction steps and environment details.",
                 documentation_url="https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/configuring-issue-templates-for-your-repository",
-                extra_details={"target_file": ".github/ISSUE_TEMPLATE/"},
+                extra_details={"target_file": dir_target},
             )
 
-        if repo != ".github" and check_org_default_issue_templates(inspector, org):
+        org_issue_template_path = get_org_default_issue_template_path(inspector, org)
+        if repo != ".github" and (org_issue_template_path or check_org_default_issue_templates(inspector, org)):
+            target_inherited = f"{org_issue_template_path} (Org-Inherited)" if org_issue_template_path else ".github/ISSUE_TEMPLATE/ (Org-Inherited)"
             return CheckResult(
                 check_id=self.check_id,
                 check_name=self.check_name,
@@ -324,7 +349,7 @@ class IssueTemplatesCheck(BaseCheck):
                 recommended_state="Maintain centralized issue templates in the organization '.github' repository or provide repository-specific overrides.",
                 explanation="Structured issue templates prompt contributors for exact reproduction steps and environment details (inherited from organization-level default templates).",
                 documentation_url="https://docs.github.com/en/communities/setting-up-your-project-for-healthy-contributions/creating-a-default-community-health-file",
-                extra_details={"target_file": ".github/ISSUE_TEMPLATE/ (Org-Inherited)"},
+                extra_details={"target_file": target_inherited},
             )
 
         return CheckResult(
@@ -385,6 +410,15 @@ class PullRequestTemplatesCheck(BaseCheck):
         )
 
         if found_template:
+            is_dir_template = found_template in (
+                ".github/PULL_REQUEST_TEMPLATE",
+                ".github/pull_request_template",
+                "PULL_REQUEST_TEMPLATE",
+                "pull_request_template",
+                "docs/PULL_REQUEST_TEMPLATE",
+                "docs/pull_request_template",
+            )
+            template_target = f"{found_template}/" if is_dir_template else found_template
             content = inspector.get_file_content(org, repo, found_template, default_branch)
             if content is not None and not content.strip():
                 return CheckResult(
@@ -396,11 +430,11 @@ class PullRequestTemplatesCheck(BaseCheck):
                     severity=self.severity,
                     org_name=org,
                     repo_name=repo,
-                    current_state=f"Pull Request template '{found_template}' exists but is empty. Please review.",
+                    current_state=f"Pull Request template '{template_target}' exists but is empty. Please review.",
                     recommended_state="Include testing checklists and summary sections in the PR template.",
                     explanation="An empty PR template does not prompt contributors with testing checklists or change descriptions.",
                     documentation_url="https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/creating-a-pull-request-template-for-your-repository",
-                    extra_details={"target_file": found_template},
+                    extra_details={"target_file": template_target},
                 )
             return CheckResult(
                 check_id=self.check_id,
@@ -415,10 +449,12 @@ class PullRequestTemplatesCheck(BaseCheck):
                 recommended_state="Include testing checklists in PR template.",
                 explanation="PR templates ensure that developers verify test coverage, security considerations, and changelogs before requesting review.",
                 documentation_url="https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/creating-a-pull-request-template-for-your-repository",
-                extra_details={"target_file": found_template},
+                extra_details={"target_file": template_target},
             )
 
-        if repo != ".github" and check_org_default_pr_template(inspector, org):
+        org_pr_path = get_org_default_pr_template_path(inspector, org)
+        if repo != ".github" and (org_pr_path or check_org_default_pr_template(inspector, org)):
+            target_inherited = f"{org_pr_path} (Org-Inherited)" if org_pr_path else ".github/PULL_REQUEST_TEMPLATE.md (Org-Inherited)"
             return CheckResult(
                 check_id=self.check_id,
                 check_name=self.check_name,
@@ -432,7 +468,7 @@ class PullRequestTemplatesCheck(BaseCheck):
                 recommended_state="Maintain centralized PR checklist in the organization '.github' repository or provide repository-specific overrides.",
                 explanation="PR templates ensure that developers verify test coverage, security considerations, and changelogs before requesting review (inherited from organization-level default template).",
                 documentation_url="https://docs.github.com/en/communities/setting-up-your-project-for-healthy-contributions/creating-a-default-community-health-file",
-                extra_details={"target_file": ".github/PULL_REQUEST_TEMPLATE.md (Org-Inherited)"},
+                extra_details={"target_file": target_inherited},
             )
 
         return CheckResult(
@@ -575,28 +611,71 @@ class SetupDocumentationCheck(BaseCheck):
         existing_readme = next(
             (
                 path
-                for path in ("README.md", "README.rst", "readme.md", "readme.rst")
+                for path in (
+                    "README.md",
+                    "README.rst",
+                    "readme.md",
+                    "readme.rst",
+                    ".github/README.md",
+                    ".github/README.rst",
+                    ".github/readme.md",
+                    ".github/readme.rst",
+                    "docs/README.md",
+                    "docs/README.rst",
+                    "docs/readme.md",
+                    "docs/readme.rst",
+                )
                 if inspector.check_file_exists(org, repo, path, default_branch)
             ),
             None,
         )
         has_readme = existing_readme is not None
-        has_contributing = any(
-            inspector.check_file_exists(org, repo, path, default_branch)
-            for path in ("CONTRIBUTING.md", ".github/CONTRIBUTING.md", "docs/CONTRIBUTING.md", "SETUP.md")
-        )
-        inherited_contributing = False
-        if not has_contributing and repo != ".github" and check_org_default_contributing(inspector, org):
-            has_contributing = True
-            inherited_contributing = True
 
-        target_file = existing_readme or "README.md"
+        existing_contributing = next(
+            (
+                path
+                for path in (
+                    "CONTRIBUTING.md",
+                    ".github/CONTRIBUTING.md",
+                    "docs/CONTRIBUTING.md",
+                    "CONTRIBUTING.rst",
+                    ".github/CONTRIBUTING.rst",
+                    "docs/CONTRIBUTING.rst",
+                    "contributing.md",
+                    ".github/contributing.md",
+                    "docs/contributing.md",
+                    "SETUP.md",
+                    "setup.md",
+                )
+                if inspector.check_file_exists(org, repo, path, default_branch)
+            ),
+            None,
+        )
+
+        inherited_contributing = False
+        org_contrib_path = None
+        if not existing_contributing and repo != ".github":
+            org_contrib_path = get_org_default_contributing_path(inspector, org)
+            if org_contrib_path or check_org_default_contributing(inspector, org):
+                inherited_contributing = True
+                existing_contributing = f"{org_contrib_path or 'CONTRIBUTING.md'} (Org-Inherited)"
+
+        has_contributing = existing_contributing is not None
+
+        if has_readme and has_contributing:
+            target_file = f"{existing_readme} / {existing_contributing}"
+        elif has_readme:
+            target_file = existing_readme
+        elif has_contributing:
+            target_file = existing_contributing
+        else:
+            target_file = "README.md / CONTRIBUTING.md"
 
         if has_contributing and has_readme:
             state_msg = (
-                f"{existing_readme} and CONTRIBUTING.md present (CONTRIBUTING inherited from organization '.github' repository)."
+                f"{existing_readme} and {existing_contributing} present (CONTRIBUTING inherited from organization '.github' repository)."
                 if inherited_contributing
-                else f"{existing_readme} and CONTRIBUTING.md / setup documentation present."
+                else f"{existing_readme} and {existing_contributing} present."
             )
             return CheckResult(
                 check_id=self.check_id,
@@ -643,11 +722,28 @@ class SetupDocumentationCheck(BaseCheck):
                 severity=self.severity,
                 org_name=org,
                 repo_name=repo,
-                current_state=f"{existing_readme} exists, but lacks explicit setup/install section or CONTRIBUTING.md.",
+                current_state=f"{existing_readme} exists, but lacks explicit setup/install section or contributing documentation.",
                 recommended_state=f"Add local setup commands to {existing_readme} and create CONTRIBUTING.md.",
                 explanation="New contributors need copy-pasteable setup, test, and environment steps to onboard rapidly.",
                 remediation_snippet_before=f"[{existing_readme} without setup or CONTRIBUTING.md]",
                 remediation_snippet_after="## Local Setup\n1. Install dependencies\n2. Run tests locally\n\nSee CONTRIBUTING.md for PR conventions.",
+                documentation_url=doc_url,
+                extra_details={"target_file": target_file},
+            )
+
+        if has_contributing:
+            return CheckResult(
+                check_id=self.check_id,
+                check_name=self.check_name,
+                persona=self.persona,
+                category=self.category,
+                status=CheckStatus.WARN,
+                severity=self.severity,
+                org_name=org,
+                repo_name=repo,
+                current_state=f"{existing_contributing} exists, but README is missing. Please review.",
+                recommended_state="Add README.md with project overview and local setup commands.",
+                explanation="A repository without a README lacks an entry point for engineers to understand the repository purpose.",
                 documentation_url=doc_url,
                 extra_details={"target_file": target_file},
             )
@@ -667,5 +763,5 @@ class SetupDocumentationCheck(BaseCheck):
             remediation_snippet_before="[No README.md or CONTRIBUTING.md]",
             remediation_snippet_after="# Service Overview\n\n## Getting Started\n...",
             documentation_url=doc_url,
-            extra_details={"target_file": "README.md"},
+            extra_details={"target_file": target_file},
         )
