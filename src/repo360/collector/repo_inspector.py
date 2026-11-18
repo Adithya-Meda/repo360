@@ -368,6 +368,46 @@ class RepoInspector:
                 return None
             raise
 
+    def get_org_code_security_defaults(self, org: str) -> List[Dict[str, Any]]:
+        """Fetch default code security configurations for an organization."""
+        try:
+            data = self.client.get(f"/orgs/{org}/code-security/configurations/defaults", allow_404=True)
+            return data if isinstance(data, list) else []
+        except requests.exceptions.HTTPError as err:
+            if self._is_forbidden_error(err):
+                self._record_forbidden_error(
+                    err,
+                    org,
+                    "code_security_defaults",
+                    "/orgs/{org}/code-security/configurations/defaults",
+                    "grant Organization Administration (Read) permission",
+                    permission_key="organization_administration",
+                )
+                return []
+            raise
+
+    def get_org_code_security_configurations(self, org: str) -> List[Dict[str, Any]]:
+        """Fetch all code security configurations for an organization."""
+        try:
+            data = self.client.get(f"/orgs/{org}/code-security/configurations", allow_404=True)
+            if isinstance(data, list):
+                return data
+            if isinstance(data, dict) and "configurations" in data:
+                return data["configurations"]
+            return []
+        except requests.exceptions.HTTPError as err:
+            if self._is_forbidden_error(err):
+                self._record_forbidden_error(
+                    err,
+                    org,
+                    "code_security_configurations",
+                    "/orgs/{org}/code-security/configurations",
+                    "grant Organization Administration (Read) permission",
+                    permission_key="organization_administration",
+                )
+                return []
+            raise
+
     def get_org_saml_sso(self, org: str) -> Optional[Dict[str, Any]]:
         """Inspect GraphQL organization SAML SSO and 2FA enforcement metadata."""
         query = """

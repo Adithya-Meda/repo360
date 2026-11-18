@@ -81,7 +81,59 @@ def test_org_secret_scanning_check() -> None:
     inspector.get_org_info.return_value = {}
     assert check.evaluate(inspector, "org", {}).status == CheckStatus.FAIL
 
+    # When get_org_info returns {"login": "org"} without security_and_analysis, but code security defaults are enabled
     inspector.get_org_info.return_value = {"login": "org"}
+    inspector.get_org_code_security_defaults.return_value = [
+        {
+            "default_for_new_repos": "all",
+            "configuration": {
+                "secret_scanning": "enabled",
+                "secret_scanning_push_protection": "enabled",
+            },
+        }
+    ]
+    assert check.evaluate(inspector, "org", {}).status == CheckStatus.PASS
+
+    # When push protection is disabled in defaults
+    inspector.get_org_code_security_defaults.return_value = [
+        {
+            "default_for_new_repos": "all",
+            "configuration": {
+                "secret_scanning": "enabled",
+                "secret_scanning_push_protection": "disabled",
+            },
+        }
+    ]
+    assert check.evaluate(inspector, "org", {}).status == CheckStatus.WARN
+
+    # When defaults are empty, but get_org_code_security_configurations has enabled push protection
+    inspector.get_org_code_security_defaults.return_value = []
+    inspector.get_org_code_security_configurations.return_value = [
+        {
+            "name": "Custom GHAS",
+            "secret_scanning": "enabled",
+            "secret_scanning_push_protection": "enabled",
+        }
+    ]
+    assert check.evaluate(inspector, "org", {}).status == CheckStatus.PASS
+
+    # When code security configurations are empty, but repo cache has push protection enabled
+    inspector.get_org_code_security_defaults.return_value = []
+    inspector.get_org_code_security_configurations.return_value = []
+    inspector._repo_metadata_cache = {
+        ("org", "repo1"): {
+            "security_and_analysis": {
+                "secret_scanning": {"status": "enabled"},
+                "secret_scanning_push_protection": {"status": "enabled"},
+            }
+        }
+    }
+    assert check.evaluate(inspector, "org", {}).status == CheckStatus.PASS
+
+    # When no configurations and no repo cache data exists, return SKIPPED
+    del inspector._repo_metadata_cache
+    inspector.get_org_code_security_defaults.return_value = []
+    inspector.get_org_code_security_configurations.return_value = []
     assert check.evaluate(inspector, "org", {}).status == CheckStatus.SKIPPED
 
 

@@ -150,6 +150,83 @@ class OrgSecretScanningPushProtectionCheck(BaseCheck):
             )
 
         security_features = org_data.get("security_and_analysis")
+        if not security_features and org_data:
+            # 1. Query GitHub Code Security Configurations defaults (requires Organization Administration: Read)
+            get_defaults = getattr(inspector, "get_org_code_security_defaults", None)
+            if callable(get_defaults):
+                defaults = get_defaults(org)
+                for item in (defaults if isinstance(defaults, list) else []):
+                    cfg = item.get("configuration") if isinstance(item, dict) else None
+                    if isinstance(cfg, dict):
+                        ss = cfg.get("secret_scanning")
+                        pp = cfg.get("secret_scanning_push_protection")
+                        if ss or pp:
+                            security_features = {
+                                "secret_scanning": {"status": ss},
+                                "secret_scanning_push_protection": {"status": pp},
+                            }
+                            break
+
+            # 2. Query all organization Code Security Configurations
+            if not security_features:
+                get_configs = getattr(inspector, "get_org_code_security_configurations", None)
+                if callable(get_configs):
+                    configs = get_configs(org)
+                    for cfg in (configs if isinstance(configs, list) else []):
+                        if isinstance(cfg, dict):
+                            ss = cfg.get("secret_scanning")
+                            pp = cfg.get("secret_scanning_push_protection")
+                            if pp in ("enabled", "enforced") or ss in ("enabled", "enforced"):
+                                security_features = {
+                                    "secret_scanning": {"status": "enabled" if ss in ("enabled", "enforced") else ss},
+                                    "secret_scanning_push_protection": {"status": "enabled" if pp in ("enabled", "enforced") else pp},
+                                }
+                                break
+
+            # 3. Fallback: Aggregate repository-level security_and_analysis across audited repos
+            if not security_features and hasattr(inspector, "_repo_metadata_cache"):
+                lock = getattr(inspector, "_cache_lock", None)
+                if lock:
+                    with lock:
+                        cached_metas = [
+                            meta for (o, _r), meta in inspector._repo_metadata_cache.items()
+                            if o.lower() == org.lower() and isinstance(meta, dict)
+                        ]
+                else:
+                    cached_metas = [
+                        meta for (o, _r), meta in getattr(inspector, "_repo_metadata_cache", {}).items()
+                        if o.lower() == org.lower() and isinstance(meta, dict)
+                    ]
+
+                if cached_metas:
+                    repos_with_ss = 0
+                    repos_with_pp = 0
+                    total_checked = 0
+                    for m in cached_metas:
+                        sec = m.get("security_and_analysis")
+                        if isinstance(sec, dict):
+                            total_checked += 1
+                            if (sec.get("secret_scanning") or {}).get("status") == "enabled":
+                                repos_with_ss += 1
+                            if (sec.get("secret_scanning_push_protection") or {}).get("status") == "enabled":
+                                repos_with_pp += 1
+                    if total_checked > 0:
+                        if repos_with_pp == total_checked:
+                            security_features = {
+                                "secret_scanning": {"status": "enabled"},
+                                "secret_scanning_push_protection": {"status": "enabled"},
+                            }
+                        elif repos_with_ss > 0:
+                            security_features = {
+                                "secret_scanning": {"status": "enabled"},
+                                "secret_scanning_push_protection": {"status": "disabled"},
+                            }
+                        else:
+                            security_features = {
+                                "secret_scanning": {"status": "disabled"},
+                                "secret_scanning_push_protection": {"status": "disabled"},
+                            }
+
         if security_features is None and org_data:
             # Public /orgs/{org} omits security_and_analysis unless Administration: Read + GHAS are accessible
             return make_permission_skipped_result(
