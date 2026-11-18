@@ -331,12 +331,37 @@ def test_environment_protection_gates_check() -> None:
     assert check.evaluate(inspector, "org", "repo", "main", {}).status == CheckStatus.SKIPPED
 
     inspector.get_environments.return_value = [{"name": "production", "protection_rules": []}]
-    assert check.evaluate(inspector, "org", "repo", "main", {}).status == CheckStatus.FAIL
+    res_single = check.evaluate(inspector, "org", "repo", "main", {})
+    assert res_single.status == CheckStatus.WARN
+    assert "Deployment environment 'production' lacks protection rules or deployment branch policies. Please review." in res_single.current_state
+
+    inspector.get_environments.return_value = [
+        {"name": "App Center", "protection_rules": []},
+        {"name": "github-pages", "protection_rules": []},
+    ]
+    res_multi = check.evaluate(inspector, "org", "repo", "main", {})
+    assert res_multi.status == CheckStatus.WARN
+    assert (
+        "Deployment environments lack protection rules or deployment branch policies: App Center, github-pages. Please review."
+        in res_multi.current_state
+    )
+    assert "non-production" not in res_multi.current_state.lower()
+    assert "production/staged" not in res_multi.current_state.lower()
 
     inspector.get_environments.return_value = [
         {"name": "production", "protection_rules": [{"type": "required_reviewers"}]}
     ]
-    assert check.evaluate(inspector, "org", "repo", "main", {}).status == CheckStatus.PASS
+    res_single_pass = check.evaluate(inspector, "org", "repo", "main", {})
+    assert res_single_pass.status == CheckStatus.PASS
+    assert "Deployment environment 'production' enforces protection rules or branch policies." in res_single_pass.current_state
+
+    inspector.get_environments.return_value = [
+        {"name": "production", "protection_rules": [{"type": "required_reviewers"}]},
+        {"name": "staging", "deployment_branch_policy": {"custom_branch_policies": True}},
+    ]
+    res_multi_pass = check.evaluate(inspector, "org", "repo", "main", {})
+    assert res_multi_pass.status == CheckStatus.PASS
+    assert "All 2 deployment environments enforce protection rules or branch policies." in res_multi_pass.current_state
 
 
 def test_workflow_sha_pinning_check() -> None:

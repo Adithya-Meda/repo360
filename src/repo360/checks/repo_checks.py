@@ -418,8 +418,6 @@ class EnvironmentProtectionGatesCheck(BaseCheck):
     category = "Release & Deployment Governance"
     severity = CheckSeverity.HIGH
 
-    PROD_ENV_KEYWORDS = ("prod", "production", "prd", "live", "release", "staging", "stage")
-
     def evaluate(
         self,
         inspector: RepoInspector,
@@ -459,8 +457,7 @@ class EnvironmentProtectionGatesCheck(BaseCheck):
                 documentation_url=doc_url,
             )
 
-        unprotected_prod: List[str] = []
-        unprotected_non_prod: List[str] = []
+        unprotected_envs: List[str] = []
         for env in envs:
             if not isinstance(env, dict):
                 continue
@@ -469,45 +466,40 @@ class EnvironmentProtectionGatesCheck(BaseCheck):
             branch_policy = env.get("deployment_branch_policy")
             has_gate = bool(rules) or isinstance(branch_policy, dict)
             if not has_gate:
-                lowered = env_name.lower()
-                if any(tok in lowered for tok in self.PROD_ENV_KEYWORDS):
-                    unprotected_prod.append(env_name)
-                else:
-                    unprotected_non_prod.append(env_name)
+                unprotected_envs.append(env_name)
 
-        if unprotected_prod:
-            return CheckResult(
-                check_id=self.check_id,
-                check_name=self.check_name,
-                persona=self.persona,
-                category=self.category,
-                status=CheckStatus.FAIL,
-                severity=self.severity,
-                org_name=org,
-                repo_name=repo,
-                current_state=f"Production/staged environments lack protection rules: {', '.join(unprotected_prod)}.",
-                recommended_state="Configure required reviewers and deployment branch policies on production environments.",
-                explanation="Unprotected deployment environments allow any workflow run or branch to access production secrets and deploy.",
-                remediation_snippet_before=f"Environment '{unprotected_prod[0]}': 0 protection rules",
-                remediation_snippet_after="Environment Settings -> Required reviewers + Selected branches (main/release tags only)",
-                documentation_url=doc_url,
-            )
+        if unprotected_envs:
+            if len(unprotected_envs) == 1:
+                state_msg = f"Deployment environment '{unprotected_envs[0]}' lacks protection rules or deployment branch policies. Please review."
+            elif len(unprotected_envs) <= 5:
+                state_msg = f"Deployment environments lack protection rules or deployment branch policies: {', '.join(unprotected_envs)}. Please review."
+            else:
+                displayed = ", ".join(unprotected_envs[:5])
+                remaining = len(unprotected_envs) - 5
+                state_msg = f"Deployment environments lack protection rules or deployment branch policies: {displayed} (+{remaining} more). Please review."
 
-        if unprotected_non_prod:
             return CheckResult(
                 check_id=self.check_id,
                 check_name=self.check_name,
                 persona=self.persona,
                 category=self.category,
                 status=CheckStatus.WARN,
-                severity=CheckSeverity.MEDIUM,
+                severity=self.severity,
                 org_name=org,
                 repo_name=repo,
-                current_state=f"Non-production environments lack protection rules or branch policies: {', '.join(unprotected_non_prod)}.",
-                recommended_state="Add branch policies to restrict which branches can deploy to shared environments.",
-                explanation="Environments without deployment branch policies allow feature branches to read environment secrets.",
+                current_state=state_msg,
+                recommended_state="Configure required reviewers and deployment branch policies on deployment environments.",
+                explanation="Deployment environments without protection rules or branch policies allow any workflow run or branch to access environment secrets and deploy.",
+                remediation_snippet_before=f"Environment '{unprotected_envs[0]}': 0 protection rules or branch policies",
+                remediation_snippet_after="Environment Settings -> Required reviewers + Selected branches (main/release tags only)",
                 documentation_url=doc_url,
             )
+
+        if len(envs) == 1:
+            first_name = envs[0].get("name") if isinstance(envs[0], dict) else "default"
+            state_msg = f"Deployment environment '{first_name}' enforces protection rules or branch policies."
+        else:
+            state_msg = f"All {len(envs)} deployment environments enforce protection rules or branch policies."
 
         return CheckResult(
             check_id=self.check_id,
@@ -518,7 +510,7 @@ class EnvironmentProtectionGatesCheck(BaseCheck):
             severity=self.severity,
             org_name=org,
             repo_name=repo,
-            current_state=f"All {pluralize(len(envs), 'deployment environment', include_count=True)} enforce protection rules or branch policies.",
+            current_state=state_msg,
             recommended_state="Maintain reviewer approvals and branch restrictions on deployment environments.",
             explanation="Deployment environments restrict secrets and release approvals to authorized reviewers and branches.",
             documentation_url=doc_url,
