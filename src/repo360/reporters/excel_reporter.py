@@ -678,7 +678,7 @@ class ExcelReporter(BaseReporter):
                 else "Deterministic Policy Engine"
             )
             source_label = "AI Tailored" if row_is_ai else "Standard Policy (Fallback)"
-            target_file = self.infer_target_file(f.check_id)
+            target_file = self.infer_target_file(f.check_id, f.extra_details)
             remediation_code = f.remediation_snippet_after or f.recommended_state
 
             raw_expl = (f.explanation or "").strip()
@@ -823,7 +823,7 @@ class ExcelReporter(BaseReporter):
 
         styler = CellStyler()
         for row_idx, f in enumerate(findings, start=2):
-            target_file = self.infer_target_file(f.check_id)
+            target_file = self.infer_target_file(f.check_id, f.extra_details)
 
             if f.status == CheckStatus.PASS:
                 raw_state = (f.current_state or "").strip()

@@ -215,6 +215,7 @@ class IssueTemplatesCheck(BaseCheck):
                 recommended_state="Keep issue forms updated with triage labels.",
                 explanation="Structured issue templates prompt contributors for exact reproduction steps and environment details.",
                 documentation_url="https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/configuring-issue-templates-for-your-repository",
+                extra_details={"target_file": ".github/ISSUE_TEMPLATE/"},
             )
 
         if repo != ".github" and check_org_default_issue_templates(inspector, org):
@@ -231,6 +232,7 @@ class IssueTemplatesCheck(BaseCheck):
                 recommended_state="Maintain centralized issue templates in the organization '.github' repository or provide repository-specific overrides.",
                 explanation="Structured issue templates prompt contributors for exact reproduction steps and environment details (inherited from organization-level default templates).",
                 documentation_url="https://docs.github.com/en/communities/setting-up-your-project-for-healthy-contributions/creating-a-default-community-health-file",
+                extra_details={"target_file": ".github/ISSUE_TEMPLATE/ (Org-Inherited)"},
             )
 
         return CheckResult(
@@ -297,6 +299,7 @@ class PullRequestTemplatesCheck(BaseCheck):
                 recommended_state="Include testing checklists in PR template.",
                 explanation="PR templates ensure that developers verify test coverage, security considerations, and changelogs before requesting review.",
                 documentation_url="https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/creating-a-pull-request-template-for-your-repository",
+                extra_details={"target_file": ".github/PULL_REQUEST_TEMPLATE.md"},
             )
 
         if repo != ".github" and check_org_default_pr_template(inspector, org):
@@ -313,6 +316,7 @@ class PullRequestTemplatesCheck(BaseCheck):
                 recommended_state="Maintain centralized PR checklist in the organization '.github' repository or provide repository-specific overrides.",
                 explanation="PR templates ensure that developers verify test coverage, security considerations, and changelogs before requesting review (inherited from organization-level default template).",
                 documentation_url="https://docs.github.com/en/communities/setting-up-your-project-for-healthy-contributions/creating-a-default-community-health-file",
+                extra_details={"target_file": ".github/PULL_REQUEST_TEMPLATE.md (Org-Inherited)"},
             )
 
         return CheckResult(

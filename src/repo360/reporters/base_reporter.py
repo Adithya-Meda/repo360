@@ -68,9 +68,15 @@ class BaseReporter(ABC):
             return True
         return False
 
-    @staticmethod
-    def infer_target_file(check_id: str) -> str:
+    @classmethod
+    def infer_target_file(
+        cls,
+        check_id: str,
+        extra_details: Optional[Dict[str, Any]] = None,
+    ) -> str:
         """Map check ID to the relevant repository or governance configuration file."""
+        if extra_details and extra_details.get("target_file"):
+            return str(extra_details["target_file"])
         file_map = {
             "copilot_instructions": ".github/copilot-instructions.md",
             "devcontainers": ".devcontainer/devcontainer.json",
@@ -79,7 +85,7 @@ class BaseReporter(ABC):
             "workflow_concurrency_groups": ".github/workflows/*.yml",
             "codeowners_validation": ".github/CODEOWNERS",
             "pull_request_templates": ".github/PULL_REQUEST_TEMPLATE.md",
-            "issue_templates": ".github/ISSUE_TEMPLATE/bug_report.yml",
+            "issue_templates": ".github/ISSUE_TEMPLATE/",
             "pre_commit_hooks": ".pre-commit-config.yaml",
             "branch_rulesets": "Branch Rulesets (Settings)",
             "rulesets_adoption": "Repository Rulesets (Settings)",
@@ -206,7 +212,7 @@ class BaseReporter(ABC):
                     "severity": r.severity,
                     "persona": r.persona,
                     "detected_stacks": set(),
-                    "target_file": cls.infer_target_file(r.check_id),
+                    "target_file": cls.infer_target_file(r.check_id, r.extra_details),
                     "current_state": r.current_state,
                     "recommended_state": r.recommended_state,
                     "remediation_code": remediation_code,
