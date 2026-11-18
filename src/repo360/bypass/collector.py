@@ -16,6 +16,7 @@ from ..common.concurrency import (
     AI_NOT_ENABLED_LABEL,
     AI_NOT_ENABLED_MESSAGE,
     is_ai_disabled,
+    is_ai_live,
     is_dormant_repo,
     is_empty_repo,
     resolve_worker_count,
@@ -118,13 +119,6 @@ def parse_push_protection_alert(
         else:
             risk = "Moderate Risk"
         advisory = f"Push protection was bypassed by {actor}. Review resolution comment: '{comment}'."
-        if ai_engine is not None:
-            risk, advisory = ai_engine.analyze_push_protection_bypass(
-                secret_type=secret_type,
-                comment=comment,
-                actor=actor,
-                repo=repo,
-            )
 
     return PushProtectionBypassRecord(
         org=org,
@@ -583,20 +577,44 @@ def collect_bypass_data(
         for rec in (rec for p in profiles for rec in p.push_bypasses):
             rec.ai_risk_assessment = AI_NOT_ENABLED_LABEL
             rec.ai_security_advisory = AI_NOT_ENABLED_MESSAGE
-    elif ai_engine is not None:
+    elif ai_engine is not None and is_ai_live(ai_engine):
         all_push_records = [rec for p in profiles for rec in p.push_bypasses]
+        if all_push_records:
+            # Phase 2: Deduplicate push bypass records into unique (secret_type, comment) signatures
+            unique_bypass_groups: Dict[Tuple[str, str], List[PushProtectionBypassRecord]] = {}
+            for rec in all_push_records:
+                sig = (
+                    (rec.secret_type or "Secret").strip().lower(),
+                    (rec.resolution_comment or "-").strip().lower(),
+                )
+                unique_bypass_groups.setdefault(sig, []).append(rec)
 
-        def _enrich_push(rec: PushProtectionBypassRecord) -> None:
-            risk, advisory = ai_engine.analyze_push_protection_bypass(
-                secret_type=rec.secret_type,
-                comment=rec.resolution_comment,
-                actor=rec.actor,
-                repo=rec.repo,
+            unique_sigs = list(unique_bypass_groups.keys())[:30]
+            rep_records = [unique_bypass_groups[s][0] for s in unique_sigs]
+
+            def _diagnose_bypass(rec: PushProtectionBypassRecord) -> Tuple[str, str, str]:
+                risk, adv = ai_engine.analyze_push_protection_bypass(
+                    secret_type=rec.secret_type,
+                    comment=rec.resolution_comment,
+                    actor=rec.actor,
+                    repo=rec.repo,
+                )
+                return rec.repo, risk, adv
+
+            unique_assessments = run_concurrent_ai(
+                rep_records,
+                _diagnose_bypass,
+                ai_engine=ai_engine,
+                max_workers=4,
             )
-            rec.ai_risk_assessment = risk
-            rec.ai_security_advisory = advisory
 
-        run_concurrent_ai(all_push_records, _enrich_push, ai_engine=ai_engine, max_workers=8)
+            for (sample_repo, risk, adv), s in zip(unique_assessments, unique_sigs):
+                for member_rec in unique_bypass_groups[s]:
+                    member_rec.ai_risk_assessment = risk
+                    target_repo = member_rec.repo
+                    member_rec.ai_security_advisory = (
+                        adv.replace(sample_repo, target_repo) if sample_repo in adv else adv
+                    )
 
     profiles.sort(key=lambda p: (p.org.lower(), p.repo.lower()))
     return profiles

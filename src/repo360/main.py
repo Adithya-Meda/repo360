@@ -53,6 +53,7 @@ from .common.concurrency import (
     is_ai_live,
     map_concurrent,
     resolve_worker_count,
+    run_concurrent_ai,
 )
 from .reporters.excel_reporter import ExcelReporter
 from .common.timezones import file_timestamp
@@ -362,15 +363,6 @@ def run_audit(
     completed_lock = threading.Lock()
     completed_count = 0
     stop_event = threading.Event()
-    queued_ai_keys: set[str] = set()
-
-    ai_futures: List[concurrent.futures.Future] = []
-    ai_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
-    if is_ai_live(ai_engine):
-        ai_pool_size = _resolve_ai_pool_size(ai_engine, requested=8)
-        ai_executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=ai_pool_size, thread_name_prefix="ai-enricher"
-        )
 
     def _audit_single_target(idx: int, target: RepoTarget) -> List[CheckResult]:
         if stop_event.is_set():
@@ -378,7 +370,6 @@ def run_audit(
         nonlocal completed_count
         repo_res: List[CheckResult] = []
         tech_stack: Dict[str, Any] = {}
-        pending_ai_items: List[Tuple[CheckResult, Dict[str, Any]]] = []
 
         try:
             # Prefetch full repo tree in one call to avoid N+1 file lookups
@@ -421,19 +412,8 @@ def run_audit(
                             target.default_branch,
                             thresholds,
                         )
+                        res.extra_details["_tech_stack"] = dict(tech_stack)
                         repo_res.append(res)
-                        if (
-                            ai_engine
-                            and not stop_event.is_set()
-                            and ai_engine.is_eligible_for_remediation(res)
-                        ):
-                            res.extra_details["_tech_stack"] = dict(tech_stack)
-                            get_fn = getattr(ai_engine, "get_cached_remediation", None)
-                            cached = get_fn(res.check_id, tech_stack) if callable(get_fn) else None
-                            if isinstance(cached, str) and cached:
-                                ai_engine.apply_cached_remediation(res, cached, tech_stack)
-                            elif ai_executor and is_ai_live(ai_engine):
-                                pending_ai_items.append((res, dict(tech_stack)))
                     except Exception as err:
                         logger.warning(
                             "Check %s failed on %s/%s: %s",
@@ -457,19 +437,8 @@ def run_audit(
                             target.default_branch,
                             thresholds,
                         )
+                        res.extra_details["_tech_stack"] = dict(tech_stack)
                         repo_res.append(res)
-                        if (
-                            ai_engine
-                            and not stop_event.is_set()
-                            and ai_engine.is_eligible_for_remediation(res)
-                        ):
-                            res.extra_details["_tech_stack"] = dict(tech_stack)
-                            get_fn = getattr(ai_engine, "get_cached_remediation", None)
-                            cached = get_fn(res.check_id, tech_stack) if callable(get_fn) else None
-                            if isinstance(cached, str) and cached:
-                                ai_engine.apply_cached_remediation(res, cached, tech_stack)
-                            elif ai_executor and is_ai_live(ai_engine):
-                                pending_ai_items.append((res, dict(tech_stack)))
                     except Exception as err:
                         logger.warning(
                             "Check %s failed on %s/%s: %s",
@@ -488,29 +457,6 @@ def run_audit(
             _log_repo_banner(current_progress, total_repos, target, tech_stack)
             for r in repo_res:
                 _log_finding(r)
-
-            if ai_executor and not stop_event.is_set() and is_ai_live(ai_engine):
-                for res_item, stack_item in pending_ai_items:
-                    # 1. Fast apply if it became cached while in pending
-                    get_fn = getattr(ai_engine, "get_cached_remediation", None)
-                    cached = get_fn(res_item.check_id, stack_item) if callable(get_fn) else None
-                    if isinstance(cached, str) and cached:
-                        ai_engine.apply_cached_remediation(res_item, cached, stack_item)
-                        continue
-
-                    # 2. Deduplicate submission by canonical remediation key
-                    key_fn = getattr(ai_engine, "get_remediation_cache_key", None)
-                    cache_key = key_fn(res_item.check_id, stack_item) if callable(key_fn) else None
-                    if isinstance(cache_key, str) and cache_key in queued_ai_keys:
-                        # Already queued in ai_executor!
-                        continue
-                    if len(queued_ai_keys) >= 30:
-                        continue
-                    if isinstance(cache_key, str):
-                        queued_ai_keys.add(cache_key)
-
-                    fut = ai_executor.submit(ai_engine.enrich_remediation, res_item, stack_item)
-                    ai_futures.append(fut)
 
         return repo_res
 
@@ -538,7 +484,6 @@ def run_audit(
                 executor.shutdown(wait=False, cancel_futures=True)
                 raise
             finally:
-                # Keep stop_event clear on normal exit so pending AI futures still finish
                 executor.shutdown(wait=False, cancel_futures=True)
         else:
             for idx, target in enumerate(targets, start=1):
@@ -547,56 +492,63 @@ def run_audit(
                 repo_results_by_idx[idx] = _audit_single_target(idx, target)
     except (KeyboardInterrupt, SystemExit):
         stop_event.set()
-        if ai_executor:
-            ai_executor.shutdown(wait=False, cancel_futures=True)
         raise
-
-    if ai_executor:
-        try:
-            if not stop_event.is_set():
-                pending = [f for f in ai_futures if not f.done()]
-                if pending:
-                    D = "\033[2m"
-                    X = "\033[0m"
-                    # Fast drain budget: allow active in-flight calls to land without holding the user
-                    wait_budget = min(10.0, max(2.0, min(float(len(pending)) * 1.0, 10.0)))
-                    start_wait = time.time()
-                    while not stop_event.is_set() and not is_shutting_down() and any(not f.done() for f in pending):
-                        concurrent.futures.wait(pending, timeout=0.25)
-                        if (ai_engine and ai_engine.is_circuit_active()) or (time.time() - start_wait > wait_budget):
-                            break
-                    if is_shutting_down():
-                        raise KeyboardInterrupt
-                    unfinished = [f for f in pending if not f.done()]
-                    if unfinished:
-                        for f in unfinished:
-                            f.cancel()
-                        still_running = [f for f in unfinished if not f.done() and not f.cancelled()]
-                        if still_running:
-                            concurrent.futures.wait(still_running, timeout=1.0)
-                        logger.info(
-                            "Background AI remediation finalized (%d synthesized, %d preserved as deterministic templates).",
-                            len(pending) - len(unfinished),
-                            len(unfinished),
-                        )
-        finally:
-            ai_executor.shutdown(wait=False, cancel_futures=True)
 
     for idx in sorted(repo_results_by_idx.keys()):
         results.extend(repo_results_by_idx[idx])
 
     if ai_engine and is_ai_live(ai_engine):
+        # Phase 2: Post-Scraping Unique Clustering across all repository findings
+        unique_groups: Dict[str, Tuple[CheckResult, Dict[str, Any], List[CheckResult]]] = {}
         for res in results:
-            if (
-                ai_engine.is_eligible_for_remediation(res)
-                and not res.extra_details.get("ai_enriched")
-            ):
-                stack_dict = res.extra_details.get("_tech_stack")
-                get_fn = getattr(ai_engine, "get_cached_remediation", None)
-                if callable(get_fn):
-                    cached_snip = get_fn(res.check_id, stack_dict)
-                    if isinstance(cached_snip, str) and cached_snip:
-                        ai_engine.apply_cached_remediation(res, cached_snip, stack_dict)
+            if ai_engine.is_eligible_for_remediation(res):
+                stack_dict = res.extra_details.get("_tech_stack") or {}
+                key_fn = getattr(ai_engine, "get_remediation_cache_key", None)
+                if callable(key_fn):
+                    key = key_fn(res.check_id, stack_dict)
+                else:
+                    langs = stack_dict.get("languages", ["general"])
+                    primary = str(langs[0]).lower() if langs else "general"
+                    key = f"{res.check_id}:{primary}"
+
+                if key not in unique_groups:
+                    unique_groups[key] = (res, stack_dict, [res])
+                else:
+                    unique_groups[key][2].append(res)
+
+        if unique_groups:
+            # Phase 3: Targeted Synthesis & Instant Memory Fan-Out
+            uncached_keys: List[str] = []
+            get_fn = getattr(ai_engine, "get_cached_remediation", None)
+            apply_fn = getattr(ai_engine, "apply_cached_remediation", None)
+
+            for key, (sample_res, stack_dict, matching_results) in unique_groups.items():
+                cached = get_fn(sample_res.check_id, stack_dict) if callable(get_fn) else None
+                if isinstance(cached, str) and cached:
+                    for r in matching_results:
+                        if callable(apply_fn):
+                            apply_fn(r, cached, stack_dict)
+                        r.remediation_snippet_after = cached
+                        r.extra_details["ai_enriched"] = True
+                else:
+                    uncached_keys.append(key)
+
+            if uncached_keys:
+                capped_keys = uncached_keys[:30]
+
+                def _synthesize_key(k: str) -> None:
+                    sample_r, s_dict, matching = unique_groups[k]
+                    ai_engine.enrich_remediation(sample_r, s_dict)
+                    snip = sample_r.remediation_snippet_after
+                    if snip and sample_r.extra_details.get("ai_enriched"):
+                        for r in matching:
+                            if r is not sample_r:
+                                if callable(apply_fn):
+                                    apply_fn(r, snip, s_dict)
+                                r.remediation_snippet_after = snip
+                                r.extra_details["ai_enriched"] = True
+
+                run_concurrent_ai(capped_keys, _synthesize_key, ai_engine=ai_engine, max_workers=4)
 
     return results
 

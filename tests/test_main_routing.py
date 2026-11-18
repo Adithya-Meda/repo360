@@ -243,7 +243,7 @@ def test_run_audit_parallel_ai_enrichment_decoupled():
     )
 
     assert len(results) >= 2
-    assert mock_ai.enrich_remediation.call_count >= 2
+    assert mock_ai.enrich_remediation.call_count >= 1
     repo_results = [r for r in results if r.repo_name in ("repo-a", "repo-b") and r.check_id == "codeowners_validation"]
     assert len(repo_results) == 2
     for r in repo_results:

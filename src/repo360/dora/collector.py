@@ -18,6 +18,7 @@ from ..common.client import ResilientGitHubClient
 from ..common.concurrency import (
     AI_NOT_ENABLED_LABEL,
     is_ai_disabled,
+    is_ai_live,
     is_dormant_repo,
     map_concurrent,
     resolve_worker_count,
@@ -1245,10 +1246,30 @@ def build_dora_rows(
             ai_items.append((idx, m, df_weekly, df_tier, lttc_tier, cfr_tier, mttr_tier, overall))
 
     ai_advisories: Dict[int, str] = {}
-    if ai_items and ai_engine is not None:
-        recs = run_concurrent_ai(
-            ai_items,
-            lambda item: ai_engine.diagnose_dora_flow(
+    if ai_items and ai_engine is not None and is_ai_live(ai_engine):
+        # Phase 2: Deduplicate DORA metrics into unique flow signatures
+        unique_dora_groups: Dict[Tuple, List[Tuple[int, RepoDORAMetrics, float, str, str, str, str, str]]] = {}
+        for item in ai_items:
+            m = item[1]
+            sig = (
+                item[7],  # overall composite tier
+                item[3],  # df_tier
+                item[4],  # lttc_tier
+                item[5],  # cfr_tier
+                item[6],  # mttr_tier
+                m.rework_tier,
+                bool(m.open_incidents_count),
+                m.signal_mode,
+                m.stalled_deploys_count > 0,
+                m.redundant_failure_retries > 0,
+            )
+            unique_dora_groups.setdefault(sig, []).append(item)
+
+        unique_sigs = list(unique_dora_groups.keys())[:30]
+        rep_items = [unique_dora_groups[s][0] for s in unique_sigs]
+
+        def _diagnose_rep(item: Tuple[int, RepoDORAMetrics, float, str, str, str, str, str]) -> Tuple[str, str, str]:
+            adv = ai_engine.diagnose_dora_flow(
                 repo=f"{item[1].org}/{item[1].repo}",
                 df_weekly=item[2],
                 df_tier=item[3],
@@ -1268,12 +1289,24 @@ def build_dora_rows(
                 stalled_deploys=item[1].stalled_deploys_count,
                 collapsed_retries=item[1].redundant_failure_retries,
                 total_deploys=item[1].total_deploys,
-            ),
+            )
+            return item[1].org, item[1].repo, adv
+
+        unique_advisories = run_concurrent_ai(
+            rep_items,
+            _diagnose_rep,
             ai_engine=ai_engine,
-            max_workers=8,
+            max_workers=4,
         )
-        for item, adv in zip(ai_items, recs):
-            ai_advisories[item[0]] = adv
+
+        for (s_org, s_repo, adv), s in zip(unique_advisories, unique_sigs):
+            sample_slug = f"{s_org}/{s_repo}"
+            for member_item in unique_dora_groups[s]:
+                member_idx = member_item[0]
+                m_metrics = member_item[1]
+                target_slug = f"{m_metrics.org}/{m_metrics.repo}"
+                adapted = adv.replace(sample_slug, target_slug) if sample_slug in adv else adv
+                ai_advisories[member_idx] = adapted
 
     for idx, m in enumerate(metrics_list):
         org_map.setdefault(m.org, []).append(m)

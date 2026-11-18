@@ -18,6 +18,7 @@ from ..common.client import ResilientGitHubClient
 from ..common.concurrency import (
     AI_NOT_ENABLED_LABEL,
     is_ai_disabled,
+    is_ai_live,
     is_empty_repo,
     map_concurrent,
     resolve_worker_count,
@@ -1060,22 +1061,48 @@ def build_finops_rows(
         else:
             rec_by_idx[idx] = p.recommendation
 
-    if ai_items and ai_engine is not None:
-        ai_recs = run_concurrent_ai(
-            ai_items,
-            lambda item: ai_engine.generate_finops_advisory(
+    if ai_items and ai_engine is not None and is_ai_live(ai_engine):
+        # Phase 2: Deduplicate storage profiles into unique optimization signatures
+        unique_finops_groups: Dict[Tuple, List[Tuple[int, RepoStorageProfile, int]]] = {}
+        for item in ai_items:
+            p = item[1]
+            stale_count = item[2]
+            sig = (
+                p.optimization_status,
+                p.default_90_day_count > 0,
+                stale_count > 0,
+                p.disk_size_mb > 1000,
+                p.active_artifact_mb > 500,
+            )
+            unique_finops_groups.setdefault(sig, []).append(item)
+
+        unique_sigs = list(unique_finops_groups.keys())[:30]
+        rep_items = [unique_finops_groups[s][0] for s in unique_sigs]
+
+        def _diagnose_finops(item: Tuple[int, RepoStorageProfile, int]) -> Tuple[str, str, str]:
+            rec_val = ai_engine.generate_finops_advisory(
                 repo=f"{item[1].org}/{item[1].repo}",
                 disk_size_mb=item[1].disk_size_mb,
                 artifact_mb=item[1].active_artifact_mb,
                 default_90d_count=item[1].default_90_day_count,
                 stale_cache_count=item[2],
                 optimization_status=item[1].optimization_status,
-            ),
+            )
+            return item[1].org, item[1].repo, rec_val
+
+        unique_recs = run_concurrent_ai(
+            rep_items,
+            _diagnose_finops,
             ai_engine=ai_engine,
-            max_workers=8,
+            max_workers=4,
         )
-        for (idx, _, _), rec_val in zip(ai_items, ai_recs):
-            rec_by_idx[idx] = rec_val
+
+        for (s_org, s_repo, rec_val), s in zip(unique_recs, unique_sigs):
+            sample_slug = f"{s_org}/{s_repo}"
+            for member_idx, m_prof, _ in unique_finops_groups[s]:
+                target_slug = f"{m_prof.org}/{m_prof.repo}"
+                adapted = rec_val.replace(sample_slug, target_slug) if sample_slug in rec_val else rec_val
+                rec_by_idx[member_idx] = adapted
 
     oid_repos_by_org: Dict[str, Dict[str, Set[str]]] = {}
     for p in profiles:
