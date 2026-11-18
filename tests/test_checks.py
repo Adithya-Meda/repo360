@@ -238,6 +238,25 @@ def test_codeowners_check_variations() -> None:
     assert "contains errors on GitHub" in res_err.current_state
     assert "Please review" in res_err.current_state
 
+    # Multiple unknown owners with raw code blocks and carets formatted cleanly without repetition or newlines
+    inspector.get_codeowners_errors.return_value = [
+        {
+            "line": 1,
+            "message": "Unknown owner on line 1: make sure @GrenstonGeorge exists and has write access to the repository\n\n  * @GrenstonGeorge @Hoyg @sriplayground\n    ^",
+        },
+        {
+            "line": 1,
+            "message": "Unknown owner on line 1: make sure @Hoyg exists and has write access to the repository\n\n  * @GrenstonGeorge @Hoyg @sriplayground\n                    ^",
+        },
+    ]
+    inspector.get_file_content.return_value = "* @GrenstonGeorge @Hoyg @sriplayground"
+    res_multi = check.evaluate(inspector, "org", "repo", "main", {})
+    assert res_multi.status == CheckStatus.WARN
+    assert "\n" not in res_multi.current_state
+    assert "^" not in res_multi.current_state
+    assert "line 1: unknown owner(s) @GrenstonGeorge, @Hoyg" in res_multi.current_state
+    assert "Please review" in res_multi.current_state
+
     # Inline comment on rule line triggers warning to review
     inspector.get_codeowners_errors.return_value = []
     inspector.get_file_content.return_value = "* @team # inline comment"

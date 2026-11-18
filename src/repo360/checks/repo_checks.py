@@ -18,6 +18,71 @@ from ..collector.repo_inspector import RepoInspector
 from ..common.text import pluralize
 
 
+def _format_codeowners_errors(api_errors: List[Any]) -> str:
+    """Format raw GitHub CODEOWNERS API errors into a clean, concise, single-line summary."""
+    if not api_errors:
+        return ""
+
+    line_unknown_owners: Dict[int, List[str]] = {}
+    other_errors_by_line: Dict[int, List[str]] = {}
+    general_errors: List[str] = []
+
+    for err in api_errors:
+        if isinstance(err, dict):
+            line_num = err.get("line")
+            raw_msg = str(err.get("message") or err.get("kind") or err.get("source") or "").strip()
+            first_line = raw_msg.splitlines()[0].strip() if raw_msg else ""
+
+            # Check if this error relates to unknown / unresolvable owners
+            lower = first_line.lower()
+            handles = re.findall(r"@[a-zA-Z0-9_/-]+", first_line)
+            if handles and ("owner" in lower or "exist" in lower or "access" in lower or not first_line):
+                if line_num:
+                    line_unknown_owners.setdefault(int(line_num), []).extend(handles)
+                else:
+                    general_errors.append(f"unknown owner(s) {', '.join(dict.fromkeys(handles))} (must exist with write access)")
+                continue
+
+            # Non-owner or syntax error
+            clean_msg = re.sub(r"\s+", " ", first_line)
+            if line_num:
+                # Strip redundant "line X:" or "on line X:" prefixes
+                clean_msg = re.sub(rf"^(?:on\s+)?line\s+{line_num}[:\s]*", "", clean_msg, flags=re.IGNORECASE)
+                clean_msg = re.sub(rf"\s+on\s+line\s+{line_num}", "", clean_msg, flags=re.IGNORECASE).strip()
+                if clean_msg:
+                    other_errors_by_line.setdefault(int(line_num), []).append(clean_msg)
+            elif clean_msg:
+                general_errors.append(clean_msg)
+        elif isinstance(err, str) and err.strip():
+            clean_str = re.sub(r"\s+", " ", err.splitlines()[0]).strip()
+            if clean_str:
+                general_errors.append(clean_str)
+
+    summaries: List[str] = []
+
+    for line_num in sorted(line_unknown_owners.keys()):
+        unique_handles = list(dict.fromkeys(line_unknown_owners[line_num]))
+        handles_str = ", ".join(unique_handles)
+        summaries.append(f"line {line_num}: unknown owner(s) {handles_str} (must exist with write access)")
+
+    for line_num in sorted(other_errors_by_line.keys()):
+        for msg in list(dict.fromkeys(other_errors_by_line[line_num])):
+            summaries.append(f"line {line_num}: {msg}")
+
+    for msg in list(dict.fromkeys(general_errors)):
+        summaries.append(msg)
+
+    if not summaries:
+        return ""
+
+    if len(summaries) > 3:
+        displayed = summaries[:3]
+        remaining = len(summaries) - 3
+        return f"{'; '.join(displayed)} (+{remaining} more error{'s' if remaining != 1 else ''})"
+
+    return "; ".join(summaries)
+
+
 class CodeownersCheck(BaseCheck):
     """Verifies that a valid CODEOWNERS file exists and assigns team ownership."""
 
@@ -47,18 +112,8 @@ class CodeownersCheck(BaseCheck):
             errors_fn = getattr(inspector, "get_codeowners_errors", None)
             api_errors = errors_fn(org, repo, default_branch) if callable(errors_fn) else []
             if isinstance(api_errors, list) and len(api_errors) > 0:
-                err_messages: List[str] = []
-                for err in api_errors[:2]:
-                    if isinstance(err, dict):
-                        line_num = err.get("line")
-                        msg = err.get("message") or err.get("kind") or err.get("source")
-                        if line_num and msg:
-                            err_messages.append(f"line {line_num}: {msg}")
-                        elif msg:
-                            err_messages.append(str(msg))
-                    elif isinstance(err, str):
-                        err_messages.append(err)
-                detail = f" ({'; '.join(err_messages)})" if err_messages else ""
+                err_detail = _format_codeowners_errors(api_errors)
+                detail = f" ({err_detail})" if err_detail else ""
                 first_line = content.strip().splitlines()[0] if content.strip() else ""
                 return CheckResult(
                     check_id=self.check_id,
