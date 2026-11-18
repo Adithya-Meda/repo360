@@ -841,3 +841,88 @@ def test_findings_sheet_truncates_at_excel_row_limit(monkeypatch, tmp_path) -> N
     ws = load_workbook(out)["Repo_Admin_Findings"]
     assert ws.cell(row=5, column=2).value == "repo-3"
     assert "6 additional findings omitted" in ws.cell(row=6, column=1).value
+
+
+def test_org_wide_check_affected_repo_count_and_scope(tmp_path) -> None:
+    """Verify organization-wide checks (e.g. Default GITHUB_TOKEN Least Privilege) report all repos in org."""
+    from openpyxl import load_workbook
+    from repo360.checks.base import CheckResult, CheckSeverity, CheckStatus, Persona
+    from repo360.reporters.base_reporter import BaseReporter
+    from repo360.reporters.excel_reporter import ExcelReporter
+
+    org = "CanarysPlayground"
+    repos = ["frontend", "backend", "auth-service"]
+
+    results = [
+        # Org-level check failure
+        CheckResult(
+            check_id="default_workflow_permissions",
+            check_name="Default GITHUB_TOKEN Least Privilege",
+            persona=Persona.ORG_ADMIN,
+            category="Security",
+            status=CheckStatus.FAIL,
+            severity=CheckSeverity.HIGH,
+            org_name=org,
+            repo_name="Organization-Wide",
+            current_state="Default workflow permission is set to 'write'.",
+            recommended_state="Change organization default workflow permission to Read-only.",
+            explanation="Read/write tokens allow workflow compromises to push code.",
+            documentation_url="https://docs.github.com/en/enterprise-cloud@latest/actions",
+        )
+    ]
+    # Add repo check results to establish repo inventory for the org
+    for r in repos:
+        results.append(
+            CheckResult(
+                check_id="codeowners_validation",
+                check_name="CODEOWNERS Validation",
+                persona=Persona.REPO_ADMIN,
+                category="Governance",
+                status=CheckStatus.PASS,
+                severity=CheckSeverity.HIGH,
+                org_name=org,
+                repo_name=r,
+                current_state="Compliant",
+                recommended_state="Maintain CODEOWNERS",
+                explanation="Compliant",
+            )
+        )
+
+    clusters = BaseReporter.build_remediation_clusters(results)
+    assert len(clusters) == 1
+    cluster = clusters[0]
+    assert cluster["check_id"] == "default_workflow_permissions"
+    assert cluster["is_org_wide"] is True
+    # All 3 repositories in CanarysPlayground are affected
+    assert cluster["affected_count"] == 3
+    assert set(cluster["affected_repos"]) == set(repos)
+
+    out = tmp_path / "fleet_test.xlsx"
+    ExcelReporter().generate(results, str(out))
+    ws_fleet = load_workbook(out)["Fleet_Playbook"]
+    assert ws_fleet["F2"].value == "All (3 repositories)"
+    assert "CanarysPlayground (Org-Wide — All 3 repos: auth-service, backend, frontend)" in str(ws_fleet["G2"].value)
+
+
+def test_format_ai_scorecard_status_rate_limit_fallback() -> None:
+    """Verify that scorecard status specifies fallback due to rate limit in 3-4 words."""
+    from unittest.mock import MagicMock
+    from repo360.common.concurrency import format_ai_scorecard_status
+
+    mock_ai = MagicMock()
+    mock_ai.is_available.return_value = True
+    mock_ai.is_circuit_active.return_value = False
+    mock_ai.model_name = "gemini-3.5-flash-lite"
+    mock_ai.configured_model = "gemini-3.6-flash"
+    mock_ai.is_fallback = True
+
+    status_str = format_ai_scorecard_status(mock_ai)
+    assert "rate limit fallback" in status_str
+    assert "gemini-3.5-flash-lite" in status_str
+
+    # Test circuit active state
+    mock_ai.is_circuit_active.return_value = True
+    circuit_str = format_ai_scorecard_status(mock_ai, enriched_count=4)
+    assert "rate limit fallback" in circuit_str
+    assert "gemini-3.5-flash-lite" in circuit_str
+

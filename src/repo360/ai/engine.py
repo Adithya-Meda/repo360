@@ -148,6 +148,8 @@ class AIEngine:
         self.init_error: Optional[str] = None
         self.model_name = (model_name or "").strip()
         self.configured_model = self.model_name
+        self.is_fallback: bool = False
+        self.fallback_reason: str = "rate limit fallback"
         self.enabled = enabled and bool(self.api_key) and bool(self.model_name)
         if enabled and bool(self.api_key) and not self.model_name:
             self.init_error = "No AI model selected. Model must be explicitly configured."
@@ -341,6 +343,8 @@ class AIEngine:
     def trip_circuit_breaker(self, cooldown_seconds: float = 120.0, reason: str = "Rate limit") -> None:
         """Temporarily suspend live LLM remediation requests to keep audit pipeline moving fast."""
         self._circuit_cooldown_until = time.time() + cooldown_seconds
+        self.is_fallback = True
+        self.fallback_reason = "rate limit fallback"
         if not self._circuit_notified:
             logger.warning(
                 "[AI Remediation] %s reached on provider '%s'. "
@@ -417,6 +421,8 @@ class AIEngine:
                         candidate,
                     )
                     self.model_name = candidate
+                    self.is_fallback = True
+                    self.fallback_reason = "rate limit fallback"
                 return True, "OK"
             except Exception as err:
                 err_msg = str(err)
@@ -478,6 +484,8 @@ class AIEngine:
                             candidate,
                         )
                         self.model_name = candidate
+                        self.is_fallback = True
+                        self.fallback_reason = "rate limit fallback"
                     return True, "OK"
                 elif resp.status_code in (401, 403):
                     self.enabled = False
@@ -536,6 +544,8 @@ class AIEngine:
                             candidate,
                         )
                         self.model_name = candidate
+                        self.is_fallback = True
+                        self.fallback_reason = "rate limit fallback"
                     return True, "OK"
                 elif resp.status_code in (401, 403):
                     self.enabled = False
@@ -631,8 +641,10 @@ class AIEngine:
                 if status == "ok":
                     with self._rate_lock:
                         self._model_cooldown_until.pop(model, None)
-                    if model != self.model_name:
+                    if model != self.model_name or (self.configured_model and model != self.configured_model):
                         self.model_name = model
+                        self.is_fallback = True
+                        self.fallback_reason = "rate limit fallback"
                     return text
                 if status == "empty":
                     return None
@@ -946,7 +958,15 @@ FORMAT YOUR RESPONSE AS 3 CONCISE PLAIN-TEXT PARAGRAPHS (NO Markdown **bold**, N
 Keep it factual, authoritative, professional, and actionable. Do not use filler or platitudes."""
 
         summary = self._generate_text(prompt)
-        return self._to_plain_narrative(summary) if summary else ""
+        if not summary:
+            return ""
+        narrative = self._to_plain_narrative(summary)
+        is_fb = getattr(self, "is_fallback", False) or (
+            getattr(self, "configured_model", "") and self.configured_model != self.model_name
+        )
+        if is_fb and narrative:
+            narrative = f"{narrative}\n\n(Note: {self.model_name} used as rate limit fallback.)"
+        return narrative
 
     def _apply_remediation(self, result: CheckResult, snippet: str, detected_stack: str) -> None:
         """Apply synthesized remediation and metadata to CheckResult, preserving canonical baseline."""
@@ -955,7 +975,12 @@ Keep it factual, authoritative, professional, and actionable. Do not use filler 
         result.remediation_snippet_after = snippet
         result.extra_details["ai_enriched"] = True
         result.extra_details["detected_stack"] = detected_stack
-        result.extra_details["ai_model"] = self.model_name
+        is_fb = getattr(self, "is_fallback", False) or (
+            getattr(self, "configured_model", "") and self.configured_model != self.model_name
+        )
+        result.extra_details["ai_model"] = (
+            f"{self.model_name} (rate limit fallback)" if is_fb else self.model_name
+        )
         result.extra_details["ai_provider"] = self.provider
 
     @classmethod

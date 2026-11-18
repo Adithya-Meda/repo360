@@ -121,6 +121,15 @@ def format_ai_scorecard_status(
 
     is_avail_fn = getattr(ai_engine, "is_available", None) if ai_engine is not None else None
     is_circuit_fn = getattr(ai_engine, "is_circuit_active", None) if ai_engine is not None else None
+    is_fallback = (
+        getattr(ai_engine, "is_fallback", False)
+        or (
+            getattr(ai_engine, "configured_model", "")
+            and getattr(ai_engine, "configured_model") != getattr(ai_engine, "model_name", "")
+        )
+    )
+    fallback_suffix = " - rate limit fallback" if is_fallback else ""
+
     if (
         ai_engine is not None
         and callable(is_avail_fn)
@@ -130,11 +139,11 @@ def format_ai_scorecard_status(
     ):
         model = getattr(ai_engine, "model_name", "Configured LLM")
         if enriched_count is not None:
-            return f"{yellow}RATE LIMITED / FALLBACK ({model} - {enriched_count} AI, remainder deterministic){reset}"
-        return f"{yellow}RATE LIMITED / FALLBACK ({model}){reset}"
+            return f"{yellow}RATE LIMITED / FALLBACK ({model}{fallback_suffix} - {enriched_count} AI, remainder deterministic){reset}"
+        return f"{yellow}RATE LIMITED / FALLBACK ({model}{fallback_suffix}){reset}"
     if is_ai_live(ai_engine):
         model = getattr(ai_engine, "model_name", "Configured LLM")
-        return f"{green}ONLINE ({model}){reset}"
+        return f"{green}ONLINE ({model}{fallback_suffix}){reset}"
     return f"{yellow}NOT ENABLED (AI remediation skipped; re-run with '--require-ai yes' to enable){reset}"
 
 

@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any, Dict, Iterable, List
 
 from ..activity.reporter import clamp_cell_text
-from ..checks.base import CheckResult
+from ..checks.base import CheckResult, Persona
 
 
 class BaseReporter(ABC):
@@ -163,9 +163,18 @@ class BaseReporter(ABC):
     @classmethod
     def build_remediation_clusters(cls, results: List[CheckResult]) -> List[Dict[str, Any]]:
         """Cluster actionable WARN/FAIL findings strictly by check ID for consolidated, centralized fleet playbooks."""
-        from ..checks.base import CheckStatus
+        from ..checks.base import CheckStatus, Persona
 
         clusters: Dict[str, Dict[str, Any]] = {}
+
+        # Pre-index all concrete repositories audited per organization
+        org_to_repos: Dict[str, List[str]] = {}
+        for r in results:
+            if r.repo_name and r.repo_name not in ("Organization-Wide", "[Organization-Wide]"):
+                if r.org_name:
+                    repo_list = org_to_repos.setdefault(r.org_name, [])
+                    if r.repo_name not in repo_list:
+                        repo_list.append(r.repo_name)
 
         for r in results:
             if r.status not in (CheckStatus.WARN, CheckStatus.FAIL):
@@ -201,6 +210,8 @@ class BaseReporter(ABC):
                     "is_ai": is_ai_item,
                     "ai_model": r.extra_details.get("ai_model", ""),
                     "_has_canonical_baseline": bool(canonical_candidate),
+                    "is_org_wide": False,
+                    "org_names": set(),
                     "affected_repos": [],
                 }
             else:
@@ -217,13 +228,31 @@ class BaseReporter(ABC):
             if stack:
                 clusters[cluster_key]["detected_stacks"].add(stack)
 
-            repo_label = (
-                f"{r.org_name} (Org-Wide)"
-                if r.repo_name in ("Organization-Wide", "[Organization-Wide]")
-                else r.repo_name
+            is_org_finding = (
+                r.repo_name in ("Organization-Wide", "[Organization-Wide]")
+                or getattr(r, "persona", None) == Persona.ORG_ADMIN
             )
-            if repo_label not in clusters[cluster_key]["affected_repos"]:
-                clusters[cluster_key]["affected_repos"].append(repo_label)
+
+            if is_org_finding:
+                clusters[cluster_key]["is_org_wide"] = True
+                if r.org_name:
+                    clusters[cluster_key]["org_names"].add(r.org_name)
+                org_repos = org_to_repos.get(r.org_name, [])
+                if org_repos:
+                    for repo in org_repos:
+                        if repo not in clusters[cluster_key]["affected_repos"]:
+                            clusters[cluster_key]["affected_repos"].append(repo)
+                else:
+                    repo_label = (
+                        f"{r.org_name} (Org-Wide)"
+                        if r.repo_name in ("Organization-Wide", "[Organization-Wide]")
+                        else r.repo_name
+                    )
+                    if repo_label not in clusters[cluster_key]["affected_repos"]:
+                        clusters[cluster_key]["affected_repos"].append(repo_label)
+            else:
+                if r.repo_name not in clusters[cluster_key]["affected_repos"]:
+                    clusters[cluster_key]["affected_repos"].append(r.repo_name)
 
         severity_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
         cluster_list = list(clusters.values())

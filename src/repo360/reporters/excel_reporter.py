@@ -468,14 +468,25 @@ class ExcelReporter(BaseReporter):
 
         row_values_cache: List[tuple[int, List[Any], CheckSeverity]] = []
         for row_idx, c in enumerate(clusters, start=2):
-            repos_str = self.format_repo_list(c["affected_repos"], max_display=6)
+            is_org = c.get("is_org_wide", False)
+            if is_org:
+                count_display = f"All ({pluralize(c['affected_count'], 'repository', 'repositories', include_count=True)})"
+                org_label = ", ".join(sorted(c.get("org_names", []))) or "Organization"
+                if c["affected_count"] > 0:
+                    repos_str = f"{org_label} (Org-Wide — All {pluralize(c['affected_count'], 'repo', 'repos', include_count=True)}: {self.format_repo_list(c['affected_repos'], max_display=6)})"
+                else:
+                    repos_str = f"{org_label} (Org-Wide)"
+            else:
+                count_display = pluralize(c["affected_count"], "repository", "repositories", include_count=True)
+                repos_str = self.format_repo_list(c["affected_repos"], max_display=6)
+
             values: List[Any] = [
                 self.sanitize_spreadsheet_value(c["category"]),
                 self.sanitize_spreadsheet_value(c["check_name"]),
                 c["severity"].value,
                 self.sanitize_spreadsheet_value(c["detected_stack"]),
                 self.sanitize_spreadsheet_value(c["target_file"]),
-                pluralize(c["affected_count"], "repository", "repositories", include_count=True),
+                count_display,
                 self.sanitize_spreadsheet_value(repos_str),
                 self.sanitize_spreadsheet_value(c["remediation_code"]),
                 self.sanitize_spreadsheet_value(c["documentation_url"]),

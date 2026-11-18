@@ -1001,6 +1001,12 @@ def _run_cli() -> int:
             executive_summary = ai_engine.generate_executive_summary(results, org_scope_str)
             if executive_summary:
                 active_model = ai_engine.model_name
+                is_fb = getattr(ai_engine, "is_fallback", False) or (
+                    getattr(ai_engine, "configured_model", "")
+                    and ai_engine.configured_model != ai_engine.model_name
+                )
+                if is_fb:
+                    active_model = f"{ai_engine.model_name} (rate limit fallback)"
         if not executive_summary and results:
             if ai_engine and ai_engine.is_circuit_active():
                 logger.warning(
