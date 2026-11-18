@@ -101,12 +101,16 @@ class CodeownersCheck(BaseCheck):
         thresholds: Dict[str, Any],
     ) -> CheckResult:
         doc_url = "https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners"
+        matched_path: Optional[str] = None
         content: Optional[str] = None
         for candidate in (".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"):
             res_content = inspector.get_file_content(org, repo, candidate, default_branch)
             if res_content is not None:
+                matched_path = candidate
                 content = res_content
                 break
+
+        target_file = matched_path or ".github/CODEOWNERS"
 
         if isinstance(content, str) and not content.strip():
             return CheckResult(
@@ -119,11 +123,12 @@ class CodeownersCheck(BaseCheck):
                 org_name=org,
                 repo_name=repo,
                 current_state="CODEOWNERS file exists but is empty. Please review.",
-                recommended_state="Add code ownership rules to CODEOWNERS defining responsible team handles.",
+                recommended_state=f"Add code ownership rules to {target_file} defining responsible team handles.",
                 explanation="An empty CODEOWNERS file provides no ownership or review requirements.",
-                remediation_snippet_before="# Empty CODEOWNERS",
+                remediation_snippet_before=f"# Empty {target_file}",
                 remediation_snippet_after="# Catch-all default rule\n* @org/team-name",
                 documentation_url=doc_url,
+                extra_details={"target_file": target_file},
             )
 
         if content and content.strip():
@@ -149,6 +154,7 @@ class CodeownersCheck(BaseCheck):
                     remediation_snippet_before=first_line or "[Invalid CODEOWNERS rule]",
                     remediation_snippet_after="# Correct team ownership syntax (ensure team has write access)\n* @org/team-name",
                     documentation_url=doc_url,
+                    extra_details={"target_file": target_file},
                 )
 
             # Check 2: Check for trailing inline comments on rule lines (unsupported by GitHub CODEOWNERS parser)
@@ -189,6 +195,7 @@ class CodeownersCheck(BaseCheck):
                     remediation_snippet_before="* @org/team # Catch-all ownership",
                     remediation_snippet_after="# Catch-all ownership\n* @org/team",
                     documentation_url=doc_url,
+                    extra_details={"target_file": target_file},
                 )
 
             if has_wildcard:
@@ -205,6 +212,7 @@ class CodeownersCheck(BaseCheck):
                     recommended_state="Maintain CODEOWNERS with active team handles.",
                     explanation="CODEOWNERS guarantees that changes are reviewed and approved by designated domain maintainers.",
                     documentation_url=doc_url,
+                    extra_details={"target_file": target_file},
                 )
 
             return CheckResult(
@@ -219,9 +227,10 @@ class CodeownersCheck(BaseCheck):
                 current_state="CODEOWNERS file exists, but lacks a default '*' catch-all team rule. Please review.",
                 recommended_state="Add a default catch-all rule '* @org/team' at the top of CODEOWNERS.",
                 explanation="Without a default catch-all rule, files added to new directories may escape mandatory review.",
-                remediation_snippet_before="# Partial CODEOWNERS without root rule\n/src/api/ @team-api",
-                remediation_snippet_after="# Catch-all default rule\n* @org/core-maintainers\n/src/api/ @org/team-api",
+                remediation_snippet_before=f"# Partial {target_file} without root rule\n/src/api/ @team-api",
+                remediation_snippet_after=f"# Catch-all default rule in {target_file}\n* @org/core-maintainers\n/src/api/ @org/team-api",
                 documentation_url=doc_url,
+                extra_details={"target_file": target_file},
             )
 
         return CheckResult(
@@ -239,6 +248,7 @@ class CodeownersCheck(BaseCheck):
             remediation_snippet_before="[Missing .github/CODEOWNERS]",
             remediation_snippet_after="# .github/CODEOWNERS\n* @org/team-leads\n/infra/ @org/devops",
             documentation_url="https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners",
+            extra_details={"target_file": ".github/CODEOWNERS"},
         )
 
 
@@ -870,6 +880,7 @@ class DependabotConfigCheck(BaseCheck):
                     recommended_state="Grant 'contents: read' so the Dependabot configuration can be verified.",
                     explanation="An unreadable configuration cannot be confirmed to enable any update ecosystem.",
                     documentation_url=doc_url,
+                    extra_details={"target_file": config_path},
                 )
             normalized = content.replace("\r\n", "\n").replace("\r", "\n")
             ecosystems = sorted(set(self.ECOSYSTEM_PATTERN.findall(normalized)))
@@ -889,6 +900,7 @@ class DependabotConfigCheck(BaseCheck):
                     remediation_snippet_before="updates:\n  - package-ecosystem: \"\"",
                     remediation_snippet_after="version: 2\nupdates:\n  - package-ecosystem: 'pip'\n    directory: '/'\n    schedule:\n      interval: 'weekly'",
                     documentation_url=doc_url,
+                    extra_details={"target_file": config_path},
                 )
             return CheckResult(
                 check_id=self.check_id,
@@ -903,6 +915,7 @@ class DependabotConfigCheck(BaseCheck):
                 recommended_state="Keep package ecosystems updated in dependabot.yml.",
                 explanation="Dependabot automates patch updates for vulnerable dependencies.",
                 documentation_url="https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuring-dependabot-version-updates",
+                extra_details={"target_file": config_path},
             )
 
         return CheckResult(
@@ -920,5 +933,6 @@ class DependabotConfigCheck(BaseCheck):
             remediation_snippet_before="[No dependabot.yml file]",
             remediation_snippet_after="version: 2\nupdates:\n  - package-ecosystem: 'pip'\n    directory: '/'\n    schedule:\n      interval: 'weekly'",
             documentation_url="https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuring-dependabot-version-updates",
+            extra_details={"target_file": ".github/dependabot.yml"},
         )
 

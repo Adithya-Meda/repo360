@@ -38,6 +38,7 @@ class DevcontainersCheck(BaseCheck):
             devcontainer_file = ".devcontainer.json"
 
         has_devcontainer_dir = inspector.check_file_exists(org, repo, ".devcontainer", default_branch)
+        target_file = devcontainer_file or ".devcontainer/devcontainer.json"
 
         if devcontainer_file:
             content = inspector.get_file_content(org, repo, devcontainer_file, default_branch)
@@ -57,6 +58,7 @@ class DevcontainersCheck(BaseCheck):
                     documentation_url=doc_url,
                     remediation_snippet_before="{}",
                     remediation_snippet_after="{\n  \"name\": \"Service Dev Container\",\n  \"image\": \"mcr.microsoft.com/devcontainers/python:3.12\"\n}",
+                    extra_details={"target_file": target_file},
                 )
             if not content.strip():
                 return CheckResult(
@@ -74,6 +76,7 @@ class DevcontainersCheck(BaseCheck):
                     documentation_url=doc_url,
                     remediation_snippet_before="{}",
                     remediation_snippet_after="{\n  \"name\": \"Service Dev Container\",\n  \"image\": \"mcr.microsoft.com/devcontainers/python:3.12\"\n}",
+                    extra_details={"target_file": target_file},
                 )
             return CheckResult(
                 check_id=self.check_id,
@@ -88,6 +91,7 @@ class DevcontainersCheck(BaseCheck):
                 recommended_state="Maintain base container image and extensions.",
                 explanation="DevContainers allow new contributors and juniors to spin up a fully configured environment in seconds.",
                 documentation_url=doc_url,
+                extra_details={"target_file": target_file},
             )
 
         if has_devcontainer_dir:
@@ -106,6 +110,7 @@ class DevcontainersCheck(BaseCheck):
                 documentation_url=doc_url,
                 remediation_snippet_before="# .devcontainer exists without devcontainer.json",
                 remediation_snippet_after="{\n  \"name\": \"Service Dev Container\",\n  \"image\": \"mcr.microsoft.com/devcontainers/python:3.12\"\n}",
+                extra_details={"target_file": ".devcontainer/devcontainer.json"},
             )
 
         return CheckResult(
@@ -123,6 +128,7 @@ class DevcontainersCheck(BaseCheck):
             remediation_snippet_before="[No devcontainer setup - manual developer machine installation required]",
             remediation_snippet_after="{\n  \"name\": \"Service Dev Container\",\n  \"image\": \"mcr.microsoft.com/devcontainers/python:3.12\",\n  \"customizations\": {\n    \"vscode\": {\n      \"extensions\": [\"ms-python.python\", \"charliermarsh.ruff\"]\n    }\n  }\n}",
             documentation_url="https://docs.github.com/en/codespaces/setting-up-your-project-for-codespaces/adding-a-dev-container-configuration/introduction-to-dev-containers",
+            extra_details={"target_file": ".devcontainer/devcontainer.json"},
         )
 
 
@@ -473,6 +479,7 @@ class PreCommitHooksCheck(BaseCheck):
             ),
             None,
         )
+        target_file = precommit_file or ".pre-commit-config.yaml"
 
         if precommit_file:
             content = inspector.get_file_content(org, repo, precommit_file, default_branch)
@@ -490,6 +497,7 @@ class PreCommitHooksCheck(BaseCheck):
                     recommended_state="Ensure file permissions allow reading pre-commit configuration.",
                     explanation="Pre-commit config exists in repository tree but could not be read to verify hook definitions.",
                     documentation_url=doc_url,
+                    extra_details={"target_file": target_file},
                 )
             if isinstance(content, str) and (not content.strip() or "repos:" not in content):
                 return CheckResult(
@@ -507,6 +515,7 @@ class PreCommitHooksCheck(BaseCheck):
                     remediation_snippet_before=content.strip() or "[Empty pre-commit config]",
                     remediation_snippet_after="repos:\n  - repo: https://github.com/pre-commit/pre-commit-hooks\n    rev: v4.6.0\n    hooks:\n      - id: trailing-whitespace\n      - id: end-of-file-fixer\n      - id: check-added-large-files",
                     documentation_url=doc_url,
+                    extra_details={"target_file": target_file},
                 )
             return CheckResult(
                 check_id=self.check_id,
@@ -521,6 +530,7 @@ class PreCommitHooksCheck(BaseCheck):
                 recommended_state="Keep pre-commit hook versions updated.",
                 explanation="Pre-commit catches formatting, linting, and secret leakage errors immediately on the developer's machine.",
                 documentation_url=doc_url,
+                extra_details={"target_file": target_file},
             )
 
         return CheckResult(
@@ -538,6 +548,7 @@ class PreCommitHooksCheck(BaseCheck):
             remediation_snippet_before="[No local git pre-commit hook configuration]",
             remediation_snippet_after="repos:\n  - repo: https://github.com/pre-commit/pre-commit-hooks\n    rev: v4.6.0\n    hooks:\n      - id: trailing-whitespace\n      - id: end-of-file-fixer\n      - id: check-added-large-files",
             documentation_url="https://pre-commit.com/",
+            extra_details={"target_file": ".pre-commit-config.yaml"},
         )
 
 
@@ -579,6 +590,8 @@ class SetupDocumentationCheck(BaseCheck):
             has_contributing = True
             inherited_contributing = True
 
+        target_file = existing_readme or "README.md"
+
         if has_contributing and has_readme:
             state_msg = (
                 f"{existing_readme} and CONTRIBUTING.md present (CONTRIBUTING inherited from organization '.github' repository)."
@@ -598,6 +611,7 @@ class SetupDocumentationCheck(BaseCheck):
                 recommended_state="Keep onboarding setup commands and architecture overview updated.",
                 explanation="Clear setup and contribution docs accelerate engineer onboarding and reduce support toil.",
                 documentation_url=doc_url,
+                extra_details={"target_file": target_file},
             )
 
         if has_readme:
@@ -617,6 +631,7 @@ class SetupDocumentationCheck(BaseCheck):
                     recommended_state="Consider extracting detailed PR/test conventions into CONTRIBUTING.md.",
                     explanation="Setup instructions inside README enable engineers to run and validate changes locally.",
                     documentation_url=doc_url,
+                    extra_details={"target_file": target_file},
                 )
 
             return CheckResult(
@@ -634,6 +649,7 @@ class SetupDocumentationCheck(BaseCheck):
                 remediation_snippet_before=f"[{existing_readme} without setup or CONTRIBUTING.md]",
                 remediation_snippet_after="## Local Setup\n1. Install dependencies\n2. Run tests locally\n\nSee CONTRIBUTING.md for PR conventions.",
                 documentation_url=doc_url,
+                extra_details={"target_file": target_file},
             )
 
         return CheckResult(
@@ -651,4 +667,5 @@ class SetupDocumentationCheck(BaseCheck):
             remediation_snippet_before="[No README.md or CONTRIBUTING.md]",
             remediation_snippet_after="# Service Overview\n\n## Getting Started\n...",
             documentation_url=doc_url,
+            extra_details={"target_file": "README.md"},
         )

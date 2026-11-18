@@ -28,6 +28,7 @@ from repo360.checks.contributor_checks import (
     PullRequestTemplatesCheck,
     SetupDocumentationCheck,
 )
+from repo360.reporters.base_reporter import BaseReporter
 from repo360.collector.repo_inspector import RepoInspector
 
 
@@ -272,6 +273,28 @@ def test_codeowners_check_variations() -> None:
 
     inspector.get_file_content.return_value = "# * @org/team\n*\n/api/ @team-api"
     assert check.evaluate(inspector, "org", "repo", "main", {}).status == CheckStatus.WARN
+
+    # Root-level CODEOWNERS file path accuracy in extra_details and Target File reporting
+    inspector.get_file_content.return_value = None
+    inspector.get_file_content.side_effect = lambda org, repo, path, ref="main": "* @org/team" if path == "CODEOWNERS" else None
+    res_root = check.evaluate(inspector, "org", "repo", "main", {})
+    assert res_root.status == CheckStatus.PASS
+    assert res_root.extra_details["target_file"] == "CODEOWNERS"
+    assert BaseReporter.infer_target_file(res_root.check_id, res_root.extra_details) == "CODEOWNERS"
+
+    # Root-level CODEOWNERS exists but empty
+    inspector.get_file_content.side_effect = lambda org, repo, path, ref="main": "   " if path == "CODEOWNERS" else None
+    res_empty_root = check.evaluate(inspector, "org", "repo", "main", {})
+    assert res_empty_root.status == CheckStatus.WARN
+    assert res_empty_root.extra_details["target_file"] == "CODEOWNERS"
+    assert BaseReporter.infer_target_file(res_empty_root.check_id, res_empty_root.extra_details) == "CODEOWNERS"
+
+    # docs/CODEOWNERS file path accuracy
+    inspector.get_file_content.side_effect = lambda org, repo, path, ref="main": "* @org/team" if path == "docs/CODEOWNERS" else None
+    res_docs = check.evaluate(inspector, "org", "repo", "main", {})
+    assert res_docs.status == CheckStatus.PASS
+    assert res_docs.extra_details["target_file"] == "docs/CODEOWNERS"
+    assert BaseReporter.infer_target_file(res_docs.check_id, res_docs.extra_details) == "docs/CODEOWNERS"
 
 
 def test_branch_rulesets_check() -> None:
