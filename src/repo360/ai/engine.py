@@ -1067,12 +1067,141 @@ Keep it factual, authoritative, professional, and actionable. Do not use filler 
 
         return f"{check_id}:{primary_lang.lower()}"
 
+    @classmethod
+    def validate_remediation(cls, check_id: str, snippet: str) -> bool:
+        """Validate that synthesized remediation snippet satisfies domain constraints of check_id."""
+        if not snippet or not isinstance(snippet, str) or not snippet.strip():
+            return False
+        clean = snippet.strip()
+        lower = clean.lower()
+
+        if check_id == "workflow_sha_pinning":
+            # Must reference action uses and commit SHAs/tags; MUST NOT be a concurrency block
+            if "concurrency:" in lower or "cancel-in-progress" in lower:
+                return False
+            if "uses:" not in lower:
+                return False
+            if "@" not in clean:
+                return False
+            return True
+
+        if check_id == "workflow_concurrency_groups":
+            if "concurrency:" not in lower:
+                return False
+            # Concurrency block must not just be an action uses line without concurrency
+            return "cancel-in-progress" in lower or "group:" in lower or "github.workflow" in lower
+
+        if check_id == "devcontainers":
+            if "{" not in clean or "}" not in clean:
+                return False
+            if "concurrency:" in lower:
+                return False
+            return any(k in clean for k in ('"image"', '"dockerFile"', '"build"', '"customizations"', '"features"'))
+
+        if check_id == "dependabot_configuration":
+            if "concurrency:" in lower:
+                return False
+            return any(k in lower for k in ("version:", "updates:", "package-ecosystem:"))
+
+        if check_id == "pre_commit_hooks":
+            if "concurrency:" in lower:
+                return False
+            return "repos:" in lower or "hooks:" in lower
+
+        if check_id == "codeowners_validation":
+            if "concurrency:" in lower:
+                return False
+            return "@" in clean or "*" in clean
+
+        if check_id == "pull_request_templates":
+            if "concurrency:" in lower:
+                return False
+            return "- [" in clean or "##" in clean or "###" in clean or "description" in lower
+
+        if check_id == "issue_templates":
+            if "concurrency:" in lower:
+                return False
+            return any(k in lower for k in ("name:", "description:", "body:"))
+
+        if check_id == "copilot_instructions":
+            if "concurrency:" in lower:
+                return False
+            return len(clean) >= 5
+
+        return True
+
+    @classmethod
+    def get_task_directive(
+        cls,
+        check_id: str,
+        primary_lang: str = "General",
+        primary_fw: str = "Standard",
+        manifests: str = "Config",
+    ) -> str:
+        """Derive an isolated, check-specific task instruction for targeted LLM synthesis."""
+        directives: Dict[str, str] = {
+            "workflow_sha_pinning": (
+                "TASK:\n"
+                "Provide GitHub Actions workflow step examples pinning third-party action dependencies "
+                "to full immutable 40-character commit SHAs with inline release tag comments "
+                "(e.g., `- uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1`).\n"
+                "Strictly provide ONLY the action step YAML (`- uses: ...`). "
+                "DO NOT output concurrency blocks, triggers, job definitions, or unrelated workflow syntax."
+            ),
+            "workflow_concurrency_groups": (
+                "TASK:\n"
+                "Provide the exact top-level or job-level GitHub Actions YAML 'concurrency' block "
+                "configured with cancel-in-progress for PR branches "
+                "(e.g., `concurrency:\n  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}\n  cancel-in-progress: true`).\n"
+                "Strictly provide ONLY the concurrency block. "
+                "DO NOT output step definitions, action uses lines, or unrelated workflow syntax."
+            ),
+            "copilot_instructions": (
+                "TASK:\n"
+                f"Write a customized .github/copilot-instructions.md with team style rules, "
+                f"testing conventions, architectural standards, and security guidelines specific to {primary_lang}."
+            ),
+            "devcontainers": (
+                "TASK:\n"
+                f"Provide a complete, valid .devcontainer/devcontainer.json configured with the right "
+                f"runtime container image, port forwards, and VS Code extensions for {primary_lang} and {primary_fw}."
+            ),
+            "dependabot_configuration": (
+                "TASK:\n"
+                f"Provide a valid .github/dependabot.yml covering all detected package ecosystems ({manifests}) "
+                "with weekly schedules and security update defaults."
+            ),
+            "codeowners_validation": (
+                "TASK:\n"
+                "Provide a complete, production-ready .github/CODEOWNERS defining granular team ownership for this tech stack."
+            ),
+            "pull_request_templates": (
+                "TASK:\n"
+                f"Provide a comprehensive .github/PULL_REQUEST_TEMPLATE.md checklist (unit tests, docs, security) "
+                f"tailored to {primary_lang}."
+            ),
+            "pre_commit_hooks": (
+                "TASK:\n"
+                f"Provide a valid .pre-commit-config.yaml with modern linting and formatting hooks for {primary_lang}."
+            ),
+            "issue_templates": (
+                "TASK:\n"
+                f"Provide a YAML issue template (.github/ISSUE_TEMPLATE/bug_report.yml) configured for {primary_lang}."
+            ),
+        }
+        return directives.get(
+            check_id,
+            f"TASK:\nProvide the exact configuration file content to remediate {check_id} for {primary_lang}.",
+        )
+
     def get_cached_remediation(self, check_id: str, tech_stack: Optional[Dict[str, Any]]) -> Optional[str]:
         """Return cached remediation snippet if already synthesized, or None."""
         key = self.get_remediation_cache_key(check_id, tech_stack)
         with self._cache_lock:
             snippet = self._remediation_cache.get(key)
-            return snippet if snippet else None
+            if snippet and self.validate_remediation(check_id, snippet):
+                return snippet
+            return None
 
     def apply_cached_remediation(
         self,
@@ -1082,6 +1211,8 @@ Keep it factual, authoritative, professional, and actionable. Do not use filler 
     ) -> None:
         """Apply an already synthesized remediation snippet to a CheckResult."""
         if not cached_snippet or not self.is_eligible_for_remediation(result):
+            return
+        if not self.validate_remediation(result.check_id, cached_snippet):
             return
         primary_lang, _, _ = self.extract_canonical_stack(tech_stack)
         self._apply_remediation(result, cached_snippet, primary_lang)
@@ -1097,7 +1228,7 @@ Keep it factual, authoritative, professional, and actionable. Do not use filler 
         with self._cache_lock:
             # 1. Fast-path: already synthesized and cached
             cached_text = self._remediation_cache.get(cache_key)
-            if cached_text:
+            if cached_text and self.validate_remediation(result.check_id, cached_text):
                 self._apply_remediation(result, cached_text, primary_lang)
                 return
 
@@ -1115,6 +1246,13 @@ Keep it factual, authoritative, professional, and actionable. Do not use filler 
             if self.is_circuit_active():
                 return
 
+            task_directive = self.get_task_directive(
+                result.check_id,
+                primary_lang=primary_lang,
+                primary_fw=primary_fw,
+                manifests=manifests,
+            )
+
             prompt = f"""You are a Senior DevOps Engineer. Generate a production-ready, custom-tailored configuration snippet to remediate this finding:
 
 TECH STACK CONTEXT (Reusable across repositories sharing this stack):
@@ -1127,16 +1265,7 @@ AUDIT FINDING:
 - Problem: {result.current_state}
 - Recommended Goal: {result.recommended_state}
 
-TASK:
-Provide ONLY the exact, tailored configuration file content to resolve this for this specific tech stack. Do not hardcode individual repository names in comments or titles.
-- For 'copilot_instructions': Write a customized .github/copilot-instructions.md with team style rules, testing conventions, and safety guidelines specific to {primary_lang}.
-- For 'devcontainers': Provide a complete, valid .devcontainer/devcontainer.json configured with the right runtime container image, port forwards, and VS Code extensions for {primary_lang} and {primary_fw}.
-- For 'dependabot_configuration': Provide a valid .github/dependabot.yml covering all detected package ecosystems ({manifests}).
-- For 'workflow_concurrency_groups': Provide the exact GitHub Actions YAML 'concurrency' block configured with cancel-in-progress for PR branches.
-- For 'codeowners_validation': Provide a complete, production-ready .github/CODEOWNERS defining granular team ownership for this tech stack.
-- For 'pull_request_templates': Provide a comprehensive .github/PULL_REQUEST_TEMPLATE.md checklist (tests, docs, security) tailored to {primary_lang}.
-- For 'pre_commit_hooks': Provide a valid .pre-commit-config.yaml with modern linting and formatting hooks for {primary_lang}.
-- For 'issue_templates': Provide a YAML issue template (.github/ISSUE_TEMPLATE/bug_report.yml) configured for {primary_lang}.
+{task_directive}
 
 Output ONLY the code/configuration snippet inside code fences. Do not add introductory or concluding chat."""
 
@@ -1147,7 +1276,13 @@ Output ONLY the code/configuration snippet inside code fences. Do not add introd
                     lines = cleaned.splitlines()
                     if len(lines) >= 2 and lines[-1].startswith("```"):
                         cleaned = "\n".join(lines[1:-1])
-                cleaned_text = cleaned
+                if self.validate_remediation(result.check_id, cleaned):
+                    cleaned_text = cleaned
+                else:
+                    logger.warning(
+                        "[AI Remediation] Synthesized snippet for check '%s' failed domain validation; preserving canonical baseline template.",
+                        result.check_id,
+                    )
         finally:
             with self._cache_lock:
                 if cleaned_text:

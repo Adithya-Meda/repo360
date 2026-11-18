@@ -926,3 +926,141 @@ def test_format_ai_scorecard_status_rate_limit_fallback() -> None:
     assert "rate limit fallback" in circuit_str
     assert "gemini-3.5-flash-lite" in circuit_str
 
+
+def test_ai_remediation_domain_validation() -> None:
+    """Verify that domain validation rejects wrong remediation blocks (e.g. concurrency for sha pinning)."""
+    from repo360.ai.engine import AIEngine
+
+    concurrency_code = (
+        "concurrency:\n"
+        "  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}\n"
+        "  cancel-in-progress: true"
+    )
+    sha_pinning_code = "- uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1"
+
+    # Concurrency snippet is valid for workflow_concurrency_groups, but INVALID for workflow_sha_pinning
+    assert AIEngine.validate_remediation("workflow_concurrency_groups", concurrency_code) is True
+    assert AIEngine.validate_remediation("workflow_sha_pinning", concurrency_code) is False
+
+    # SHA pinning snippet is valid for workflow_sha_pinning, but INVALID for workflow_concurrency_groups
+    assert AIEngine.validate_remediation("workflow_sha_pinning", sha_pinning_code) is True
+    assert AIEngine.validate_remediation("workflow_concurrency_groups", sha_pinning_code) is False
+
+    # Dependabot validation
+    dependabot_yaml = "version: 2\nupdates:\n  - package-ecosystem: 'npm'\n    directory: '/'\n    schedule:\n      interval: 'weekly'"
+    assert AIEngine.validate_remediation("dependabot_configuration", dependabot_yaml) is True
+    assert AIEngine.validate_remediation("dependabot_configuration", concurrency_code) is False
+
+    # Devcontainer validation
+    devcontainer_json = '{\n  "name": "Python 3",\n  "image": "mcr.microsoft.com/devcontainers/python:3.12"\n}'
+    assert AIEngine.validate_remediation("devcontainers", devcontainer_json) is True
+    assert AIEngine.validate_remediation("devcontainers", concurrency_code) is False
+
+
+def test_ai_task_directives_isolated_per_check() -> None:
+    """Verify that task directives in prompts are isolated to the specific check being remediated."""
+    from repo360.ai.engine import AIEngine
+
+    sha_directive = AIEngine.get_task_directive("workflow_sha_pinning")
+    assert "immutable 40-character commit SHAs" in sha_directive
+    assert "DO NOT output concurrency blocks" in sha_directive
+
+    conc_directive = AIEngine.get_task_directive("workflow_concurrency_groups")
+    assert "concurrency" in conc_directive
+    assert "cancel-in-progress" in conc_directive
+    assert "DO NOT output step definitions" in conc_directive
+
+
+def test_no_duplicate_concurrency_or_cross_contamination_in_ai_sheet(tmp_path) -> None:
+    """Verify AI_Recommendations tab never displays concurrency remediation for immutable sha pinning or duplicate rows."""
+    from openpyxl import load_workbook
+    from repo360.checks.base import CheckResult, CheckSeverity, CheckStatus, Persona
+    from repo360.reporters.excel_reporter import ExcelReporter
+
+    results = [
+        CheckResult(
+            check_id="workflow_sha_pinning",
+            check_name="GitHub Actions Immutable SHA Pinning",
+            persona=Persona.REPO_ADMIN,
+            category="Supply Chain Security",
+            status=CheckStatus.WARN,
+            severity=CheckSeverity.HIGH,
+            org_name="CanarysPlayground",
+            repo_name="backend",
+            current_state="1 unpinned third-party actions detected: build.yml: uses: actions/checkout@v4",
+            recommended_state="Pin actions to immutable commit SHAs (40 or 64 hex characters) with comments.",
+            explanation="Mutable tags (e.g., @v4) can be retargeted or hijacked by malicious actors to inject supply-chain attacks.",
+            remediation_snippet_before="- uses: actions/checkout@v4",
+            remediation_snippet_after="- uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1",
+            documentation_url="https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions#using-third-party-actions",
+            extra_details={"ai_enriched": True, "ai_model": "gemini-3.5-flash"},
+        ),
+        CheckResult(
+            check_id="workflow_concurrency_groups",
+            check_name="GitHub Actions Concurrency Groups",
+            persona=Persona.REPO_ADMIN,
+            category="CI/CD Optimization",
+            status=CheckStatus.WARN,
+            severity=CheckSeverity.MEDIUM,
+            org_name="CanarysPlayground",
+            repo_name="backend",
+            current_state="Workflows lack concurrency cancellation groups.",
+            recommended_state="Configure concurrency with cancel-in-progress: true.",
+            explanation="Without concurrency groups, pushing multiple commits in a PR queues redundant builds.",
+            remediation_snippet_before="",
+            remediation_snippet_after="concurrency:\n  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}\n  cancel-in-progress: true",
+            documentation_url="https://docs.github.com/en/actions/using-jobs/using-concurrency",
+            extra_details={"ai_enriched": True, "ai_model": "gemini-3.5-flash"},
+        ),
+        # Another repo with workflow_concurrency_groups but unenriched (fallback)
+        CheckResult(
+            check_id="workflow_concurrency_groups",
+            check_name="GitHub Actions Concurrency Groups",
+            persona=Persona.REPO_ADMIN,
+            category="CI/CD Optimization",
+            status=CheckStatus.WARN,
+            severity=CheckSeverity.MEDIUM,
+            org_name="CanarysPlayground",
+            repo_name="frontend",
+            current_state="Workflows lack concurrency cancellation groups.",
+            recommended_state="Configure concurrency with cancel-in-progress: true.",
+            explanation="Without concurrency groups, pushing multiple commits in a PR queues redundant builds.",
+            remediation_snippet_before="",
+            remediation_snippet_after="concurrency:\n  group: ${{ github.workflow }}-${{ github.ref }}\n  cancel-in-progress: true",
+            documentation_url="https://docs.github.com/en/actions/using-jobs/using-concurrency",
+            extra_details={},
+        ),
+    ]
+
+    out = tmp_path / "ai_test.xlsx"
+    ExcelReporter().generate(results, str(out))
+    ws_ai = load_workbook(out)["AI_Recommendations"]
+
+    # Iterate over all rows in AI_Recommendations
+    rows = list(ws_ai.iter_rows(values_only=True))
+    header = rows[0]
+    check_name_col = header.index("Finding / Check")
+    remediation_col = header.index("AI-Synthesized Remediation Code / Config")
+    repos_col = header.index("Repository")
+
+    data_rows = [
+        r for r in rows[1:]
+        if r[check_name_col] is not None and not str(r[0] or "").startswith("AI Safety Notice")
+    ]
+    # Should only have 2 data rows total: 1 for workflow_sha_pinning, 1 for workflow_concurrency_groups
+    assert len(data_rows) == 2
+
+    for row in data_rows:
+        check_name = row[check_name_col]
+        remediation = row[remediation_col]
+        repos = row[repos_col]
+        if check_name == "GitHub Actions Immutable SHA Pinning":
+            assert "- uses: actions/checkout" in remediation
+            assert "concurrency:" not in remediation
+        elif check_name == "GitHub Actions Concurrency Groups":
+            assert "concurrency:" in remediation
+            # Both backend and frontend should be merged under the same concurrency item
+            assert "backend" in repos
+            assert "frontend" in repos
+
+

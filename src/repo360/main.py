@@ -521,10 +521,16 @@ def run_audit(
             uncached_keys: List[str] = []
             get_fn = getattr(ai_engine, "get_cached_remediation", None)
             apply_fn = getattr(ai_engine, "apply_cached_remediation", None)
+            validate_fn = getattr(ai_engine, "validate_remediation", None)
 
             for key, (sample_res, stack_dict, matching_results) in unique_groups.items():
                 cached = get_fn(sample_res.check_id, stack_dict) if callable(get_fn) else None
-                if isinstance(cached, str) and cached:
+                is_valid_cached = (
+                    isinstance(cached, str)
+                    and bool(cached)
+                    and (not callable(validate_fn) or validate_fn(sample_res.check_id, cached))
+                )
+                if is_valid_cached:
                     for r in matching_results:
                         if callable(apply_fn):
                             apply_fn(r, cached, stack_dict)
@@ -540,7 +546,12 @@ def run_audit(
                     sample_r, s_dict, matching = unique_groups[k]
                     ai_engine.enrich_remediation(sample_r, s_dict)
                     snip = sample_r.remediation_snippet_after
-                    if snip and sample_r.extra_details.get("ai_enriched"):
+                    is_valid_snip = (
+                        bool(snip)
+                        and bool(sample_r.extra_details.get("ai_enriched"))
+                        and (not callable(validate_fn) or validate_fn(sample_r.check_id, snip))
+                    )
+                    if is_valid_snip:
                         for r in matching:
                             if r is not sample_r:
                                 if callable(apply_fn):

@@ -192,6 +192,12 @@ class BaseReporter(ABC):
 
             if cluster_key not in clusters:
                 remediation_code = canonical_candidate or r.remediation_snippet_after or r.recommended_state
+                try:
+                    from ..ai.engine import AIEngine
+                    if not AIEngine.validate_remediation(r.check_id, remediation_code):
+                        remediation_code = baseline_code or r.recommended_state
+                except Exception:
+                    pass
                 clusters[cluster_key] = {
                     "cluster_key": cluster_key,
                     "check_id": r.check_id,

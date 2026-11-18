@@ -569,12 +569,14 @@ class ExcelReporter(BaseReporter):
 
         ai_findings = [r for r in results if self.is_ai_result(r)]
         if ai_findings:
+            ai_check_ids = {r.check_id for r in ai_findings}
             eligible_fallback = [
                 r
                 for r in results
                 if not self.is_ai_result(r)
                 and r.status in (CheckStatus.WARN, CheckStatus.FAIL)
                 and r.check_id in AIEngine.SUPPORTED_REMEDIATION_CHECKS
+                and r.check_id not in ai_check_ids
                 and (r.remediation_snippet_after or r.recommended_state)
             ]
             ai_findings = ai_findings + eligible_fallback
@@ -618,8 +620,22 @@ class ExcelReporter(BaseReporter):
             if f.repo_name and f.repo_name not in grouped_ai[key]["repos"]:
                 grouped_ai[key]["repos"].append(f.repo_name)
             stack_item = f.extra_details.get("detected_stack")
-            if stack_item:
+            if stack_item and stack_item not in grouped_ai[key]["stacks"]:
                 grouped_ai[key]["stacks"].append(stack_item)
+
+        # Merge any unenriched repositories into the active AI group for the same check to avoid duplicate rows
+        if ai_findings and 'ai_check_ids' in locals() and ai_check_ids:
+            for r in results:
+                if (
+                    not self.is_ai_result(r)
+                    and r.status in (CheckStatus.WARN, CheckStatus.FAIL)
+                    and r.check_id in ai_check_ids
+                ):
+                    for (cid, _, is_ai), item in grouped_ai.items():
+                        if cid == r.check_id and is_ai:
+                            if r.repo_name and r.repo_name not in item["repos"]:
+                                item["repos"].append(r.repo_name)
+                            break
 
         severity_order = {
             CheckSeverity.CRITICAL: 0,
