@@ -107,8 +107,6 @@ repo360 version
 repo360 health
 ```
 
-All reports are written to `./repo360-output/`.
-
 #### 4. Upgrade or Switch Versions
 ```bash
 # Upgrade to the latest published release
