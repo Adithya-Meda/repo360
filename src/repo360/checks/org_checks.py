@@ -365,6 +365,13 @@ class OrgRunnerGroupsCheck(BaseCheck):
                 documentation_url=doc_url,
             )
 
+        total_runners = raw_runner_count if isinstance(raw_runner_count, int) else sum(len(g.get("runners") or []) for g in runner_groups if isinstance(g, dict))
+        has_all_visibility_group = any(g.get("visibility") == "all" for g in runner_groups if isinstance(g, dict))
+        if has_all_visibility_group and (total_runners == 0 and not has_org_self_hosted):
+            state_msg = "No active self-hosted runners registered in runner groups."
+        else:
+            state_msg = "Self-hosted runner groups adhere to restricted visibility."
+
         return CheckResult(
             check_id=self.check_id,
             check_name=self.check_name,
@@ -374,7 +381,7 @@ class OrgRunnerGroupsCheck(BaseCheck):
             severity=self.severity,
             org_name=org,
             repo_name="Organization-Wide",
-            current_state="Self-hosted runner groups adhere to restricted visibility.",
+            current_state=state_msg,
             recommended_state="Maintain repository isolation on runner groups.",
             explanation="Runner groups are isolated to approved repositories.",
             documentation_url=doc_url,

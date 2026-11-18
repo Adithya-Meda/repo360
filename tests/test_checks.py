@@ -511,6 +511,97 @@ def test_contributor_checks() -> None:
     assert doc_check.evaluate(inspector, "org", "repo", "main", {}).status == CheckStatus.WARN
 
 
+def test_nuanced_governance_edge_cases() -> None:
+    inspector = MagicMock()
+
+    # 1. Devcontainers: directory exists, but devcontainer.json is missing
+    dev_check = DevcontainersCheck()
+    inspector.check_file_exists.side_effect = lambda org, repo, path, ref="main": path == ".devcontainer"
+    inspector.get_file_content.return_value = None
+    res = dev_check.evaluate(inspector, "org", "repo", "main", {})
+    assert res.status == CheckStatus.WARN
+    assert ".devcontainer directory exists, but devcontainer.json is missing" in res.current_state
+
+    # 1b. Devcontainers: devcontainer.json is empty
+    inspector.check_file_exists.side_effect = lambda org, repo, path, ref="main": path == ".devcontainer/devcontainer.json"
+    inspector.get_file_content.return_value = "   "
+    res = dev_check.evaluate(inspector, "org", "repo", "main", {})
+    assert res.status == CheckStatus.WARN
+    assert ".devcontainer/devcontainer.json is empty" in res.current_state
+
+    # 2. Setup documentation: lowercase readme.md with setup instructions
+    doc_check = SetupDocumentationCheck()
+    inspector.check_file_exists.side_effect = lambda org, repo, path, ref="main": path == "readme.md"
+    inspector.get_file_content.side_effect = lambda org, repo, path, ref="main": "## Quickstart\nRun npm install and npm start" if path == "readme.md" else None
+    res = doc_check.evaluate(inspector, "org", "repo", "main", {})
+    assert res.status == CheckStatus.PASS
+    assert "readme.md contains setup/getting-started documentation" in res.current_state
+
+    # 3. CODEOWNERS: exists but is 0-byte/empty
+    codeowners_check = CodeownersCheck()
+    inspector.get_codeowners_errors.return_value = []
+    inspector.get_file_content.side_effect = lambda org, repo, path, ref="main": "" if path == ".github/CODEOWNERS" else None
+    res = codeowners_check.evaluate(inspector, "org", "repo", "main", {})
+    assert res.status == CheckStatus.WARN
+    assert "CODEOWNERS file exists but is empty" in res.current_state
+
+    # 3b. CODEOWNERS: inline comments formatted cleanly with line numbers
+    inspector.get_file_content.side_effect = lambda org, repo, path, ref="main": "* @team # catch-all\n/docs/ @writers # docs\n/api/ @api # api" if path == ".github/CODEOWNERS" else None
+    res = codeowners_check.evaluate(inspector, "org", "repo", "main", {})
+    assert res.status == CheckStatus.WARN
+    assert "lines 1, 2, 3" in res.current_state
+
+    # 4. Tag rulesets do not mask lack of default branch protection
+    branch_check = BranchRulesetsCheck()
+    inspector.get_repo_rulesets.return_value = [{"name": "tags", "target": "tag", "enforcement": "active"}]
+    inspector.get_repo_branch_rules.return_value = []
+    inspector.get_branch_protection.return_value = None
+    inspector.get_permission_gap.return_value = None
+    res = branch_check.evaluate(inspector, "org", "repo", "main", {})
+    assert res.status == CheckStatus.FAIL
+    assert "Default branch 'main' has no active rulesets or protection enabled" in res.current_state
+
+    # 5. Workflow concurrency: 0 workflows inspected -> SKIPPED
+    wf_concurrency_check = WorkflowConcurrencyGroupsCheck()
+    inspector.list_workflows.return_value = [{"name": "pages", "path": "dynamic/pages/deploy", "state": "active"}]
+    res = wf_concurrency_check.evaluate(inspector, "org", "repo", "main", {})
+    assert res.status == CheckStatus.SKIPPED
+    assert "No active repository GitHub Actions workflows found to inspect" in res.current_state
+
+    # 6. Issue templates: empty file -> WARN
+    issue_check = IssueTemplatesCheck()
+    inspector.check_file_exists.side_effect = lambda org, repo, path, ref="main": path == ".github/ISSUE_TEMPLATE.md"
+    inspector.get_file_content.side_effect = lambda org, repo, path, ref="main": "   "
+    res = issue_check.evaluate(inspector, "org", "repo", "main", {})
+    assert res.status == CheckStatus.WARN
+    assert "Issue template '.github/ISSUE_TEMPLATE.md' exists but is empty" in res.current_state
+
+    # 7. PR templates: empty file -> WARN
+    pr_check = PullRequestTemplatesCheck()
+    inspector.check_file_exists.side_effect = lambda org, repo, path, ref="main": path == ".github/PULL_REQUEST_TEMPLATE.md"
+    inspector.get_file_content.side_effect = lambda org, repo, path, ref="main": "   "
+    res = pr_check.evaluate(inspector, "org", "repo", "main", {})
+    assert res.status == CheckStatus.WARN
+    assert "Pull Request template '.github/PULL_REQUEST_TEMPLATE.md' exists but is empty" in res.current_state
+
+    # 8. Copilot instructions: unreadable (None) -> WARN
+    copilot_check = CopilotInstructionsCheck()
+    inspector.check_file_exists.side_effect = lambda org, repo, path, ref="main": path == ".github/copilot-instructions.md"
+    inspector.get_file_content.side_effect = lambda org, repo, path, ref="main": None
+    res = copilot_check.evaluate(inspector, "org", "repo", "main", {})
+    assert res.status == CheckStatus.WARN
+    assert ".github/copilot-instructions.md exists but could not be read" in res.current_state
+
+    # 9. Runner groups: default group with visibility "all" and 0 runners
+    runner_check = OrgRunnerGroupsCheck()
+    inspector.get_org_runner_groups.return_value = [{"name": "Default", "visibility": "all", "default": True, "runners": []}]
+    inspector.get_org_self_hosted_runners_count.return_value = 0
+    inspector.get_permission_error.return_value = None
+    res = runner_check.evaluate(inspector, "org", {})
+    assert res.status == CheckStatus.PASS
+    assert "No active self-hosted runners registered in runner groups" in res.current_state
+
+
 def _make_403_error(
     body: bytes = b"", headers: dict | None = None
 ) -> requests.exceptions.HTTPError:

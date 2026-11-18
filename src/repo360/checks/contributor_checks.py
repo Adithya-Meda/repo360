@@ -31,24 +31,17 @@ class DevcontainersCheck(BaseCheck):
         thresholds: Dict[str, Any],
     ) -> CheckResult:
         doc_url = "https://docs.github.com/en/codespaces/setting-up-your-project-for-codespaces/adding-a-dev-container-configuration/introduction-to-dev-containers"
-        has_devcontainer = (
-            inspector.check_file_exists(
-                org, repo, ".devcontainer/devcontainer.json", default_branch
-            )
-            or inspector.check_file_exists(
-                org, repo, ".devcontainer.json", default_branch
-            )
-            or inspector.check_file_exists(
-                org, repo, ".devcontainer", default_branch
-            )
-        )
+        devcontainer_file: str | None = None
+        if inspector.check_file_exists(org, repo, ".devcontainer/devcontainer.json", default_branch):
+            devcontainer_file = ".devcontainer/devcontainer.json"
+        elif inspector.check_file_exists(org, repo, ".devcontainer.json", default_branch):
+            devcontainer_file = ".devcontainer.json"
 
-        if has_devcontainer:
-            content = (
-                inspector.get_file_content(org, repo, ".devcontainer/devcontainer.json", default_branch)
-                or inspector.get_file_content(org, repo, ".devcontainer.json", default_branch)
-            )
-            if isinstance(content, str) and not content.strip():
+        has_devcontainer_dir = inspector.check_file_exists(org, repo, ".devcontainer", default_branch)
+
+        if devcontainer_file:
+            content = inspector.get_file_content(org, repo, devcontainer_file, default_branch)
+            if content is None:
                 return CheckResult(
                     check_id=self.check_id,
                     check_name=self.check_name,
@@ -58,9 +51,26 @@ class DevcontainersCheck(BaseCheck):
                     severity=self.severity,
                     org_name=org,
                     repo_name=repo,
-                    current_state=".devcontainer/devcontainer.json is empty or invalid. Please review.",
+                    current_state=f"{devcontainer_file} exists but could not be read. Please review.",
                     recommended_state="Provide a valid .devcontainer configuration with base image and settings.",
-                    explanation="An empty or malformed devcontainer file cannot be used by Codespaces or VS Code.",
+                    explanation="Dev container configuration could not be read or verified.",
+                    documentation_url=doc_url,
+                    remediation_snippet_before="{}",
+                    remediation_snippet_after="{\n  \"name\": \"Service Dev Container\",\n  \"image\": \"mcr.microsoft.com/devcontainers/python:3.12\"\n}",
+                )
+            if not content.strip():
+                return CheckResult(
+                    check_id=self.check_id,
+                    check_name=self.check_name,
+                    persona=self.persona,
+                    category=self.category,
+                    status=CheckStatus.WARN,
+                    severity=self.severity,
+                    org_name=org,
+                    repo_name=repo,
+                    current_state=f"{devcontainer_file} is empty. Please review.",
+                    recommended_state="Provide a valid .devcontainer configuration with base image and settings.",
+                    explanation="An empty devcontainer file cannot be used by Codespaces or VS Code.",
                     documentation_url=doc_url,
                     remediation_snippet_before="{}",
                     remediation_snippet_after="{\n  \"name\": \"Service Dev Container\",\n  \"image\": \"mcr.microsoft.com/devcontainers/python:3.12\"\n}",
@@ -78,6 +88,24 @@ class DevcontainersCheck(BaseCheck):
                 recommended_state="Maintain base container image and extensions.",
                 explanation="DevContainers allow new contributors and juniors to spin up a fully configured environment in seconds.",
                 documentation_url=doc_url,
+            )
+
+        if has_devcontainer_dir:
+            return CheckResult(
+                check_id=self.check_id,
+                check_name=self.check_name,
+                persona=self.persona,
+                category=self.category,
+                status=CheckStatus.WARN,
+                severity=self.severity,
+                org_name=org,
+                repo_name=repo,
+                current_state=".devcontainer directory exists, but devcontainer.json is missing. Please review.",
+                recommended_state="Provide a valid devcontainer.json inside .devcontainer/ with base image and settings.",
+                explanation="GitHub Codespaces and VS Code Dev Containers require devcontainer.json to configure containerized environments.",
+                documentation_url=doc_url,
+                remediation_snippet_before="# .devcontainer exists without devcontainer.json",
+                remediation_snippet_after="{\n  \"name\": \"Service Dev Container\",\n  \"image\": \"mcr.microsoft.com/devcontainers/python:3.12\"\n}",
             )
 
         return CheckResult(
@@ -122,7 +150,22 @@ class CopilotInstructionsCheck(BaseCheck):
 
         if has_instructions:
             content = inspector.get_file_content(org, repo, ".github/copilot-instructions.md", default_branch)
-            if isinstance(content, str) and not content.strip():
+            if content is None:
+                return CheckResult(
+                    check_id=self.check_id,
+                    check_name=self.check_name,
+                    persona=self.persona,
+                    category=self.category,
+                    status=CheckStatus.WARN,
+                    severity=self.severity,
+                    org_name=org,
+                    repo_name=repo,
+                    current_state=".github/copilot-instructions.md exists but could not be read. Please review.",
+                    recommended_state="Ensure file permissions allow reading .github/copilot-instructions.md.",
+                    explanation="File exists in git tree but content could not be read to verify instructions.",
+                    documentation_url=doc_url,
+                )
+            if not content.strip():
                 return CheckResult(
                     check_id=self.check_id,
                     check_name=self.check_name,
@@ -189,19 +232,62 @@ class IssueTemplatesCheck(BaseCheck):
         default_branch: str,
         thresholds: Dict[str, Any],
     ) -> CheckResult:
-        has_templates = (
+        found_file = next(
+            (
+                p
+                for p in (
+                    ".github/ISSUE_TEMPLATE.md",
+                    ".github/issue_template.md",
+                    "ISSUE_TEMPLATE.md",
+                    "issue_template.md",
+                    "docs/ISSUE_TEMPLATE.md",
+                    "docs/issue_template.md",
+                )
+                if inspector.check_file_exists(org, repo, p, default_branch)
+            ),
+            None,
+        )
+        has_dir = (
             inspector.check_file_exists(org, repo, ".github/ISSUE_TEMPLATE", default_branch)
-            or inspector.check_file_exists(org, repo, ".github/ISSUE_TEMPLATE.md", default_branch)
-            or inspector.check_file_exists(org, repo, ".github/issue_template.md", default_branch)
             or inspector.check_file_exists(org, repo, "ISSUE_TEMPLATE", default_branch)
-            or inspector.check_file_exists(org, repo, "ISSUE_TEMPLATE.md", default_branch)
-            or inspector.check_file_exists(org, repo, "issue_template.md", default_branch)
             or inspector.check_file_exists(org, repo, "docs/ISSUE_TEMPLATE", default_branch)
-            or inspector.check_file_exists(org, repo, "docs/ISSUE_TEMPLATE.md", default_branch)
-            or inspector.check_file_exists(org, repo, "docs/issue_template.md", default_branch)
         )
 
-        if has_templates:
+        if found_file:
+            content = inspector.get_file_content(org, repo, found_file, default_branch)
+            if content is not None and not content.strip():
+                return CheckResult(
+                    check_id=self.check_id,
+                    check_name=self.check_name,
+                    persona=self.persona,
+                    category=self.category,
+                    status=CheckStatus.WARN,
+                    severity=self.severity,
+                    org_name=org,
+                    repo_name=repo,
+                    current_state=f"Issue template '{found_file}' exists but is empty. Please review.",
+                    recommended_state="Add structured issue form fields or markdown sections to the issue template.",
+                    explanation="An empty issue template provides no guidance or triage structure for new issues.",
+                    documentation_url="https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/configuring-issue-templates-for-your-repository",
+                    extra_details={"target_file": found_file},
+                )
+            return CheckResult(
+                check_id=self.check_id,
+                check_name=self.check_name,
+                persona=self.persona,
+                category=self.category,
+                status=CheckStatus.PASS,
+                severity=self.severity,
+                org_name=org,
+                repo_name=repo,
+                current_state="Issue templates configured.",
+                recommended_state="Keep issue forms updated with triage labels.",
+                explanation="Structured issue templates prompt contributors for exact reproduction steps and environment details.",
+                documentation_url="https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/configuring-issue-templates-for-your-repository",
+                extra_details={"target_file": found_file},
+            )
+
+        if has_dir:
             return CheckResult(
                 check_id=self.check_id,
                 check_name=self.check_name,
@@ -270,22 +356,46 @@ class PullRequestTemplatesCheck(BaseCheck):
         default_branch: str,
         thresholds: Dict[str, Any],
     ) -> CheckResult:
-        has_template = (
-            inspector.check_file_exists(org, repo, ".github/PULL_REQUEST_TEMPLATE.md", default_branch)
-            or inspector.check_file_exists(org, repo, ".github/pull_request_template.md", default_branch)
-            or inspector.check_file_exists(org, repo, ".github/PULL_REQUEST_TEMPLATE", default_branch)
-            or inspector.check_file_exists(org, repo, ".github/pull_request_template", default_branch)
-            or inspector.check_file_exists(org, repo, "PULL_REQUEST_TEMPLATE.md", default_branch)
-            or inspector.check_file_exists(org, repo, "pull_request_template.md", default_branch)
-            or inspector.check_file_exists(org, repo, "PULL_REQUEST_TEMPLATE", default_branch)
-            or inspector.check_file_exists(org, repo, "pull_request_template", default_branch)
-            or inspector.check_file_exists(org, repo, "docs/PULL_REQUEST_TEMPLATE.md", default_branch)
-            or inspector.check_file_exists(org, repo, "docs/pull_request_template.md", default_branch)
-            or inspector.check_file_exists(org, repo, "docs/PULL_REQUEST_TEMPLATE", default_branch)
-            or inspector.check_file_exists(org, repo, "docs/pull_request_template", default_branch)
+        found_template = next(
+            (
+                path
+                for path in (
+                    ".github/PULL_REQUEST_TEMPLATE.md",
+                    ".github/pull_request_template.md",
+                    ".github/PULL_REQUEST_TEMPLATE",
+                    ".github/pull_request_template",
+                    "PULL_REQUEST_TEMPLATE.md",
+                    "pull_request_template.md",
+                    "PULL_REQUEST_TEMPLATE",
+                    "pull_request_template",
+                    "docs/PULL_REQUEST_TEMPLATE.md",
+                    "docs/pull_request_template.md",
+                    "docs/PULL_REQUEST_TEMPLATE",
+                    "docs/pull_request_template",
+                )
+                if inspector.check_file_exists(org, repo, path, default_branch)
+            ),
+            None,
         )
 
-        if has_template:
+        if found_template:
+            content = inspector.get_file_content(org, repo, found_template, default_branch)
+            if content is not None and not content.strip():
+                return CheckResult(
+                    check_id=self.check_id,
+                    check_name=self.check_name,
+                    persona=self.persona,
+                    category=self.category,
+                    status=CheckStatus.WARN,
+                    severity=self.severity,
+                    org_name=org,
+                    repo_name=repo,
+                    current_state=f"Pull Request template '{found_template}' exists but is empty. Please review.",
+                    recommended_state="Include testing checklists and summary sections in the PR template.",
+                    explanation="An empty PR template does not prompt contributors with testing checklists or change descriptions.",
+                    documentation_url="https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/creating-a-pull-request-template-for-your-repository",
+                    extra_details={"target_file": found_template},
+                )
             return CheckResult(
                 check_id=self.check_id,
                 check_name=self.check_name,
@@ -299,7 +409,7 @@ class PullRequestTemplatesCheck(BaseCheck):
                 recommended_state="Include testing checklists in PR template.",
                 explanation="PR templates ensure that developers verify test coverage, security considerations, and changelogs before requesting review.",
                 documentation_url="https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/creating-a-pull-request-template-for-your-repository",
-                extra_details={"target_file": ".github/PULL_REQUEST_TEMPLATE.md"},
+                extra_details={"target_file": found_template},
             )
 
         if repo != ".github" and check_org_default_pr_template(inspector, org):
@@ -355,21 +465,18 @@ class PreCommitHooksCheck(BaseCheck):
         thresholds: Dict[str, Any],
     ) -> CheckResult:
         doc_url = "https://pre-commit.com/"
-        has_precommit = (
-            inspector.check_file_exists(
-                org, repo, ".pre-commit-config.yaml", default_branch
-            )
-            or inspector.check_file_exists(
-                org, repo, ".pre-commit-config.yml", default_branch
-            )
+        precommit_file = next(
+            (
+                path
+                for path in (".pre-commit-config.yaml", ".pre-commit-config.yml")
+                if inspector.check_file_exists(org, repo, path, default_branch)
+            ),
+            None,
         )
 
-        if has_precommit:
-            content = (
-                inspector.get_file_content(org, repo, ".pre-commit-config.yaml", default_branch)
-                or inspector.get_file_content(org, repo, ".pre-commit-config.yml", default_branch)
-            )
-            if isinstance(content, str) and ("repos:" not in content or not content.strip()):
+        if precommit_file:
+            content = inspector.get_file_content(org, repo, precommit_file, default_branch)
+            if content is None:
                 return CheckResult(
                     check_id=self.check_id,
                     check_name=self.check_name,
@@ -379,7 +486,22 @@ class PreCommitHooksCheck(BaseCheck):
                     severity=self.severity,
                     org_name=org,
                     repo_name=repo,
-                    current_state=".pre-commit-config.yaml exists but defines no active hooks. Please review.",
+                    current_state=f"{precommit_file} exists but could not be read. Please review.",
+                    recommended_state="Ensure file permissions allow reading pre-commit configuration.",
+                    explanation="Pre-commit config exists in repository tree but could not be read to verify hook definitions.",
+                    documentation_url=doc_url,
+                )
+            if isinstance(content, str) and (not content.strip() or "repos:" not in content):
+                return CheckResult(
+                    check_id=self.check_id,
+                    check_name=self.check_name,
+                    persona=self.persona,
+                    category=self.category,
+                    status=CheckStatus.WARN,
+                    severity=self.severity,
+                    org_name=org,
+                    repo_name=repo,
+                    current_state=f"{precommit_file} exists but defines no active hooks. Please review.",
                     recommended_state="Configure linter/formatter hooks (e.g., ruff, black, eslint) in .pre-commit-config.yaml.",
                     explanation="A pre-commit configuration without hook repositories does not enforce any quality gates.",
                     remediation_snippet_before=content.strip() or "[Empty pre-commit config]",
@@ -395,7 +517,7 @@ class PreCommitHooksCheck(BaseCheck):
                 severity=self.severity,
                 org_name=org,
                 repo_name=repo,
-                current_state=".pre-commit-config.yaml found.",
+                current_state=f"{precommit_file} found.",
                 recommended_state="Keep pre-commit hook versions updated.",
                 explanation="Pre-commit catches formatting, linting, and secret leakage errors immediately on the developer's machine.",
                 documentation_url=doc_url,
@@ -439,10 +561,15 @@ class SetupDocumentationCheck(BaseCheck):
         thresholds: Dict[str, Any],
     ) -> CheckResult:
         doc_url = "https://docs.github.com/en/communities/setting-up-your-project-for-healthy-contributions/setting-guidelines-for-repository-contributors"
-        has_readme = any(
-            inspector.check_file_exists(org, repo, path, default_branch)
-            for path in ("README.md", "README.rst", "readme.md")
+        existing_readme = next(
+            (
+                path
+                for path in ("README.md", "README.rst", "readme.md", "readme.rst")
+                if inspector.check_file_exists(org, repo, path, default_branch)
+            ),
+            None,
         )
+        has_readme = existing_readme is not None
         has_contributing = any(
             inspector.check_file_exists(org, repo, path, default_branch)
             for path in ("CONTRIBUTING.md", ".github/CONTRIBUTING.md", "docs/CONTRIBUTING.md", "SETUP.md")
@@ -454,9 +581,9 @@ class SetupDocumentationCheck(BaseCheck):
 
         if has_contributing and has_readme:
             state_msg = (
-                "README.md and CONTRIBUTING.md present (CONTRIBUTING inherited from organization '.github' repository)."
+                f"{existing_readme} and CONTRIBUTING.md present (CONTRIBUTING inherited from organization '.github' repository)."
                 if inherited_contributing
-                else "README.md and CONTRIBUTING.md / setup documentation present."
+                else f"{existing_readme} and CONTRIBUTING.md / setup documentation present."
             )
             return CheckResult(
                 check_id=self.check_id,
@@ -474,11 +601,8 @@ class SetupDocumentationCheck(BaseCheck):
             )
 
         if has_readme:
-            readme_content = (
-                inspector.get_file_content(org, repo, "README.md", default_branch)
-                or inspector.get_file_content(org, repo, "README.rst", default_branch)
-                or ""
-            ).lower()
+            raw_content = inspector.get_file_content(org, repo, existing_readme, default_branch) if existing_readme else ""
+            readme_content = (raw_content or "").lower()
             if any(kw in readme_content for kw in self.SETUP_KEYWORDS):
                 return CheckResult(
                     check_id=self.check_id,
@@ -489,7 +613,7 @@ class SetupDocumentationCheck(BaseCheck):
                     severity=self.severity,
                     org_name=org,
                     repo_name=repo,
-                    current_state="README contains setup/getting-started documentation.",
+                    current_state=f"{existing_readme} contains setup/getting-started documentation.",
                     recommended_state="Consider extracting detailed PR/test conventions into CONTRIBUTING.md.",
                     explanation="Setup instructions inside README enable engineers to run and validate changes locally.",
                     documentation_url=doc_url,
@@ -504,10 +628,10 @@ class SetupDocumentationCheck(BaseCheck):
                 severity=self.severity,
                 org_name=org,
                 repo_name=repo,
-                current_state="README exists, but lacks explicit setup/install section or CONTRIBUTING.md.",
-                recommended_state="Add local setup commands to README.md and create CONTRIBUTING.md.",
+                current_state=f"{existing_readme} exists, but lacks explicit setup/install section or CONTRIBUTING.md.",
+                recommended_state=f"Add local setup commands to {existing_readme} and create CONTRIBUTING.md.",
                 explanation="New contributors need copy-pasteable setup, test, and environment steps to onboard rapidly.",
-                remediation_snippet_before="[README without setup or CONTRIBUTING.md]",
+                remediation_snippet_before=f"[{existing_readme} without setup or CONTRIBUTING.md]",
                 remediation_snippet_after="## Local Setup\n1. Install dependencies\n2. Run tests locally\n\nSee CONTRIBUTING.md for PR conventions.",
                 documentation_url=doc_url,
             )

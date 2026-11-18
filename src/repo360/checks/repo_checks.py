@@ -101,11 +101,30 @@ class CodeownersCheck(BaseCheck):
         thresholds: Dict[str, Any],
     ) -> CheckResult:
         doc_url = "https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners"
-        content = (
-            inspector.get_file_content(org, repo, ".github/CODEOWNERS", default_branch)
-            or inspector.get_file_content(org, repo, "CODEOWNERS", default_branch)
-            or inspector.get_file_content(org, repo, "docs/CODEOWNERS", default_branch)
-        )
+        content: Optional[str] = None
+        for candidate in (".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"):
+            res_content = inspector.get_file_content(org, repo, candidate, default_branch)
+            if res_content is not None:
+                content = res_content
+                break
+
+        if isinstance(content, str) and not content.strip():
+            return CheckResult(
+                check_id=self.check_id,
+                check_name=self.check_name,
+                persona=self.persona,
+                category=self.category,
+                status=CheckStatus.WARN,
+                severity=self.severity,
+                org_name=org,
+                repo_name=repo,
+                current_state="CODEOWNERS file exists but is empty. Please review.",
+                recommended_state="Add code ownership rules to CODEOWNERS defining responsible team handles.",
+                explanation="An empty CODEOWNERS file provides no ownership or review requirements.",
+                remediation_snippet_before="# Empty CODEOWNERS",
+                remediation_snippet_after="# Catch-all default rule\n* @org/team-name",
+                documentation_url=doc_url,
+            )
 
         if content and content.strip():
             # Check 1: Query GitHub API's official CODEOWNERS error validation endpoint
@@ -147,6 +166,14 @@ class CodeownersCheck(BaseCheck):
                     has_wildcard = True
 
             if inline_comment_lines:
+                if len(inline_comment_lines) == 1:
+                    lines_label = f"line {inline_comment_lines[0]}"
+                elif len(inline_comment_lines) <= 5:
+                    lines_label = f"lines {', '.join(str(l) for l in inline_comment_lines)}"
+                else:
+                    disp = ", ".join(str(l) for l in inline_comment_lines[:5])
+                    rem = len(inline_comment_lines) - 5
+                    lines_label = f"lines {disp} (+{rem} more)"
                 return CheckResult(
                     check_id=self.check_id,
                     check_name=self.check_name,
@@ -156,7 +183,7 @@ class CodeownersCheck(BaseCheck):
                     severity=self.severity,
                     org_name=org,
                     repo_name=repo,
-                    current_state=f"CODEOWNERS file contains inline comments on rule line(s) ({', '.join(str(l) for l in inline_comment_lines[:2])}). Please review.",
+                    current_state=f"CODEOWNERS file contains inline comments on rule {lines_label}. Please review.",
                     recommended_state="Move comments to separate lines starting with '#' above the ownership rule.",
                     explanation="GitHub CODEOWNERS does not support inline comments; '#' on rule lines is parsed as an invalid owner handle.",
                     remediation_snippet_before="* @org/team # Catch-all ownership",
@@ -256,8 +283,12 @@ class BranchRulesetsCheck(BaseCheck):
         )
 
         rulesets_list = rulesets if isinstance(rulesets, list) else []
-        active_rulesets = [r for r in rulesets_list if isinstance(r, dict) and r.get("enforcement") == "active"]
-        evaluate_rulesets = [r for r in rulesets_list if isinstance(r, dict) and r.get("enforcement") == "evaluate"]
+        branch_rulesets = [
+            r for r in rulesets_list
+            if isinstance(r, dict) and r.get("target") in ("branch", None)
+        ]
+        active_rulesets = [r for r in branch_rulesets if r.get("enforcement") == "active"]
+        evaluate_rulesets = [r for r in branch_rulesets if r.get("enforcement") == "evaluate"]
 
         inline_rules: List[Dict[str, Any]] = []
         if active_rulesets and not branch_rules:
@@ -273,7 +304,7 @@ class BranchRulesetsCheck(BaseCheck):
         effective_rules = branch_rules or inline_rules
         protection_dict = protection if isinstance(protection, dict) else None
 
-        has_active_control = bool(active_rulesets or effective_rules or protection_dict)
+        has_active_control = bool(effective_rules or protection_dict)
         if not has_active_control:
             if perm_err:
                 return make_permission_skipped_result(self, org, perm_err, doc_url, repo=repo)
@@ -759,6 +790,22 @@ class WorkflowConcurrencyGroupsCheck(BaseCheck):
         coverage_gap = incomplete_workflow_coverage_result(self, org, repo, inspected, unreadable, doc_url)
         if coverage_gap is not None:
             return coverage_gap
+
+        if inspected == 0:
+            return CheckResult(
+                check_id=self.check_id,
+                check_name=self.check_name,
+                persona=self.persona,
+                category=self.category,
+                status=CheckStatus.SKIPPED,
+                severity=CheckSeverity.INFO,
+                org_name=org,
+                repo_name=repo,
+                current_state="No active repository GitHub Actions workflows found to inspect.",
+                recommended_state="Add concurrency controls when workflows are created.",
+                explanation="No active repository workflows under .github/workflows/ were available to inspect.",
+                documentation_url=doc_url,
+            )
 
         return CheckResult(
             check_id=self.check_id,
