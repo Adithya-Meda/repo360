@@ -42,7 +42,7 @@ Platform governance, compliance, engineering intelligence, and infrastructure me
 
 ## Required GitHub App Permissions
 
-All permissions are read-only:
+All core permissions are read-only by default. Note that for organization-level rulesets, GitHub's REST API (`GET /orgs/{org}/rulesets`) strictly requires `administration: write` at the organization scope. This permission must be manually provided to the GitHub App if auditing organization-level rulesets is required; otherwise, org ruleset checks are skipped while individual repository branch protections are evaluated per repo.
 
 | Permission | Scope | Feature |
 | :--- | :--- | :--- |
@@ -56,6 +56,7 @@ All permissions are read-only:
 | `pull_requests: read` | Repository | `activity`, `dora` |
 | `secret_scanning_alerts: read` | Repository | `bypass` |
 | `administration: read` | Organization | `audit` |
+| `administration: write` | Organization | `audit` (required for Organization Rulesets; manually provide this permission if org-level rulesets are required) |
 | `members: read` | Organization | `audit`, `activity` |
 | `self_hosted_runners: read` | Organization | `audit`, `runners` |
 
