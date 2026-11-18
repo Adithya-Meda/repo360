@@ -495,7 +495,7 @@ class RepoDORAMetrics:
     unlinked_rework_prs: int = 0
     incident_issues_count: int = 0
     rollback_hotfix_prs: int = 0
-    signal_mode: str = "No Production Activity"
+    signal_mode: str = "No Deployment Activity"
     deployments_api_forbidden: bool = False
     stalled_deploys_count: int = 0
     lifetime_deployments_count: Optional[int] = None
@@ -660,8 +660,8 @@ class RepoDORAMetrics:
         if self.total_deploys == 0:
             if self.filtered_non_prod_count > 0:
                 env_str = ", ".join(self.detected_environments[:3])
-                return f"Non-Prod Only ({self.filtered_non_prod_count} in {env_str})"
-            return "Permission Gap" if self.deployments_api_forbidden else "No Production Activity"
+                return f"Filtered Envs ({self.filtered_non_prod_count} in {env_str})"
+            return "Permission Gap" if self.deployments_api_forbidden else "No Deployment Activity"
         parts: List[str] = [
             "Full PR+Issue"
             if (self.incident_issues_count > 0 or self.rollback_hotfix_prs > 0)
@@ -670,7 +670,7 @@ class RepoDORAMetrics:
         if self.lifetime_deployments_count is not None and self.lifetime_deployments_count > self.total_deploys:
             parts.append(f"Window:{self.total_deploys}/{self.lifetime_deployments_count} all-time")
         if self.filtered_non_prod_count > 0:
-            parts.append(f"Excluded Non-Prod:{self.filtered_non_prod_count}")
+            parts.append(f"Excluded Envs:{self.filtered_non_prod_count}")
         cov = self.lttc_coverage_pct
         if cov is None or cov == 0.0:
             parts.append("No LTTC")
@@ -756,6 +756,7 @@ class DORAConfig:
     output_dir: str = "./repo360-output"
     file_prefix: str = "repo360_dora"
     prod_environments: Tuple[str, ...] = ("prod", "production", "prd", "live", "release")
+    custom_prod_envs: bool = False
     incident_labels: Tuple[str, ...] = (
         "incident",
         "production-incident",

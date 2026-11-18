@@ -1290,7 +1290,7 @@ def test_dora_lifetime_count_and_non_prod_environment_transparency():
     mock_client.paginate_enveloped.return_value = []
     mock_client.get.return_value = []
 
-    # 1. Default run (prod only): 11 prod deployments evaluated, 109 App Center excluded with full transparency
+    # 1. Default run: generalized to all deployment environments (all 120 deployments evaluated)
     metrics = profile_repo_dora(
         mock_client,
         "CanarysPlayground",
@@ -1301,36 +1301,35 @@ def test_dora_lifetime_count_and_non_prod_environment_transparency():
         cfg=DORAConfig(lookback_days=90),
     )
 
-    assert metrics.total_deploys == 11
+    assert metrics.total_deploys == 120
     assert metrics.lifetime_deployments_count == 120
     assert metrics.all_window_deployments_count == 120
-    assert metrics.filtered_non_prod_count == 109
+    assert metrics.filtered_non_prod_count == 0
     assert "App Center (109)" in metrics.detected_environments
     assert "production (11)" in metrics.detected_environments
-    assert "Window:11/120 all-time" in metrics.telemetry_scope
-    assert "Excluded Non-Prod:109" in metrics.telemetry_scope
-    assert "109 deployment(s) in non-production environment(s)" in metrics.flow_advisory
-    assert "--include-non-prod" in metrics.flow_advisory
+    assert metrics.signal_mode == "GitHub Deployments"
 
     repo_rows, _, _, _ = build_dora_rows([metrics], ["CanarysPlayground"], window_days=90)
     assert len(repo_rows) == 1
     assert repo_rows[0][1] == "TaskManager-DemoApp"
-    assert repo_rows[0][3] == 11
+    assert repo_rows[0][3] == 120
     assert repo_rows[0][29] == 120
     assert "App Center (109)" in repo_rows[0][30]
 
-    # 2. Including non-prod environments: all 120 deployments evaluated
-    metrics_all = profile_repo_dora(
+    # 2. Custom prod-envs filter: only 11 prod deployments evaluated, 109 App Center excluded with full transparency
+    metrics_filtered = profile_repo_dora(
         mock_client,
         "CanarysPlayground",
         "TaskManager-DemoApp",
         since,
         now,
         {"default_branch": "main", "pushed_at": _ts(now)},
-        cfg=DORAConfig(lookback_days=90, include_non_prod=True),
+        cfg=DORAConfig(lookback_days=90, prod_environments=("production",), custom_prod_envs=True),
     )
-    assert metrics_all.total_deploys == 120
-    assert metrics_all.filtered_non_prod_count == 0
+    assert metrics_filtered.total_deploys == 11
+    assert metrics_filtered.filtered_non_prod_count == 109
+    assert "Excluded Envs:109" in metrics_filtered.telemetry_scope
+    assert "excluded based on configured '--prod-envs' filter" in metrics_filtered.flow_advisory
 
 
 

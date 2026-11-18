@@ -148,18 +148,24 @@ def _select_commit_timestamp(
     return authored_dt or committed_dt
 
 
-def _is_production_environment(env_name: str, prod_environments: Tuple[str, ...]) -> bool:
-    """Return True if an environment name targets production rather than staging/dev/preview."""
+def _is_production_environment(
+    env_name: str,
+    prod_environments: Tuple[str, ...],
+    custom_prod_envs: bool = False,
+) -> bool:
+    """Return True if an environment name targets production or active deployment rather than staging/dev/preview."""
     cleaned = (env_name or "").strip().lower()
     if not cleaned:
         return False
-    prod_set = {p.strip().lower() for p in prod_environments if p.strip()}
-    if cleaned in prod_set:
-        return True
     if _NON_PROD_ENV_RE.search(cleaned):
         return False
-    tokens = [tok for tok in re.split(r"[\s_\-./:]+", cleaned) if tok]
-    return any(tok in prod_set for tok in tokens)
+    if custom_prod_envs and prod_environments:
+        prod_set = {p.strip().lower() for p in prod_environments if p.strip()}
+        if cleaned in prod_set:
+            return True
+        tokens = [tok for tok in re.split(r"[\s_\-./:]+", cleaned) if tok]
+        return any(tok in prod_set for tok in tokens)
+    return True
 
 
 def _is_rework_text(text: str, extra_keywords: Tuple[str, ...] = ()) -> bool:
@@ -195,10 +201,13 @@ def _is_deploy_workflow_name(wf_name: str, wf_path: str = "", include_non_prod: 
         if _NON_PROD_ENV_RE.search(name_clean) or _NON_PROD_ENV_RE.search(path_clean):
             return False
 
+    if bool(_DEPLOY_WORKFLOW_RE.search(path_clean)):
+        return True
+
     if _CI_ONLY_WORKFLOW_RE.match(name_clean):
         return False
 
-    return bool(_DEPLOY_WORKFLOW_RE.search(name_clean) or _DEPLOY_WORKFLOW_RE.search(path_clean))
+    return bool(_DEPLOY_WORKFLOW_RE.search(name_clean))
 
 
 _resolve_stream_key = resolve_stream_key
@@ -558,7 +567,8 @@ def collect_deploy_workflow_runs(
 ) -> List[DeploymentRecord]:
     """Retrieve completed production-branch deployment workflow runs (excluding PR/CI checks)."""
     runs: List[DeploymentRecord] = []
-    allowed_branches = {default_branch.strip().lower(), "main", "master"} if default_branch else {"main", "master"}
+    standard_branches = {"main", "master", "trunk", "production", "prod", "live", "stable"}
+    allowed_branches = {default_branch.strip().lower()} | standard_branches if default_branch else standard_branches
     pre_since_scanned = 0
 
     try:
@@ -1073,6 +1083,27 @@ def _deduplicate_release_and_workflow_events(
     return deduped
 
 
+def _deduplicate_all_deployment_sources(
+    deps: List[DeploymentRecord],
+    rels: List[DeploymentRecord],
+    wf_runs: List[DeploymentRecord],
+) -> List[DeploymentRecord]:
+    """Combine Deployments, Releases, and Workflow Runs without double-counting identical pushes."""
+    combined: List[DeploymentRecord] = list(deps)
+    existing_times = [d.created_at for d in combined]
+    existing_shas = {d.commit_sha.strip().lower() for d in combined if d.commit_sha}
+
+    secondary = _deduplicate_release_and_workflow_events(rels, wf_runs)
+    for ev in secondary:
+        ev_sha = (ev.commit_sha or "").strip().lower()
+        if ev_sha and ev_sha in existing_shas:
+            continue
+        is_near_dep = any(abs((ev.created_at - t).total_seconds()) <= 1800 for t in existing_times)
+        if not is_near_dep:
+            combined.append(ev)
+    return combined
+
+
 def profile_repo_dora(
     client: ResilientGitHubClient,
     org: str,
@@ -1082,7 +1113,7 @@ def profile_repo_dora(
     meta: Dict[str, Any],
     cfg: Optional[DORAConfig] = None,
 ) -> RepoDORAMetrics:
-    """Collect production deployments, releases, workflows, lead times, incidents, and rework for a repo."""
+    """Collect deployments, releases, workflows, lead times, incidents, and rework for a repo."""
     active_cfg = cfg or DORAConfig()
     metrics = RepoDORAMetrics(org=org, repo=repo)
 
@@ -1109,7 +1140,10 @@ def profile_repo_dora(
     if active_cfg.include_non_prod:
         deps = all_deps
     else:
-        deps = [d for d in all_deps if _is_production_environment(d.environment, active_cfg.prod_environments)]
+        deps = [
+            d for d in all_deps
+            if _is_production_environment(d.environment, active_cfg.prod_environments, active_cfg.custom_prod_envs)
+        ]
 
     env_counts = Counter(d.environment for d in all_deps)
     metrics.all_window_deployments_count = len(all_deps)
@@ -1145,37 +1179,58 @@ def profile_repo_dora(
     metrics.deploy_workflow_runs = len(wf_runs)
 
     combined_events: List[DeploymentRecord] = []
-    if deps:
+    if deps and (rels or wf_runs):
+        combined_events.extend(_deduplicate_all_deployment_sources(deps, rels, wf_runs))
+        metrics.signal_mode = "Deployments + Workflows"
+    elif deps:
         combined_events.extend(deps)
         metrics.signal_mode = "GitHub Deployments"
     elif rels or wf_runs:
         combined_events.extend(_deduplicate_release_and_workflow_events(rels, wf_runs))
         if rels and wf_runs:
-            metrics.signal_mode = "Releases + Prod Workflows"
+            metrics.signal_mode = "Releases + Deployment Workflows"
         elif rels:
             metrics.signal_mode = "GitHub Releases"
         else:
-            metrics.signal_mode = "Production Workflows"
+            metrics.signal_mode = "Deployment Workflows"
     elif all_deps and not (rels or wf_runs):
-        non_prod_envs = [env for env in env_counts if not _is_production_environment(env, active_cfg.prod_environments)]
+        non_prod_envs = [
+            env for env in env_counts
+            if not _is_production_environment(env, active_cfg.prod_environments, active_cfg.custom_prod_envs)
+        ]
         env_summary = ", ".join(f"'{e}'" for e in non_prod_envs[:3])
-        metrics.signal_mode = f"Non-Prod Deployments ({env_summary})"
-        metrics.flow_advisory = (
-            f"Repository has {len(all_deps)} deployment(s) in non-production environment(s) ({env_summary}). "
-            f"Run with '--include-non-prod' or customize '--prod-envs' to evaluate these environments."
-        )
+        metrics.signal_mode = f"Filtered Envs ({env_summary})"
+        if active_cfg.custom_prod_envs:
+            metrics.flow_advisory = (
+                f"Repository has {len(all_deps)} deployment(s) in deployment environment(s) ({env_summary}) "
+                f"excluded based on configured '--prod-envs' filter."
+            )
+        else:
+            metrics.flow_advisory = (
+                f"Repository has {len(all_deps)} deployment(s) in lower/staged deployment environment(s) ({env_summary}). "
+                f"Run with '--include-non-prod' to include them."
+            )
     elif metrics.deployments_api_forbidden:
         metrics.signal_mode = "Permission Gap (deployments:read)"
     else:
-        metrics.signal_mode = "No Production Activity"
+        metrics.signal_mode = "No Deployment Activity"
 
     if metrics.filtered_non_prod_count > 0 and metrics.flow_advisory in ("-", ""):
-        non_prod_envs = [env for env in env_counts if not _is_production_environment(env, active_cfg.prod_environments)]
+        non_prod_envs = [
+            env for env in env_counts
+            if not _is_production_environment(env, active_cfg.prod_environments, active_cfg.custom_prod_envs)
+        ]
         env_summary = ", ".join(f"'{e}'" for e in non_prod_envs[:3])
-        metrics.flow_advisory = (
-            f"Note: {metrics.filtered_non_prod_count} deployment(s) in non-production environment(s) ({env_summary}) "
-            f"excluded from production DORA. Run with '--include-non-prod' or customize '--prod-envs' to include them."
-        )
+        if active_cfg.custom_prod_envs:
+            metrics.flow_advisory = (
+                f"Note: {metrics.filtered_non_prod_count} deployment(s) in deployment environment(s) ({env_summary}) "
+                f"excluded based on configured '--prod-envs' filter."
+            )
+        else:
+            metrics.flow_advisory = (
+                f"Note: {metrics.filtered_non_prod_count} deployment(s) in lower/staged deployment environment(s) ({env_summary}) "
+                f"excluded from primary delivery metrics. Run with '--include-non-prod' to include them."
+            )
 
     metrics.deployments = sorted(combined_events, key=lambda d: d.created_at)
     metrics.stalled_deploys_count = sum(

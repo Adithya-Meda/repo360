@@ -50,18 +50,20 @@ def parse_github_api_error(err: Exception) -> Tuple[Optional[int], str, bool]:
     except Exception:
         msg = getattr(resp, "text", "") or ""
 
-    msg_lower = msg.lower()
-    is_plan = any(
-        k in msg_lower
-        for k in [
-            "upgrade to github pro",
-            "make this repository public",
-            "advanced security",
-            "secret scanning is not enabled",
-            "plan",
-        ]
-    )
+    is_plan = is_plan_limitation(msg)
     return status, msg, is_plan
+
+
+def _extract_actor_login(obj: Any) -> Optional[str]:
+    """Safely extract login, slug, or name from user, app, or bot objects."""
+    if not obj:
+        return None
+    if isinstance(obj, str):
+        cleaned = obj.strip()
+        return cleaned or None
+    if isinstance(obj, dict):
+        return (obj.get("login") or obj.get("slug") or obj.get("name") or "").strip() or None
+    return None
 
 
 def parse_push_protection_alert(
@@ -82,25 +84,15 @@ def parse_push_protection_alert(
     html_url = alert.get("html_url") or f"https://github.com/{org}/{repo}/security/secret-scanning/{alert_num}"
     comment = alert.get("resolution_comment") or alert.get("push_protection_bypass_request_comment") or "-"
 
-    bypassed_by = alert.get("push_protection_bypassed_by")
-    resolved_by = alert.get("resolved_by")
-    reviewer = alert.get("push_protection_bypass_request_reviewer")
     actor = (
-        (bypassed_by.get("login") if isinstance(bypassed_by, dict) else str(bypassed_by))
-        if bypassed_by else None
-    ) or (
-        (resolved_by.get("login") if isinstance(resolved_by, dict) else str(resolved_by))
-        if resolved_by else None
-    ) or (
-        (reviewer.get("login") if isinstance(reviewer, dict) else str(reviewer))
-        if reviewer else None
-    ) or (
-        (alert.get("actor") or {}).get("login") if isinstance(alert.get("actor"), dict) else None
-    ) or (
-        (alert.get("created_by") or {}).get("login") if isinstance(alert.get("created_by"), dict) else None
-    ) or (
-        (alert.get("user") or {}).get("login") if isinstance(alert.get("user"), dict) else None
-    ) or "Unknown"
+        _extract_actor_login(alert.get("push_protection_bypassed_by"))
+        or _extract_actor_login(alert.get("resolved_by"))
+        or _extract_actor_login(alert.get("push_protection_bypass_request_reviewer"))
+        or _extract_actor_login(alert.get("actor"))
+        or _extract_actor_login(alert.get("created_by"))
+        or _extract_actor_login(alert.get("user"))
+        or "Unknown"
+    )
 
     bypassed_at_str = alert.get("push_protection_bypassed_at") or alert.get("created_at")
     ts = parse_ts(bypassed_at_str) if bypassed_at_str else None

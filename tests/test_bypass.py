@@ -642,3 +642,36 @@ def test_bypass_unconstrained_lookback_and_full_history(tmp_path: Path):
     assert kpis["Push Protection Secret Bypasses"] == 1
 
 
+def test_bypass_plan_matching_precision_and_bot_actor_resolution():
+    """Verify parse_github_api_error does not falsely flag arbitrary 'plan' words, and resolves bot slugs."""
+    from repo360.bypass.collector import parse_github_api_error, parse_push_protection_alert
+
+    # 1. False positive avoidance: error containing 'remediation plan' is NOT a GitHub Plan limitation
+    mock_resp = MagicMock()
+    mock_resp.status_code = 403
+    mock_resp.json.return_value = {"message": "You must attach an approved remediation plan before updating this rule."}
+    http_err = requests.HTTPError(response=mock_resp)
+
+    status, msg, is_plan = parse_github_api_error(http_err)
+    assert status == 403
+    assert is_plan is False
+
+    # True plan limitation
+    mock_resp.json.return_value = {"message": "Secret scanning is unavailable on private repositories (requires GitHub Advanced Security)"}
+    status, msg, is_plan = parse_github_api_error(http_err)
+    assert is_plan is True
+
+    # 2. Bot / GitHub App actor resolution via slug/name
+    alert = {
+        "number": 99,
+        "push_protection_bypassed": True,
+        "push_protection_bypassed_by": {"slug": "my-deploy-bot", "type": "Bot"},
+        "secret_type": "AWS Access Key",
+        "push_protection_bypassed_at": "2026-11-10T12:00:00Z",
+    }
+    rec = parse_push_protection_alert(alert, "acme", "core", since=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    assert rec is not None
+    assert rec.actor == "my-deploy-bot"
+
+
+

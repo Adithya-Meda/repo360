@@ -1488,7 +1488,7 @@ ADVISORY: <1 concise sentence specifying verification action for SecOps>"""
         has_active_pipeline = (
             no_op_deploys > 0
             or (total_deploys is not None and total_deploys > 0)
-            or (bool(signal_mode) and "no production activity" not in signal_mode.lower() and "permission gap" not in signal_mode.lower())
+            or (bool(signal_mode) and "no production activity" not in signal_mode.lower() and "no deployment activity" not in signal_mode.lower() and "permission gap" not in signal_mode.lower())
         )
 
         prompt = f"""You are a Principal DevOps and Delivery Flow Architect. Diagnose delivery bottlenecks for repository '{safe_repo}':

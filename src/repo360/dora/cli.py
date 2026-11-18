@@ -203,9 +203,12 @@ def run_dora_cli(argv: Optional[List[str]] = None) -> int:
     ai_engine = init_ai_engine(enable_ai=ai_enabled, creds=creds, log=logger)
 
     default_cfg = DORAConfig()
-    prod_envs = tuple(
-        token.strip().lower() for token in args.prod_envs.split(",") if token.strip()
-    ) or default_cfg.prod_environments
+    custom_prod_envs = bool(args.prod_envs and args.prod_envs.strip())
+    prod_envs = (
+        tuple(token.strip().lower() for token in args.prod_envs.split(",") if token.strip())
+        if custom_prod_envs
+        else default_cfg.prod_environments
+    )
     incident_labels = tuple(
         token.strip().lower() for token in args.incident_labels.split(",") if token.strip()
     ) or default_cfg.incident_labels
@@ -216,6 +219,7 @@ def run_dora_cli(argv: Optional[List[str]] = None) -> int:
         include_archived=args.include_archived,
         output_dir=args.output_dir,
         prod_environments=prod_envs,
+        custom_prod_envs=custom_prod_envs,
         incident_labels=incident_labels,
         include_non_prod=args.include_non_prod,
     )

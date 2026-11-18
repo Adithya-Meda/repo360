@@ -177,12 +177,16 @@ def write_dora_workbook(
     env_scope = (
         "All environments & branches (--include-non-prod)"
         if cfg.include_non_prod
-        else f"Production environments ({', '.join(cfg.prod_environments)}) & default/release branches"
+        else (
+            f"Configured environments ({', '.join(cfg.prod_environments)}) & default/release branches"
+            if cfg.custom_prod_envs
+            else "All deployment environments & default/release branches"
+        )
     )
     pr_lttc_count = summary_data.get("pr_lttc_count", 0)
     commit_lttc_count = summary_data.get("commit_lttc_count", 0)
     methodology_rows = [
-        ["Production Scope", env_scope],
+        ["Deployment Scope", env_scope],
         [
             "Deployment Frequency",
             "Unique value-delivering code-change deployments per week per active repo (same-SHA/zero-diff cron rebuilds excluded; 0-change or <3 multi-week repos capped at Medium).",
