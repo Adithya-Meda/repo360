@@ -427,6 +427,7 @@ def run_audit(
                             and not stop_event.is_set()
                             and ai_engine.is_eligible_for_remediation(res)
                         ):
+                            res.extra_details["_tech_stack"] = dict(tech_stack)
                             pending_ai_items.append((res, dict(tech_stack)))
                     except Exception as err:
                         logger.warning(
@@ -458,6 +459,7 @@ def run_audit(
                             and not stop_event.is_set()
                             and ai_engine.is_eligible_for_remediation(res)
                         ):
+                            res.extra_details["_tech_stack"] = dict(tech_stack)
                             pending_ai_items.append((res, dict(tech_stack)))
                     except Exception as err:
                         logger.warning(
@@ -561,6 +563,19 @@ def run_audit(
 
     for idx in sorted(repo_results_by_idx.keys()):
         results.extend(repo_results_by_idx[idx])
+
+    if ai_engine and is_ai_live(ai_engine):
+        for res in results:
+            if (
+                ai_engine.is_eligible_for_remediation(res)
+                and not res.extra_details.get("ai_enriched")
+            ):
+                stack_dict = res.extra_details.get("_tech_stack")
+                get_fn = getattr(ai_engine, "get_cached_remediation", None)
+                if callable(get_fn):
+                    cached_snip = get_fn(res.check_id, stack_dict)
+                    if isinstance(cached_snip, str) and cached_snip:
+                        ai_engine.apply_cached_remediation(res, cached_snip, stack_dict)
 
     return results
 

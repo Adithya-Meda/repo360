@@ -298,10 +298,11 @@ class AIEngine:
             self._model_cooldown_until[model] = time.monotonic() + bounded
 
     def _candidate_models(self, provider_key: str) -> List[str]:
-        """Return deduplicated candidate models ordered with active model first."""
+        """Return deduplicated candidate models ordered with configured/active model first."""
         fallbacks = self.FALLBACK_MODELS_BY_PROVIDER.get(provider_key, ())
         ordered: List[str] = []
-        for candidate in (self.model_name, *fallbacks):
+        preferred = self.configured_model or self.model_name
+        for candidate in (preferred, self.model_name, *fallbacks):
             if candidate and candidate not in ordered:
                 ordered.append(candidate)
         return ordered
@@ -558,6 +559,13 @@ class AIEngine:
         all_candidates = self._candidate_models(provider_key)
         now = time.monotonic()
         with self._rate_lock:
+            if (
+                self.configured_model
+                and self.model_name != self.configured_model
+                and self._model_cooldown_until.get(self.configured_model, 0.0) <= now
+            ):
+                self.model_name = self.configured_model
+
             active_candidates = [
                 m for m in all_candidates if self._model_cooldown_until.get(m, 0.0) <= now
             ]
@@ -919,32 +927,102 @@ Keep it factual, authoritative, professional, and actionable. Do not use filler 
         result.extra_details["ai_model"] = self.model_name
         result.extra_details["ai_provider"] = self.provider
 
+    @classmethod
+    def extract_canonical_stack(
+        cls, tech_stack: Optional[Dict[str, Any]]
+    ) -> Tuple[str, str, str]:
+        """Extract canonical (primary_lang, primary_fw, eco_manifests) from tech_stack dictionary."""
+        stack = tech_stack or {}
+        raw_langs = [
+            str(l).strip()
+            for l in stack.get("languages", [])
+            if str(l).strip() and str(l).strip().lower() not in ("shell", "makefile", "dockerfile")
+        ]
+        if not raw_langs:
+            raw_langs = [str(l).strip() for l in stack.get("languages", []) if str(l).strip()]
+        primary_lang = raw_langs[0] if raw_langs else "General Software"
+
+        raw_fws = [str(f).strip() for f in stack.get("frameworks", []) if str(f).strip()]
+        primary_fw = raw_fws[0] if raw_fws else "Standard"
+
+        raw_manifests = [str(m).strip().lower() for m in stack.get("manifests", []) if str(m).strip()]
+        ecosystems: set[str] = set()
+        for m in raw_manifests:
+            if m in ("package.json", "package-lock.json", "yarn.lock"):
+                ecosystems.add("npm")
+            elif m in ("requirements.txt", "pyproject.toml", "setup.py", "pipfile"):
+                ecosystems.add("pip")
+            elif m in ("pom.xml",):
+                ecosystems.add("maven")
+            elif m in ("build.gradle", "build.gradle.kts"):
+                ecosystems.add("gradle")
+            elif m in ("go.mod",):
+                ecosystems.add("gomod")
+            elif m in ("cargo.toml",):
+                ecosystems.add("cargo")
+            elif m in ("nuget.config", "directory.build.props", "global.json") or m.endswith((".csproj", ".fsproj")):
+                ecosystems.add("nuget")
+            elif "docker" in m:
+                ecosystems.add("docker")
+        eco_str = ",".join(sorted(ecosystems)) if ecosystems else "github-actions"
+
+        return primary_lang, primary_fw, eco_str
+
+    @classmethod
+    def get_remediation_cache_key(cls, check_id: str, tech_stack: Optional[Dict[str, Any]]) -> str:
+        """Derive a canonical, reusable cache key for check remediations across repositories."""
+        primary_lang, primary_fw, eco_str = cls.extract_canonical_stack(tech_stack)
+
+        if check_id in ("workflow_concurrency_groups", "workflow_sha_pinning"):
+            return f"{check_id}:universal"
+
+        if check_id == "dependabot_configuration":
+            return f"{check_id}:{eco_str}"
+
+        if check_id == "devcontainers":
+            return f"{check_id}:{primary_lang.lower()}:{primary_fw.lower()}"
+
+        return f"{check_id}:{primary_lang.lower()}"
+
+    def get_cached_remediation(self, check_id: str, tech_stack: Optional[Dict[str, Any]]) -> Optional[str]:
+        """Return cached remediation snippet if already synthesized, or None."""
+        key = self.get_remediation_cache_key(check_id, tech_stack)
+        with self._cache_lock:
+            snippet = self._remediation_cache.get(key)
+            return snippet if snippet else None
+
+    def apply_cached_remediation(
+        self,
+        result: CheckResult,
+        cached_snippet: str,
+        tech_stack: Optional[Dict[str, Any]],
+    ) -> None:
+        """Apply an already synthesized remediation snippet to a CheckResult."""
+        if not cached_snippet or not self.is_eligible_for_remediation(result):
+            return
+        primary_lang, _, _ = self.extract_canonical_stack(tech_stack)
+        self._apply_remediation(result, cached_snippet, primary_lang)
+
     def enrich_remediation(self, result: CheckResult, tech_stack: Dict[str, Any]) -> None:
         """Generate tailored remediation snippets based on repository tech stack."""
         if not self.is_eligible_for_remediation(result):
             return
 
-        raw_langs = [str(l).strip() for l in tech_stack.get("languages", []) if str(l).strip()]
-        languages = ", ".join(dict.fromkeys(raw_langs)) or "General Software"
-        frameworks = ", ".join(dict.fromkeys(str(f).strip() for f in tech_stack.get("frameworks", []) if str(f).strip())) or "Standard"
-        manifests = ", ".join(dict.fromkeys(str(m).strip() for m in tech_stack.get("manifests", []) if str(m).strip())) or "None"
-
-        cache_key = f"{result.check_id}:{languages}:{frameworks}:{manifests}"
+        cache_key = self.get_remediation_cache_key(result.check_id, tech_stack)
+        primary_lang, primary_fw, manifests = self.extract_canonical_stack(tech_stack)
 
         # Wait for any in-flight request with the same cache key
         with self._cache_lock:
             while cache_key in self._in_flight_keys:
                 self._cache_cond.wait(timeout=10.0)
-                if cache_key in self._remediation_cache:
-                    cached_text = self._remediation_cache[cache_key]
-                    if cached_text:
-                        self._apply_remediation(result, cached_text, languages)
+                cached_text = self._remediation_cache.get(cache_key)
+                if cached_text:
+                    self._apply_remediation(result, cached_text, primary_lang)
                     return
 
-            if cache_key in self._remediation_cache:
-                cached_text = self._remediation_cache[cache_key]
-                if cached_text:
-                    self._apply_remediation(result, cached_text, languages)
+            cached_text = self._remediation_cache.get(cache_key)
+            if cached_text:
+                self._apply_remediation(result, cached_text, primary_lang)
                 return
 
             self._in_flight_keys.add(cache_key)
@@ -957,8 +1035,8 @@ Keep it factual, authoritative, professional, and actionable. Do not use filler 
             prompt = f"""You are a Senior DevOps Engineer. Generate a production-ready, custom-tailored configuration snippet to remediate this finding:
 
 TECH STACK CONTEXT (Reusable across repositories sharing this stack):
-- Detected Languages: {self.sanitize_text(languages)}
-- Detected Frameworks/Libraries: {self.sanitize_text(frameworks)}
+- Detected Languages: {self.sanitize_text(primary_lang)}
+- Detected Frameworks/Libraries: {self.sanitize_text(primary_fw)}
 - Build/Config Manifests Found: {self.sanitize_text(manifests)}
 
 AUDIT FINDING:
@@ -968,18 +1046,18 @@ AUDIT FINDING:
 
 TASK:
 Provide ONLY the exact, tailored configuration file content to resolve this for this specific tech stack. Do not hardcode individual repository names in comments or titles.
-- For 'copilot_instructions': Write a customized .github/copilot-instructions.md with team style rules, testing conventions, and safety guidelines specific to {languages}.
-- For 'devcontainers': Provide a complete, valid .devcontainer/devcontainer.json configured with the right runtime container image, port forwards, and VS Code extensions for {languages} and {frameworks}.
+- For 'copilot_instructions': Write a customized .github/copilot-instructions.md with team style rules, testing conventions, and safety guidelines specific to {primary_lang}.
+- For 'devcontainers': Provide a complete, valid .devcontainer/devcontainer.json configured with the right runtime container image, port forwards, and VS Code extensions for {primary_lang} and {primary_fw}.
 - For 'dependabot_configuration': Provide a valid .github/dependabot.yml covering all detected package ecosystems ({manifests}).
 - For 'workflow_concurrency_groups': Provide the exact GitHub Actions YAML 'concurrency' block configured with cancel-in-progress for PR branches.
 - For 'codeowners_validation': Provide a complete, production-ready .github/CODEOWNERS defining granular team ownership for this tech stack.
-- For 'pull_request_templates': Provide a comprehensive .github/PULL_REQUEST_TEMPLATE.md checklist (tests, docs, security) tailored to {languages}.
-- For 'pre_commit_hooks': Provide a valid .pre-commit-config.yaml with modern linting and formatting hooks for {languages}.
-- For 'issue_templates': Provide a YAML issue template (.github/ISSUE_TEMPLATE/bug_report.yml) configured for {languages}.
+- For 'pull_request_templates': Provide a comprehensive .github/PULL_REQUEST_TEMPLATE.md checklist (tests, docs, security) tailored to {primary_lang}.
+- For 'pre_commit_hooks': Provide a valid .pre-commit-config.yaml with modern linting and formatting hooks for {primary_lang}.
+- For 'issue_templates': Provide a YAML issue template (.github/ISSUE_TEMPLATE/bug_report.yml) configured for {primary_lang}.
 
 Output ONLY the code/configuration snippet inside code fences. Do not add introductory or concluding chat."""
 
-            text = self._generate_text(prompt, retry_on_rate_limit=False)
+            text = self._generate_text(prompt, retry_on_rate_limit=True)
             if text:
                 cleaned = text.strip()
                 if cleaned.startswith("```"):
@@ -989,12 +1067,13 @@ Output ONLY the code/configuration snippet inside code fences. Do not add introd
                 cleaned_text = cleaned
         finally:
             with self._cache_lock:
-                self._remediation_cache[cache_key] = cleaned_text
+                if cleaned_text:
+                    self._remediation_cache[cache_key] = cleaned_text
                 self._in_flight_keys.discard(cache_key)
                 self._cache_cond.notify_all()
 
         if cleaned_text:
-            self._apply_remediation(result, cleaned_text, languages)
+            self._apply_remediation(result, cleaned_text, primary_lang)
 
     def analyze_push_protection_bypass(
         self,

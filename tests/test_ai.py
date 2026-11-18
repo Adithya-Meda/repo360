@@ -969,3 +969,82 @@ def test_cli_subcommand_ai_flags_only_accepts_require_ai():
     with pytest.raises(SystemExit):
         parser.parse_args(["--require-ai", "yes", "--ai-model", "gpt-4o"])
 
+
+def test_remediation_canonical_caching_and_cooldown_restoration(monkeypatch):
+    """Verify canonical cache keys deduplicate LLM calls across diverse repo stacks and restore configured model."""
+    from unittest.mock import MagicMock
+    from repo360.checks.base import CheckResult, CheckSeverity, CheckStatus, Persona
+
+    monkeypatch.setattr("repo360.ai.engine.time.sleep", lambda *_args, **_kwargs: None)
+    engine = AIEngine(provider="gemini", api_key="test-key", model_name="gemini-3.6-flash", enabled=True)
+    mock_client = MagicMock()
+    resp = MagicMock()
+    resp.text = "```yaml\n* @org/python-team\n```"
+    mock_client.models.generate_content.return_value = resp
+    engine._client = mock_client
+
+    # Repo A: FastAPI with requirements.txt
+    res_a = CheckResult(
+        check_id="codeowners_validation",
+        check_name="CODEOWNERS",
+        category="Governance",
+        persona=Persona.REPO_ADMIN,
+        severity=CheckSeverity.HIGH,
+        status=CheckStatus.FAIL,
+        org_name="org1",
+        repo_name="backend-api",
+        current_state="Missing",
+        recommended_state="Present",
+        explanation="Add CODEOWNERS",
+    )
+    # Repo B: Django with pyproject.toml and Dockerfile
+    res_b = CheckResult(
+        check_id="codeowners_validation",
+        check_name="CODEOWNERS",
+        category="Governance",
+        persona=Persona.REPO_ADMIN,
+        severity=CheckSeverity.HIGH,
+        status=CheckStatus.FAIL,
+        org_name="org1",
+        repo_name="admin-portal",
+        current_state="Missing",
+        recommended_state="Present",
+        explanation="Add CODEOWNERS",
+    )
+
+    stack_a = {"languages": ["Python"], "frameworks": ["FastAPI"], "manifests": ["requirements.txt"]}
+    stack_b = {"languages": ["Python"], "frameworks": ["Django"], "manifests": ["pyproject.toml", "Dockerfile"]}
+
+    # First repository synthesizes via LLM
+    engine.enrich_remediation(res_a, stack_a)
+    assert mock_client.models.generate_content.call_count == 1
+    assert res_a.extra_details.get("ai_enriched") is True
+
+    # Second repository gets instant cache hit due to canonical stack deduplication
+    engine.enrich_remediation(res_b, stack_b)
+    assert mock_client.models.generate_content.call_count == 1
+    assert res_b.extra_details.get("ai_enriched") is True
+    assert res_a.remediation_snippet_after == res_b.remediation_snippet_after
+
+    # Verify get_cached_remediation and apply_cached_remediation directly
+    cached = engine.get_cached_remediation("codeowners_validation", stack_b)
+    assert cached == "* @org/python-team"
+
+    res_c = CheckResult(
+        check_id="codeowners_validation",
+        check_name="CODEOWNERS",
+        category="Governance",
+        persona=Persona.REPO_ADMIN,
+        severity=CheckSeverity.HIGH,
+        status=CheckStatus.FAIL,
+        org_name="org1",
+        repo_name="data-service",
+        current_state="Missing",
+        recommended_state="Present",
+        explanation="Add CODEOWNERS",
+    )
+    engine.apply_cached_remediation(res_c, cached, stack_b)
+    assert res_c.extra_details.get("ai_enriched") is True
+    assert res_c.remediation_snippet_after == "* @org/python-team"
+
+
