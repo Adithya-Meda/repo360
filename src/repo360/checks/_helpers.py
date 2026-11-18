@@ -103,3 +103,33 @@ def is_repository_workflow(workflow: Dict[str, Any]) -> bool:
     path = str(workflow.get("path") or "")
     state = workflow.get("state")
     return path.startswith(".github/workflows/") and state in (None, "active")
+
+
+def check_org_default_issue_templates(inspector: Any, org: str) -> bool:
+    """Check if organization-level default issue templates exist in org/.github repo, ignoring unconfigured mocks."""
+    checker = getattr(inspector, "has_org_default_issue_templates", None)
+    if callable(checker):
+        val = checker(org)
+        if isinstance(val, bool):
+            return val
+    return False
+
+
+def check_org_default_pr_template(inspector: Any, org: str) -> bool:
+    """Check if organization-level default PR template exists in org/.github repo, ignoring unconfigured mocks."""
+    checker = getattr(inspector, "has_org_default_pr_template", None)
+    if callable(checker):
+        val = checker(org)
+        if isinstance(val, bool):
+            return val
+    return False
+
+
+def check_org_default_contributing(inspector: Any, org: str) -> bool:
+    """Check if organization-level default CONTRIBUTING.md exists in org/.github repo, ignoring unconfigured mocks."""
+    checker = getattr(inspector, "has_org_default_contributing", None)
+    if callable(checker):
+        val = checker(org)
+        if isinstance(val, bool):
+            return val
+    return False

@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+from ._helpers import (
+    check_org_default_contributing,
+    check_org_default_issue_templates,
+    check_org_default_pr_template,
+)
 from .base import BaseCheck, CheckResult, CheckSeverity, CheckStatus, Persona
 from ..collector.repo_inspector import RepoInspector
 
@@ -171,6 +176,22 @@ class IssueTemplatesCheck(BaseCheck):
                 documentation_url="https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/configuring-issue-templates-for-your-repository",
             )
 
+        if repo != ".github" and check_org_default_issue_templates(inspector, org):
+            return CheckResult(
+                check_id=self.check_id,
+                check_name=self.check_name,
+                persona=self.persona,
+                category=self.category,
+                status=CheckStatus.PASS,
+                severity=self.severity,
+                org_name=org,
+                repo_name=repo,
+                current_state="Issue templates configured (inherited from organization '.github' repository).",
+                recommended_state="Maintain centralized issue templates in the organization '.github' repository or provide repository-specific overrides.",
+                explanation="Structured issue templates prompt contributors for exact reproduction steps and environment details (inherited from organization-level default templates).",
+                documentation_url="https://docs.github.com/en/communities/setting-up-your-project-for-healthy-contributions/creating-a-default-community-health-file",
+            )
+
         return CheckResult(
             check_id=self.check_id,
             check_name=self.check_name,
@@ -180,8 +201,8 @@ class IssueTemplatesCheck(BaseCheck):
             severity=self.severity,
             org_name=org,
             repo_name=repo,
-            current_state="No issue templates found in .github/.",
-            recommended_state="Add issue forms (.github/ISSUE_TEMPLATE/*.yml) for bug reports and feature requests.",
+            current_state="No issue templates found in repository or organization '.github' repository.",
+            recommended_state="Add issue forms (.github/ISSUE_TEMPLATE/*.yml) for bug reports and feature requests, or configure default templates in the organization '.github' repository.",
             explanation="Unstructured issue filing creates back-and-forth communication delays between contributors and maintainers.",
             remediation_snippet_before="[Blank issue submission box without guidance]",
             remediation_snippet_after="name: Bug Report\ndescription: File a bug\nbody:\n  - type: textarea\n    attributes:\n      label: Steps to Reproduce",
@@ -237,6 +258,22 @@ class PullRequestTemplatesCheck(BaseCheck):
                 documentation_url="https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/creating-a-pull-request-template-for-your-repository",
             )
 
+        if repo != ".github" and check_org_default_pr_template(inspector, org):
+            return CheckResult(
+                check_id=self.check_id,
+                check_name=self.check_name,
+                persona=self.persona,
+                category=self.category,
+                status=CheckStatus.PASS,
+                severity=self.severity,
+                org_name=org,
+                repo_name=repo,
+                current_state="Pull Request template configured (inherited from organization '.github' repository).",
+                recommended_state="Maintain centralized PR checklist in the organization '.github' repository or provide repository-specific overrides.",
+                explanation="PR templates ensure that developers verify test coverage, security considerations, and changelogs before requesting review (inherited from organization-level default template).",
+                documentation_url="https://docs.github.com/en/communities/setting-up-your-project-for-healthy-contributions/creating-a-default-community-health-file",
+            )
+
         return CheckResult(
             check_id=self.check_id,
             check_name=self.check_name,
@@ -246,8 +283,8 @@ class PullRequestTemplatesCheck(BaseCheck):
             severity=self.severity,
             org_name=org,
             repo_name=repo,
-            current_state="No PR template found.",
-            recommended_state="Create '.github/PULL_REQUEST_TEMPLATE.md' with PR hygiene checklist.",
+            current_state="No PR template found in repository or organization '.github' repository.",
+            recommended_state="Create '.github/PULL_REQUEST_TEMPLATE.md' with PR hygiene checklist, or configure a default PR template in the organization '.github' repository.",
             explanation="Provides junior engineers with an explicit checklist (tests written, documentation updated, secrets checked) prior to PR review.",
             remediation_snippet_before="[Empty PR description field]",
             remediation_snippet_after="## Description\n...\n## Checklist\n- [ ] Unit tests pass locally\n- [ ] No secrets or debug statements committed\n- [ ] Documentation updated",
@@ -343,8 +380,17 @@ class SetupDocumentationCheck(BaseCheck):
             inspector.check_file_exists(org, repo, path, default_branch)
             for path in ("CONTRIBUTING.md", ".github/CONTRIBUTING.md", "docs/CONTRIBUTING.md", "SETUP.md")
         )
+        inherited_contributing = False
+        if not has_contributing and repo != ".github" and check_org_default_contributing(inspector, org):
+            has_contributing = True
+            inherited_contributing = True
 
         if has_contributing and has_readme:
+            state_msg = (
+                "README.md and CONTRIBUTING.md present (CONTRIBUTING inherited from organization '.github' repository)."
+                if inherited_contributing
+                else "README.md and CONTRIBUTING.md / setup documentation present."
+            )
             return CheckResult(
                 check_id=self.check_id,
                 check_name=self.check_name,
@@ -354,7 +400,7 @@ class SetupDocumentationCheck(BaseCheck):
                 severity=self.severity,
                 org_name=org,
                 repo_name=repo,
-                current_state="README.md and CONTRIBUTING.md / setup documentation present.",
+                current_state=state_msg,
                 recommended_state="Keep onboarding setup commands and architecture overview updated.",
                 explanation="Clear setup and contribution docs accelerate engineer onboarding and reduce support toil.",
                 documentation_url=doc_url,

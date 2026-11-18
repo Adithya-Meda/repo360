@@ -481,3 +481,122 @@ def test_workflow_checks_ignore_dynamic_and_deleted_workflows() -> None:
     for check in (WorkflowShaPinningCheck(), WorkflowConcurrencyGroupsCheck()):
         assert check.evaluate(inspector, "org", "repo", "develop", {}).status == CheckStatus.PASS
     inspector.list_workflows.assert_called_with("org", "repo", "develop")
+
+
+def test_org_default_issue_templates_inheritance() -> None:
+    """Verify that repositories inherit issue templates from organization '.github' repo."""
+    inspector = MagicMock()
+    check = IssueTemplatesCheck()
+
+    # 1. Local issue template exists in repo
+    inspector.check_file_exists.return_value = True
+    res = check.evaluate(inspector, "acme-corp", "service-a", "main", {})
+    assert res.status == CheckStatus.PASS
+    assert "Issue templates configured." == res.current_state
+
+    # 2. No local template, but org-level default template exists
+    inspector.check_file_exists.return_value = False
+    inspector.has_org_default_issue_templates.return_value = True
+    res = check.evaluate(inspector, "acme-corp", "service-a", "main", {})
+    assert res.status == CheckStatus.PASS
+    assert "inherited from organization '.github' repository" in res.current_state
+
+    # 3. No local template and NO org-level default template exists
+    inspector.has_org_default_issue_templates.return_value = False
+    res = check.evaluate(inspector, "acme-corp", "service-a", "main", {})
+    assert res.status == CheckStatus.WARN
+    assert "No issue templates found in repository or organization '.github' repository." in res.current_state
+
+    # 4. Target repo is '.github' itself and lacks templates -> no circular self-inheritance
+    res = check.evaluate(inspector, "acme-corp", ".github", "main", {})
+    assert res.status == CheckStatus.WARN
+
+
+def test_org_default_pr_template_inheritance() -> None:
+    """Verify that repositories inherit PR template from organization '.github' repo."""
+    inspector = MagicMock()
+    check = PullRequestTemplatesCheck()
+
+    # 1. Local PR template exists in repo
+    inspector.check_file_exists.return_value = True
+    res = check.evaluate(inspector, "acme-corp", "service-b", "main", {})
+    assert res.status == CheckStatus.PASS
+    assert "Pull Request template configured." == res.current_state
+
+    # 2. No local template, but org-level default template exists
+    inspector.check_file_exists.return_value = False
+    inspector.has_org_default_pr_template.return_value = True
+    res = check.evaluate(inspector, "acme-corp", "service-b", "main", {})
+    assert res.status == CheckStatus.PASS
+    assert "inherited from organization '.github' repository" in res.current_state
+
+    # 3. No local template and NO org-level default template exists
+    inspector.has_org_default_pr_template.return_value = False
+    res = check.evaluate(inspector, "acme-corp", "service-b", "main", {})
+    assert res.status == CheckStatus.WARN
+    assert "No PR template found in repository or organization '.github' repository." in res.current_state
+
+    # 4. Target repo is '.github' itself and lacks template
+    res = check.evaluate(inspector, "acme-corp", ".github", "main", {})
+    assert res.status == CheckStatus.WARN
+
+
+def test_org_default_contributing_inheritance() -> None:
+    """Verify that repositories inherit CONTRIBUTING.md from organization '.github' repo."""
+    from repo360.checks.contributor_checks import SetupDocumentationCheck
+
+    inspector = MagicMock()
+    check = SetupDocumentationCheck()
+
+    # Local repo has README.md but no local CONTRIBUTING.md
+    def fake_exists(org, repo, path, branch):
+        return path == "README.md"
+
+    inspector.check_file_exists.side_effect = fake_exists
+    inspector.has_org_default_contributing.return_value = True
+    res = check.evaluate(inspector, "acme-corp", "service-c", "main", {})
+    assert res.status == CheckStatus.PASS
+    assert "CONTRIBUTING inherited from organization '.github' repository" in res.current_state
+
+
+def test_repo_inspector_org_default_tree_caching() -> None:
+    """Verify RepoInspector fetches org .github tree once and caches result for subsequent queries."""
+    client = MagicMock()
+    client.get.side_effect = [
+        # Call 1: /repos/my-org/.github -> returns repo metadata
+        {"default_branch": "main"},
+        # Call 2: /repos/my-org/.github/git/trees/main?recursive=1 -> returns tree
+        {
+            "tree": [
+                {"path": ".github/ISSUE_TEMPLATE/bug_report.yml"},
+                {"path": ".github/PULL_REQUEST_TEMPLATE.md"},
+                {"path": "CONTRIBUTING.md"},
+            ]
+        },
+    ]
+
+    inspector = RepoInspector(client)
+
+    # First inquiry triggers client calls
+    assert inspector.has_org_default_issue_templates("my-org") is True
+    assert inspector.has_org_default_pr_template("my-org") is True
+    assert inspector.has_org_default_contributing("my-org") is True
+
+    # Check that only 2 client calls were made (metadata + git tree)
+    assert client.get.call_count == 2
+
+    # Querying across other repos in the same org uses cached tree (0 new client calls)
+    assert inspector.has_org_default_issue_templates("my-org") is True
+    assert inspector.has_org_default_pr_template("my-org") is True
+    assert client.get.call_count == 2
+
+
+def test_repo_inspector_org_default_repo_not_found_caching() -> None:
+    """Verify RepoInspector caches 404/missing org .github repo to avoid repetitive API requests."""
+    client = MagicMock()
+    client.get.return_value = None  # 404 allow_404=True returns None
+
+    inspector = RepoInspector(client)
+    assert inspector.has_org_default_issue_templates("no-dot-github-org") is False
+    assert inspector.has_org_default_pr_template("no-dot-github-org") is False
+    assert client.get.call_count == 1  # Exactly 1 call was made and cached as None

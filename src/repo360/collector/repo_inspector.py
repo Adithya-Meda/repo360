@@ -54,6 +54,7 @@ class RepoInspector:
         self._repo_branch_rules_cache: Dict[Tuple[str, str, str], List[Dict[str, Any]]] = {}
         self._repo_environments_cache: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
         self._permission_errors: Dict[Tuple[str, Optional[str], str], str] = {}
+        self._org_default_repo_tree_cache: Dict[str, Optional[Set[str]]] = {}
 
     def _record_permission_error(
         self, org: str, control: str, message: str, repo: Optional[str] = None
@@ -802,6 +803,97 @@ class RepoInspector:
             else:
                 raise
         return data is not None
+
+    def get_org_default_repo_tree(self, org: str) -> Optional[Set[str]]:
+        """Fetch and cache tree set of the organization's default '.github' repository, if it exists."""
+        if not org or not isinstance(org, str):
+            return None
+        with self._cache_lock:
+            if org in self._org_default_repo_tree_cache:
+                return self._org_default_repo_tree_cache[org]
+
+        try:
+            repo_meta = self.client.get(
+                f"/repos/{org}/.github",
+                allow_404=True,
+                allow_403=True,
+            )
+        except requests.exceptions.HTTPError as err:
+            if self._is_forbidden_error(err):
+                repo_meta = None
+            else:
+                raise
+        except Exception as err:
+            logger.debug("Failed to fetch org .github repo for %s: %s", org, err)
+            repo_meta = None
+
+        if not repo_meta or not isinstance(repo_meta, dict):
+            with self._cache_lock:
+                self._org_default_repo_tree_cache[org] = None
+            return None
+
+        default_branch = str(repo_meta.get("default_branch") or "main")
+        tree_set = self.prefetch_repo_tree(org, ".github", default_branch)
+        with self._cache_lock:
+            self._org_default_repo_tree_cache[org] = tree_set
+        return tree_set
+
+    def check_org_default_file_exists(self, org: str, path: str) -> bool:
+        """Check if a community health file or directory exists in the org's '.github' repository."""
+        tree_set = self.get_org_default_repo_tree(org)
+        if not tree_set or not isinstance(tree_set, (set, frozenset)):
+            return False
+        path_clean = path.lstrip("/")
+        path_lower = path_clean.lower()
+        if any(p.lower() == path_lower for p in tree_set):
+            return True
+        prefix_lower = path_lower + "/"
+        return any(p.lower().startswith(prefix_lower) for p in tree_set)
+
+    def has_org_default_issue_templates(self, org: str) -> bool:
+        """Check if organization-level default issue templates exist in org/.github repository."""
+        candidates = (
+            ".github/ISSUE_TEMPLATE",
+            ".github/issue_template",
+            ".github/ISSUE_TEMPLATE.md",
+            ".github/issue_template.md",
+            "ISSUE_TEMPLATE",
+            "issue_template",
+            "ISSUE_TEMPLATE.md",
+            "issue_template.md",
+            "docs/ISSUE_TEMPLATE",
+            "docs/issue_template",
+            "docs/ISSUE_TEMPLATE.md",
+            "docs/issue_template.md",
+        )
+        return any(self.check_org_default_file_exists(org, p) for p in candidates)
+
+    def has_org_default_pr_template(self, org: str) -> bool:
+        """Check if organization-level default pull request template exists in org/.github repository."""
+        candidates = (
+            ".github/PULL_REQUEST_TEMPLATE.md",
+            ".github/pull_request_template.md",
+            ".github/PULL_REQUEST_TEMPLATE",
+            ".github/pull_request_template",
+            "PULL_REQUEST_TEMPLATE.md",
+            "pull_request_template.md",
+            "PULL_REQUEST_TEMPLATE",
+            "pull_request_template",
+            "docs/PULL_REQUEST_TEMPLATE.md",
+            "docs/pull_request_template.md",
+            "docs/PULL_REQUEST_TEMPLATE",
+            "docs/pull_request_template",
+        )
+        return any(self.check_org_default_file_exists(org, p) for p in candidates)
+
+    def has_org_default_contributing(self, org: str) -> bool:
+        """Check if organization-level default CONTRIBUTING.md exists in org/.github repository."""
+        candidates = (
+            "CONTRIBUTING.md",
+            ".github/CONTRIBUTING.md",
+            "docs/CONTRIBUTING.md",
+        )
+        return any(self.check_org_default_file_exists(org, p) for p in candidates)
 
     def prefetch_repo_audit_context(
         self,
