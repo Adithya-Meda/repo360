@@ -1236,5 +1236,102 @@ def test_incident_issue_resolved_within_lookback_window():
     assert incidents[1]["number"] == 102
 
 
+def test_dora_lifetime_count_and_non_prod_environment_transparency():
+    """Verify accurate reconciliation of 120 total deployments vs 11 prod window deployments."""
+    from repo360.dora.collector import build_dora_rows, profile_repo_dora
+    now = datetime(2026, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
+    since = now - timedelta(days=90)
+
+    def _ts(dt: datetime) -> str:
+        return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # Generate 11 production deployments and 109 App Center deployments = 120 total
+    mock_nodes = []
+    for i in range(11):
+        mock_nodes.append({
+            "id": f"dep-prod-{i}",
+            "environment": "production",
+            "state": "ACTIVE",
+            "ref": {"name": "main"},
+            "commitOid": f"sha-p-{i}",
+            "createdAt": _ts(now - timedelta(days=i * 2 + 1)),
+            "updatedAt": _ts(now - timedelta(days=i * 2 + 1)),
+            "commit": {"authoredDate": _ts(now - timedelta(days=i * 2 + 1, hours=2)), "messageHeadline": f"prod deploy {i}"},
+            "associatedPullRequests": {"nodes": []},
+            "latestStatus": {"state": "SUCCESS", "createdAt": _ts(now - timedelta(days=i * 2 + 1)), "updatedAt": _ts(now - timedelta(days=i * 2 + 1))},
+        })
+    for j in range(109):
+        mock_nodes.append({
+            "id": f"dep-appcenter-{j}",
+            "environment": "App Center",
+            "state": "ACTIVE",
+            "ref": {"name": "main"},
+            "commitOid": f"sha-ac-{j}",
+            "createdAt": _ts(now - timedelta(days=min(85, j // 2 + 1))),
+            "updatedAt": _ts(now - timedelta(days=min(85, j // 2 + 1))),
+            "commit": {"authoredDate": _ts(now - timedelta(days=min(85, j // 2 + 1), hours=1)), "messageHeadline": f"appcenter build {j}"},
+            "associatedPullRequests": {"nodes": []},
+            "latestStatus": {"state": "SUCCESS", "createdAt": _ts(now - timedelta(days=min(85, j // 2 + 1))), "updatedAt": _ts(now - timedelta(days=min(85, j // 2 + 1)))},
+        })
+
+    mock_client = MagicMock()
+    mock_client.graphql.return_value = {
+        "data": {
+            "repository": {
+                "deployments": {
+                    "totalCount": 120,
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    "nodes": mock_nodes,
+                }
+            }
+        }
+    }
+    mock_client.paginate.return_value = []
+    mock_client.paginate_enveloped.return_value = []
+    mock_client.get.return_value = []
+
+    # 1. Default run (prod only): 11 prod deployments evaluated, 109 App Center excluded with full transparency
+    metrics = profile_repo_dora(
+        mock_client,
+        "CanarysPlayground",
+        "TaskManager-DemoApp",
+        since,
+        now,
+        {"default_branch": "main", "pushed_at": _ts(now)},
+        cfg=DORAConfig(lookback_days=90),
+    )
+
+    assert metrics.total_deploys == 11
+    assert metrics.lifetime_deployments_count == 120
+    assert metrics.all_window_deployments_count == 120
+    assert metrics.filtered_non_prod_count == 109
+    assert "App Center (109)" in metrics.detected_environments
+    assert "production (11)" in metrics.detected_environments
+    assert "Window:11/120 all-time" in metrics.telemetry_scope
+    assert "Excluded Non-Prod:109" in metrics.telemetry_scope
+    assert "109 deployment(s) in non-production environment(s)" in metrics.flow_advisory
+    assert "--include-non-prod" in metrics.flow_advisory
+
+    repo_rows, _, _, _ = build_dora_rows([metrics], ["CanarysPlayground"], window_days=90)
+    assert len(repo_rows) == 1
+    assert repo_rows[0][1] == "TaskManager-DemoApp"
+    assert repo_rows[0][3] == 11
+    assert repo_rows[0][29] == 120
+    assert "App Center (109)" in repo_rows[0][30]
+
+    # 2. Including non-prod environments: all 120 deployments evaluated
+    metrics_all = profile_repo_dora(
+        mock_client,
+        "CanarysPlayground",
+        "TaskManager-DemoApp",
+        since,
+        now,
+        {"default_branch": "main", "pushed_at": _ts(now)},
+        cfg=DORAConfig(lookback_days=90, include_non_prod=True),
+    )
+    assert metrics_all.total_deploys == 120
+    assert metrics_all.filtered_non_prod_count == 0
+
+
 
 

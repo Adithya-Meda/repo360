@@ -80,6 +80,8 @@ DORA_REPO_HEADERS = (
     "Rework Deploys",
     "Collapsed Failure Retries",
     "Telemetry Scope",
+    "Lifetime Deployments (All-Time)",
+    "Detected Environments",
 )
 
 DORA_DEPLOYMENT_HEADERS = (
@@ -496,6 +498,10 @@ class RepoDORAMetrics:
     signal_mode: str = "No Production Activity"
     deployments_api_forbidden: bool = False
     stalled_deploys_count: int = 0
+    lifetime_deployments_count: Optional[int] = None
+    all_window_deployments_count: int = 0
+    filtered_non_prod_count: int = 0
+    detected_environments: List[str] = field(default_factory=list)
 
     @property
     def completed_deployments(self) -> List[DeploymentRecord]:
@@ -652,12 +658,19 @@ class RepoDORAMetrics:
     def telemetry_scope(self) -> str:
         """Describe signal completeness for executive auditability."""
         if self.total_deploys == 0:
+            if self.filtered_non_prod_count > 0:
+                env_str = ", ".join(self.detected_environments[:3])
+                return f"Non-Prod Only ({self.filtered_non_prod_count} in {env_str})"
             return "Permission Gap" if self.deployments_api_forbidden else "No Production Activity"
         parts: List[str] = [
             "Full PR+Issue"
             if (self.incident_issues_count > 0 or self.rollback_hotfix_prs > 0)
             else "Pipeline-Only MTTR/CFR"
         ]
+        if self.lifetime_deployments_count is not None and self.lifetime_deployments_count > self.total_deploys:
+            parts.append(f"Window:{self.total_deploys}/{self.lifetime_deployments_count} all-time")
+        if self.filtered_non_prod_count > 0:
+            parts.append(f"Excluded Non-Prod:{self.filtered_non_prod_count}")
         cov = self.lttc_coverage_pct
         if cov is None or cov == 0.0:
             parts.append("No LTTC")

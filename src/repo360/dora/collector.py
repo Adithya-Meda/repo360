@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import statistics
-from collections import defaultdict
+from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -261,6 +261,7 @@ def _collect_repo_deployments_graphql(
     query($owner: String!, $name: String!, $cursor: String) {
       repository(owner: $owner, name: $name) {
         deployments(first: 100, after: $cursor, orderBy: {field: CREATED_AT, direction: DESC}) {
+          totalCount
           pageInfo {
             hasNextPage
             endCursor
@@ -323,6 +324,10 @@ def _collect_repo_deployments_graphql(
             return None
 
         conn = repo_node.get("deployments") or {}
+        if hints_out is not None and "__meta__" not in hints_out:
+            total_count = conn.get("totalCount")
+            if isinstance(total_count, int):
+                hints_out["__meta__"] = {"total_count": total_count}
         nodes = conn.get("nodes") or []
         pre_since_checked = 0
         hit_since = False
@@ -1106,6 +1111,13 @@ def profile_repo_dora(
     else:
         deps = [d for d in all_deps if _is_production_environment(d.environment, active_cfg.prod_environments)]
 
+    env_counts = Counter(d.environment for d in all_deps)
+    metrics.all_window_deployments_count = len(all_deps)
+    lifetime_meta = (hints_map.get("__meta__") or {}).get("total_count")
+    metrics.lifetime_deployments_count = lifetime_meta if lifetime_meta is not None else len(all_deps)
+    metrics.detected_environments = [f"{env} ({cnt})" for env, cnt in sorted(env_counts.items())]
+    metrics.filtered_non_prod_count = len(all_deps) - len(deps)
+
     rels = collect_repo_releases(
         client,
         org,
@@ -1144,10 +1156,26 @@ def profile_repo_dora(
             metrics.signal_mode = "GitHub Releases"
         else:
             metrics.signal_mode = "Production Workflows"
+    elif all_deps and not (rels or wf_runs):
+        non_prod_envs = [env for env in env_counts if not _is_production_environment(env, active_cfg.prod_environments)]
+        env_summary = ", ".join(f"'{e}'" for e in non_prod_envs[:3])
+        metrics.signal_mode = f"Non-Prod Deployments ({env_summary})"
+        metrics.flow_advisory = (
+            f"Repository has {len(all_deps)} deployment(s) in non-production environment(s) ({env_summary}). "
+            f"Run with '--include-non-prod' or customize '--prod-envs' to evaluate these environments."
+        )
     elif metrics.deployments_api_forbidden:
         metrics.signal_mode = "Permission Gap (deployments:read)"
     else:
         metrics.signal_mode = "No Production Activity"
+
+    if metrics.filtered_non_prod_count > 0 and metrics.flow_advisory in ("-", ""):
+        non_prod_envs = [env for env in env_counts if not _is_production_environment(env, active_cfg.prod_environments)]
+        env_summary = ", ".join(f"'{e}'" for e in non_prod_envs[:3])
+        metrics.flow_advisory = (
+            f"Note: {metrics.filtered_non_prod_count} deployment(s) in non-production environment(s) ({env_summary}) "
+            f"excluded from production DORA. Run with '--include-non-prod' or customize '--prod-envs' to include them."
+        )
 
     metrics.deployments = sorted(combined_events, key=lambda d: d.created_at)
     metrics.stalled_deploys_count = sum(
@@ -1386,6 +1414,8 @@ def build_dora_rows(
             m.rework_deploys,
             m.redundant_failure_retries,
             m.telemetry_scope,
+            m.lifetime_deployments_count if m.lifetime_deployments_count is not None else m.total_deploys,
+            ", ".join(m.detected_environments) if m.detected_environments else "None",
         ])
 
         for d in m.deployments:
