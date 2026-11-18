@@ -173,8 +173,25 @@ def test_codeowners_check_variations() -> None:
     inspector = MagicMock()
     check = CodeownersCheck()
 
+    inspector.get_codeowners_errors.return_value = []
     inspector.get_file_content.return_value = "* @fintech-core/maintainers\n/api/ @team-api"
     assert check.evaluate(inspector, "org", "repo", "main", {}).status == CheckStatus.PASS
+
+    # GitHub CODEOWNERS error endpoint reports syntax or unknown owner errors
+    inspector.get_codeowners_errors.return_value = [
+        {"line": 1, "column": 3, "message": "The user @GrenstonGeorge does not exist"}
+    ]
+    res_err = check.evaluate(inspector, "org", "repo", "main", {})
+    assert res_err.status == CheckStatus.WARN
+    assert "contains errors on GitHub" in res_err.current_state
+    assert "Please review" in res_err.current_state
+
+    # Inline comment on rule line triggers warning to review
+    inspector.get_codeowners_errors.return_value = []
+    inspector.get_file_content.return_value = "* @team # inline comment"
+    res_inline = check.evaluate(inspector, "org", "repo", "main", {})
+    assert res_inline.status == CheckStatus.WARN
+    assert "contains inline comments on rule line" in res_inline.current_state
 
     inspector.get_file_content.return_value = "/api/ @team-api"
     assert check.evaluate(inspector, "org", "repo", "main", {}).status == CheckStatus.WARN
@@ -291,10 +308,18 @@ def test_workflow_concurrency_check() -> None:
     inspector = MagicMock()
     check = WorkflowConcurrencyGroupsCheck()
 
-    inspector.list_workflows.return_value = [{"name": "Build", "path": ".github/workflows/build.yml"}]
+    inspector.list_workflows.return_value = [
+        {"name": "Build", "path": ".github/workflows/build.yml"},
+        {"name": "Deploy", "path": ".github/workflows/deploy.yml"},
+    ]
 
     inspector.get_file_content.return_value = "name: Build\non: push\n# concurrency: commented"
-    assert check.evaluate(inspector, "org", "repo", "main", {}).status == CheckStatus.WARN
+    res_warn = check.evaluate(inspector, "org", "repo", "main", {})
+    assert res_warn.status == CheckStatus.WARN
+    assert "Workflows do not have concurrency controls configured. Please review." in res_warn.current_state
+    # Workflow filenames must NOT be listed to avoid false impression of partial omissions
+    assert "build.yml" not in res_warn.current_state
+    assert "deploy.yml" not in res_warn.current_state
 
     inspector.get_file_content.return_value = "name: Build\nconcurrency:\n  group: main\n  cancel-in-progress: true"
     assert check.evaluate(inspector, "org", "repo", "main", {}).status == CheckStatus.PASS

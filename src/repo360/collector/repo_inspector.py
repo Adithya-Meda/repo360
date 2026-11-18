@@ -700,6 +700,26 @@ class RepoInspector:
             self._file_content_cache[content_key] = decoded_str
         return decoded_str
 
+    def get_codeowners_errors(
+        self, org: str, repo: str, ref: str = "main"
+    ) -> List[Dict[str, Any]]:
+        """Fetch syntax and owner validation errors for the repository's CODEOWNERS file via GitHub API."""
+        try:
+            data = self.client.get(
+                f"/repos/{org}/{repo}/codeowners/errors",
+                params={"ref": ref},
+                allow_404=True,
+                allow_403=True,
+            )
+            if isinstance(data, dict):
+                return data.get("errors") or []
+            if isinstance(data, list):
+                return data
+            return []
+        except Exception as err:
+            logger.debug("Failed querying CODEOWNERS errors for %s/%s: %s", org, repo, err)
+            return []
+
     def list_workflows(self, org: str, repo: str, ref: str = "main") -> List[Dict[str, Any]]:
         """List GitHub Actions workflow files and details.
 

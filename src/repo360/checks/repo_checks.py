@@ -35,6 +35,7 @@ class CodeownersCheck(BaseCheck):
         default_branch: str,
         thresholds: Dict[str, Any],
     ) -> CheckResult:
+        doc_url = "https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners"
         content = (
             inspector.get_file_content(org, repo, ".github/CODEOWNERS", default_branch)
             or inspector.get_file_content(org, repo, "CODEOWNERS", default_branch)
@@ -42,12 +43,72 @@ class CodeownersCheck(BaseCheck):
         )
 
         if content and content.strip():
+            # Check 1: Query GitHub API's official CODEOWNERS error validation endpoint
+            errors_fn = getattr(inspector, "get_codeowners_errors", None)
+            api_errors = errors_fn(org, repo, default_branch) if callable(errors_fn) else []
+            if isinstance(api_errors, list) and len(api_errors) > 0:
+                err_messages: List[str] = []
+                for err in api_errors[:2]:
+                    if isinstance(err, dict):
+                        line_num = err.get("line")
+                        msg = err.get("message") or err.get("kind") or err.get("source")
+                        if line_num and msg:
+                            err_messages.append(f"line {line_num}: {msg}")
+                        elif msg:
+                            err_messages.append(str(msg))
+                    elif isinstance(err, str):
+                        err_messages.append(err)
+                detail = f" ({'; '.join(err_messages)})" if err_messages else ""
+                first_line = content.strip().splitlines()[0] if content.strip() else ""
+                return CheckResult(
+                    check_id=self.check_id,
+                    check_name=self.check_name,
+                    persona=self.persona,
+                    category=self.category,
+                    status=CheckStatus.WARN,
+                    severity=self.severity,
+                    org_name=org,
+                    repo_name=repo,
+                    current_state=f"CODEOWNERS file contains errors on GitHub{detail}. Please review.",
+                    recommended_state="Review and fix invalid user/team handles or syntax errors in CODEOWNERS.",
+                    explanation="GitHub marks this CODEOWNERS file as containing errors. Rules with invalid or unpermitted owners are ignored, leaving paths unprotected.",
+                    remediation_snippet_before=first_line or "[Invalid CODEOWNERS rule]",
+                    remediation_snippet_after="# Correct team ownership syntax (ensure team has write access)\n* @org/team-name",
+                    documentation_url=doc_url,
+                )
+
+            # Check 2: Check for trailing inline comments on rule lines (unsupported by GitHub CODEOWNERS parser)
+            inline_comment_lines: List[int] = []
             has_wildcard = False
-            for line in content.splitlines():
+            for idx, line in enumerate(content.splitlines(), start=1):
+                clean_line = line.strip()
+                if not clean_line or clean_line.startswith("#"):
+                    continue
+                # If '#' is inside line, GitHub CODEOWNERS treats it as an owner name, creating an invalid owner error
+                if "#" in clean_line:
+                    inline_comment_lines.append(idx)
                 stripped = line.split("#", 1)[0].strip()
                 if stripped and re.match(r"^\*\s+\S+", stripped):
                     has_wildcard = True
-                    break
+
+            if inline_comment_lines:
+                return CheckResult(
+                    check_id=self.check_id,
+                    check_name=self.check_name,
+                    persona=self.persona,
+                    category=self.category,
+                    status=CheckStatus.WARN,
+                    severity=self.severity,
+                    org_name=org,
+                    repo_name=repo,
+                    current_state=f"CODEOWNERS file contains inline comments on rule line(s) ({', '.join(str(l) for l in inline_comment_lines[:2])}). Please review.",
+                    recommended_state="Move comments to separate lines starting with '#' above the ownership rule.",
+                    explanation="GitHub CODEOWNERS does not support inline comments; '#' on rule lines is parsed as an invalid owner handle.",
+                    remediation_snippet_before="* @org/team # Catch-all ownership",
+                    remediation_snippet_after="# Catch-all ownership\n* @org/team",
+                    documentation_url=doc_url,
+                )
+
             if has_wildcard:
                 return CheckResult(
                     check_id=self.check_id,
@@ -61,8 +122,9 @@ class CodeownersCheck(BaseCheck):
                     current_state="Valid CODEOWNERS file with root wildcard rule present.",
                     recommended_state="Maintain CODEOWNERS with active team handles.",
                     explanation="CODEOWNERS guarantees that changes are reviewed and approved by designated domain maintainers.",
-                    documentation_url="https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners",
+                    documentation_url=doc_url,
                 )
+
             return CheckResult(
                 check_id=self.check_id,
                 check_name=self.check_name,
@@ -72,12 +134,12 @@ class CodeownersCheck(BaseCheck):
                 severity=CheckSeverity.MEDIUM,
                 org_name=org,
                 repo_name=repo,
-                current_state="CODEOWNERS file exists, but lacks a default '*' catch-all team rule.",
+                current_state="CODEOWNERS file exists, but lacks a default '*' catch-all team rule. Please review.",
                 recommended_state="Add a default catch-all rule '* @org/team' at the top of CODEOWNERS.",
                 explanation="Without a default catch-all rule, files added to new directories may escape mandatory review.",
                 remediation_snippet_before="# Partial CODEOWNERS without root rule\n/src/api/ @team-api",
                 remediation_snippet_after="# Catch-all default rule\n* @org/core-maintainers\n/src/api/ @org/team-api",
-                documentation_url="https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners",
+                documentation_url=doc_url,
             )
 
         return CheckResult(
@@ -501,7 +563,6 @@ class WorkflowShaPinningCheck(BaseCheck):
                         unpinned_actions.append(f"{wf.get('name')}: uses: {match.group(1)}@{ref}")
 
         if unpinned_actions:
-            sample_unpinned = unpinned_actions[:3]
             return CheckResult(
                 check_id=self.check_id,
                 check_name=self.check_name,
@@ -511,7 +572,7 @@ class WorkflowShaPinningCheck(BaseCheck):
                 severity=self.severity,
                 org_name=org,
                 repo_name=repo,
-                current_state=f"{len(unpinned_actions)} unpinned third-party actions detected: {'; '.join(sample_unpinned)}",
+                current_state=f"{pluralize(len(unpinned_actions), 'unpinned third-party action', 'unpinned third-party actions', include_count=True)} detected across workflows. Please review.",
                 recommended_state="Pin actions to immutable commit SHAs (40 or 64 hex characters) with comments.",
                 explanation="Mutable tags (e.g., @v4) can be retargeted or hijacked by malicious actors to inject supply-chain attacks.",
                 remediation_snippet_before="- uses: actions/checkout@v4",
@@ -615,7 +676,7 @@ class WorkflowConcurrencyGroupsCheck(BaseCheck):
                 severity=self.severity,
                 org_name=org,
                 repo_name=repo,
-                current_state=f"Workflows missing concurrency controls: {', '.join(missing_concurrency[:3])}",
+                current_state="Workflows do not have concurrency controls configured. Please review.",
                 recommended_state="Configure concurrency with cancel-in-progress: true.",
                 explanation="Without concurrency groups, pushing multiple commits in a PR queues redundant builds, wasting cloud runner minutes.",
                 remediation_snippet_before="# Workflow without concurrency\non: [pull_request]\njobs: ...",

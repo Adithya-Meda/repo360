@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 import requests
 
 from .base import BaseCheck, CheckResult, CheckSeverity, CheckStatus
+from ..common.text import pluralize
 
 
 def get_permission_gap(
@@ -71,7 +72,7 @@ def incomplete_workflow_coverage_result(
         return make_permission_skipped_result(
             check,
             org,
-            f"workflow file contents could not be read ({', '.join(unreadable[:3])}).",
+            f"workflow file contents could not be read ({pluralize(len(unreadable), 'workflow file', 'workflow files', include_count=True)} unreadable).",
             documentation_url,
             repo=repo,
         )
@@ -85,8 +86,7 @@ def incomplete_workflow_coverage_result(
         org_name=org,
         repo_name=repo,
         current_state=(
-            f"No issues in {inspected} inspected workflow(s), but {len(unreadable)} could not be read: "
-            f"{', '.join(unreadable[:3])}"
+            f"No issues in {inspected} inspected workflow(s), but {pluralize(len(unreadable), 'workflow file', 'workflow files', include_count=True)} could not be read. Please review."
         ),
         recommended_state="Ensure the GitHub App has 'contents: read' so every workflow can be audited.",
         explanation="Compliance cannot be confirmed for workflow files that were not inspected.",

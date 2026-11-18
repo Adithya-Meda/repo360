@@ -30,6 +30,7 @@ class DevcontainersCheck(BaseCheck):
         default_branch: str,
         thresholds: Dict[str, Any],
     ) -> CheckResult:
+        doc_url = "https://docs.github.com/en/codespaces/setting-up-your-project-for-codespaces/adding-a-dev-container-configuration/introduction-to-dev-containers"
         has_devcontainer = (
             inspector.check_file_exists(
                 org, repo, ".devcontainer/devcontainer.json", default_branch
@@ -43,6 +44,27 @@ class DevcontainersCheck(BaseCheck):
         )
 
         if has_devcontainer:
+            content = (
+                inspector.get_file_content(org, repo, ".devcontainer/devcontainer.json", default_branch)
+                or inspector.get_file_content(org, repo, ".devcontainer.json", default_branch)
+            )
+            if isinstance(content, str) and not content.strip():
+                return CheckResult(
+                    check_id=self.check_id,
+                    check_name=self.check_name,
+                    persona=self.persona,
+                    category=self.category,
+                    status=CheckStatus.WARN,
+                    severity=self.severity,
+                    org_name=org,
+                    repo_name=repo,
+                    current_state=".devcontainer/devcontainer.json is empty or invalid. Please review.",
+                    recommended_state="Provide a valid .devcontainer configuration with base image and settings.",
+                    explanation="An empty or malformed devcontainer file cannot be used by Codespaces or VS Code.",
+                    documentation_url=doc_url,
+                    remediation_snippet_before="{}",
+                    remediation_snippet_after="{\n  \"name\": \"Service Dev Container\",\n  \"image\": \"mcr.microsoft.com/devcontainers/python:3.12\"\n}",
+                )
             return CheckResult(
                 check_id=self.check_id,
                 check_name=self.check_name,
@@ -55,7 +77,7 @@ class DevcontainersCheck(BaseCheck):
                 current_state="DevContainer configuration found.",
                 recommended_state="Maintain base container image and extensions.",
                 explanation="DevContainers allow new contributors and juniors to spin up a fully configured environment in seconds.",
-                documentation_url="https://docs.github.com/en/codespaces/setting-up-your-project-for-codespaces/adding-a-dev-container-configuration/introduction-to-dev-containers",
+                documentation_url=doc_url,
             )
 
         return CheckResult(
@@ -93,11 +115,30 @@ class CopilotInstructionsCheck(BaseCheck):
         default_branch: str,
         thresholds: Dict[str, Any],
     ) -> CheckResult:
+        doc_url = "https://docs.github.com/en/copilot/customizing-copilot/adding-custom-instructions-for-github-copilot"
         has_instructions = inspector.check_file_exists(
             org, repo, ".github/copilot-instructions.md", default_branch
         )
 
         if has_instructions:
+            content = inspector.get_file_content(org, repo, ".github/copilot-instructions.md", default_branch)
+            if isinstance(content, str) and not content.strip():
+                return CheckResult(
+                    check_id=self.check_id,
+                    check_name=self.check_name,
+                    persona=self.persona,
+                    category=self.category,
+                    status=CheckStatus.WARN,
+                    severity=self.severity,
+                    org_name=org,
+                    repo_name=repo,
+                    current_state=".github/copilot-instructions.md exists but is empty. Please review.",
+                    recommended_state="Add project architecture guidelines and testing conventions to copilot-instructions.md.",
+                    explanation="An empty instructions file provides no architectural context to AI coding assistants.",
+                    remediation_snippet_before="[Empty copilot-instructions.md file]",
+                    remediation_snippet_after="# Copilot Instructions\n- Always use pytest fixtures for unit tests.\n- Never hardcode secrets or mock network calls in production paths.\n- All database transactions must use the UnitOfWork pattern.",
+                    documentation_url=doc_url,
+                )
             return CheckResult(
                 check_id=self.check_id,
                 check_name=self.check_name,
@@ -110,7 +151,7 @@ class CopilotInstructionsCheck(BaseCheck):
                 current_state="Custom .github/copilot-instructions.md found.",
                 recommended_state="Update prompt guidelines as tech stack evolves.",
                 explanation="Instructs GitHub Copilot to generate code adhering to your team's specific patterns, frameworks, and testing styles.",
-                documentation_url="https://docs.github.com/en/copilot/customizing-copilot/adding-custom-instructions-for-github-copilot",
+                documentation_url=doc_url,
             )
 
         return CheckResult(
@@ -309,6 +350,7 @@ class PreCommitHooksCheck(BaseCheck):
         default_branch: str,
         thresholds: Dict[str, Any],
     ) -> CheckResult:
+        doc_url = "https://pre-commit.com/"
         has_precommit = (
             inspector.check_file_exists(
                 org, repo, ".pre-commit-config.yaml", default_branch
@@ -319,6 +361,27 @@ class PreCommitHooksCheck(BaseCheck):
         )
 
         if has_precommit:
+            content = (
+                inspector.get_file_content(org, repo, ".pre-commit-config.yaml", default_branch)
+                or inspector.get_file_content(org, repo, ".pre-commit-config.yml", default_branch)
+            )
+            if isinstance(content, str) and ("repos:" not in content or not content.strip()):
+                return CheckResult(
+                    check_id=self.check_id,
+                    check_name=self.check_name,
+                    persona=self.persona,
+                    category=self.category,
+                    status=CheckStatus.WARN,
+                    severity=self.severity,
+                    org_name=org,
+                    repo_name=repo,
+                    current_state=".pre-commit-config.yaml exists but defines no active hooks. Please review.",
+                    recommended_state="Configure linter/formatter hooks (e.g., ruff, black, eslint) in .pre-commit-config.yaml.",
+                    explanation="A pre-commit configuration without hook repositories does not enforce any quality gates.",
+                    remediation_snippet_before=content.strip() or "[Empty pre-commit config]",
+                    remediation_snippet_after="repos:\n  - repo: https://github.com/pre-commit/pre-commit-hooks\n    rev: v4.6.0\n    hooks:\n      - id: trailing-whitespace\n      - id: end-of-file-fixer\n      - id: check-added-large-files",
+                    documentation_url=doc_url,
+                )
             return CheckResult(
                 check_id=self.check_id,
                 check_name=self.check_name,
@@ -331,7 +394,7 @@ class PreCommitHooksCheck(BaseCheck):
                 current_state=".pre-commit-config.yaml found.",
                 recommended_state="Keep pre-commit hook versions updated.",
                 explanation="Pre-commit catches formatting, linting, and secret leakage errors immediately on the developer's machine.",
-                documentation_url="https://pre-commit.com/",
+                documentation_url=doc_url,
             )
 
         return CheckResult(
