@@ -354,7 +354,15 @@ def test_workflow_sha_pinning_check() -> None:
     inspector.get_file_content.return_value = (
         "steps:\n  - uses: actions/checkout@B4FFDE65F46336AB88EB53BE808477A3936BAE11 # v4.1.1 ./local"
     )
-    assert check.evaluate(inspector, "org", "repo", "main", {}).status == CheckStatus.PASS
+    res_pinned = check.evaluate(inspector, "org", "repo", "main", {})
+    assert res_pinned.status == CheckStatus.PASS
+    assert "audited third-party action utilizes an immutable commit SHA" in res_pinned.current_state
+
+    # Workflows without any third-party actions (e.g. native scripts only) must not falsely report SHA utilization
+    inspector.get_file_content.return_value = "steps:\n  - run: npm test\n  - run: echo 'deploy'"
+    res_no_actions = check.evaluate(inspector, "org", "repo", "main", {})
+    assert res_no_actions.status == CheckStatus.PASS
+    assert "No third-party GitHub Actions referenced across workflows" in res_no_actions.current_state
 
     # 64-character SHA-256 commit hash must also pass
     sha256_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"

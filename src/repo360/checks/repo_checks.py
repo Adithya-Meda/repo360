@@ -592,6 +592,7 @@ class WorkflowShaPinningCheck(BaseCheck):
             )
 
         unpinned_actions: List[str] = []
+        pinned_actions: List[str] = []
         unreadable: List[str] = []
         inspected = 0
         for wf in workflows:
@@ -613,9 +614,12 @@ class WorkflowShaPinningCheck(BaseCheck):
                     continue
                 match = self.MUTABLE_TAG_PATTERN.search(clean_line)
                 if match:
+                    action_name = match.group(1).strip()
                     ref = match.group(2).strip()
                     if not self.SHA_PATTERN.match(ref):
-                        unpinned_actions.append(f"{wf.get('name')}: uses: {match.group(1)}@{ref}")
+                        unpinned_actions.append(f"{wf.get('name')}: uses: {action_name}@{ref}")
+                    else:
+                        pinned_actions.append(f"{wf.get('name')}: uses: {action_name}@{ref}")
 
         if unpinned_actions:
             return CheckResult(
@@ -639,6 +643,27 @@ class WorkflowShaPinningCheck(BaseCheck):
         if coverage_gap is not None:
             return coverage_gap
 
+        if not pinned_actions:
+            return CheckResult(
+                check_id=self.check_id,
+                check_name=self.check_name,
+                persona=self.persona,
+                category=self.category,
+                status=CheckStatus.PASS,
+                severity=self.severity,
+                org_name=org,
+                repo_name=repo,
+                current_state="No third-party GitHub Actions referenced across workflows.",
+                recommended_state="Pin third-party actions to immutable commit SHAs if introduced in future workflows.",
+                explanation="Workflows execute native commands or local scripts without external third-party action dependencies, presenting no external action supply-chain risk.",
+                documentation_url=doc_url,
+            )
+
+        if len(pinned_actions) == 1:
+            action_desc = "The audited third-party action utilizes an immutable commit SHA."
+        else:
+            action_desc = f"All {len(pinned_actions)} audited third-party actions utilize immutable commit SHAs."
+
         return CheckResult(
             check_id=self.check_id,
             check_name=self.check_name,
@@ -648,10 +673,10 @@ class WorkflowShaPinningCheck(BaseCheck):
             severity=self.severity,
             org_name=org,
             repo_name=repo,
-            current_state="All audited GitHub Actions utilize immutable commit SHAs.",
+            current_state=action_desc,
             recommended_state="Continue pinning all action versions via SHA.",
             explanation="Immutable pinning guards against supply-chain tampering.",
-            documentation_url="https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions#using-third-party-actions",
+            documentation_url=doc_url,
         )
 
 
