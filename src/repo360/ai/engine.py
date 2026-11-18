@@ -83,6 +83,36 @@ class AIEngine:
         "pre_commit_hooks",
     })
 
+    CANONICAL_LANGUAGE_MAP: Dict[str, str] = {
+        "python": "Python",
+        "javascript": "JavaScript",
+        "typescript": "TypeScript",
+        "node": "TypeScript",
+        "node.js": "TypeScript",
+        "node.js / typescript": "TypeScript",
+        "go": "Go",
+        "golang": "Go",
+        "java": "Java",
+        "java (maven)": "Java",
+        "java / kotlin (gradle)": "Java",
+        "kotlin": "Kotlin",
+        "c#": "C#",
+        "c# / .net core": "C#",
+        ".net": "C#",
+        "csharp": "C#",
+        "rust": "Rust",
+        "c++": "C++",
+        "cpp": "C++",
+        "c / c++": "C++",
+        "c/c++": "C++",
+        "c": "C",
+        "ruby": "Ruby",
+        "php": "PHP",
+        "swift": "Swift",
+        "dart": "Dart",
+        "scala": "Scala",
+    }
+
     def __init__(
         self,
         api_key: Optional[str] = None,
@@ -941,10 +971,29 @@ Keep it factual, authoritative, professional, and actionable. Do not use filler 
         ]
         if not raw_langs:
             raw_langs = [str(l).strip() for l in stack.get("languages", []) if str(l).strip()]
-        primary_lang = raw_langs[0] if raw_langs else "General Software"
+
+        primary_lang = "General Software"
+        if raw_langs:
+            candidate = raw_langs[0].strip()
+            cand_lower = candidate.lower()
+            if cand_lower in cls.CANONICAL_LANGUAGE_MAP:
+                primary_lang = cls.CANONICAL_LANGUAGE_MAP[cand_lower]
+            else:
+                for k, v in cls.CANONICAL_LANGUAGE_MAP.items():
+                    if len(k) >= 3 and k in cand_lower:
+                        primary_lang = v
+                        break
 
         raw_fws = [str(f).strip() for f in stack.get("frameworks", []) if str(f).strip()]
-        primary_fw = raw_fws[0] if raw_fws else "Standard"
+        major_fws = {
+            "fastapi", "django", "flask", "react", "next", "vue", "angular",
+            "express", "nest", "spring", "aspnet", "gin"
+        }
+        primary_fw = "Standard"
+        for fw in raw_fws:
+            if fw.lower() in major_fws:
+                primary_fw = fw.capitalize()
+                break
 
         raw_manifests = [str(m).strip().lower() for m in stack.get("manifests", []) if str(m).strip()]
         ecosystems: set[str] = set()
@@ -965,7 +1014,13 @@ Keep it factual, authoritative, professional, and actionable. Do not use filler 
                 ecosystems.add("nuget")
             elif "docker" in m:
                 ecosystems.add("docker")
-        eco_str = ",".join(sorted(ecosystems)) if ecosystems else "github-actions"
+
+        if len(ecosystems) > 2:
+            eco_str = "multi"
+        elif ecosystems:
+            eco_str = ",".join(sorted(ecosystems))
+        else:
+            eco_str = "github-actions"
 
         return primary_lang, primary_fw, eco_str
 
@@ -981,7 +1036,9 @@ Keep it factual, authoritative, professional, and actionable. Do not use filler 
             return f"{check_id}:{eco_str}"
 
         if check_id == "devcontainers":
-            return f"{check_id}:{primary_lang.lower()}:{primary_fw.lower()}"
+            if primary_fw != "Standard":
+                return f"{check_id}:{primary_lang.lower()}:{primary_fw.lower()}"
+            return f"{check_id}:{primary_lang.lower()}"
 
         return f"{check_id}:{primary_lang.lower()}"
 

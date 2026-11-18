@@ -504,6 +504,8 @@ def run_audit(
                     if isinstance(cache_key, str) and cache_key in queued_ai_keys:
                         # Already queued in ai_executor!
                         continue
+                    if len(queued_ai_keys) >= 30:
+                        continue
                     if isinstance(cache_key, str):
                         queued_ai_keys.add(cache_key)
 
@@ -556,17 +558,12 @@ def run_audit(
                 if pending:
                     D = "\033[2m"
                     X = "\033[0m"
-                    logger.info(
-                        "%sFinalizing background AI recommendations (%d in-flight tasks)...%s",
-                        D,
-                        len(pending),
-                        X,
-                    )
-                    wait_budget = min(180.0, max(60.0, len(pending) * 5.0))
+                    # Fast drain budget: allow active in-flight calls to land without holding the user
+                    wait_budget = min(10.0, max(2.0, min(float(len(pending)) * 1.0, 10.0)))
                     start_wait = time.time()
                     while not stop_event.is_set() and not is_shutting_down() and any(not f.done() for f in pending):
-                        concurrent.futures.wait(pending, timeout=0.2)
-                        if time.time() - start_wait > wait_budget:
+                        concurrent.futures.wait(pending, timeout=0.25)
+                        if (ai_engine and ai_engine.is_circuit_active()) or (time.time() - start_wait > wait_budget):
                             break
                     if is_shutting_down():
                         raise KeyboardInterrupt
@@ -576,12 +573,11 @@ def run_audit(
                             f.cancel()
                         still_running = [f for f in unfinished if not f.done() and not f.cancelled()]
                         if still_running:
-                            concurrent.futures.wait(still_running, timeout=5.0)
-                        task_noun = pluralize(len(unfinished), "background AI remediation task", include_count=True)
-                        logger.warning(
-                            "%s did not complete within %ds; deterministic templates preserved.",
-                            task_noun,
-                            int(wait_budget),
+                            concurrent.futures.wait(still_running, timeout=1.0)
+                        logger.info(
+                            "Background AI remediation finalized (%d synthesized, %d preserved as deterministic templates).",
+                            len(pending) - len(unfinished),
+                            len(unfinished),
                         )
         finally:
             ai_executor.shutdown(wait=False, cancel_futures=True)

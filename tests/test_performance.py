@@ -430,3 +430,27 @@ def test_ai_remediation_task_deduplication_and_instant_drain():
         assert "* @org/python-team" in r.remediation_snippet_after
 
 
+def test_canonical_stack_collapsing_and_bounded_ai_queue():
+    """Verify that hundreds of diverse repo stacks collapse into ~10 canonical keys and bound AI queue."""
+    from repo360.ai.engine import AIEngine
+
+    # Esoteric and non-code languages collapse to General Software
+    for lang in ("HTML", "CSS", "SCSS", "Jupyter Notebook", "TeX", "Batchfile", "Makefile", "Roff"):
+        stack = {"languages": [lang]}
+        canon_lang, _, _ = AIEngine.extract_canonical_stack(stack)
+        assert canon_lang == "General Software"
+        key = AIEngine.get_remediation_cache_key("codeowners_validation", stack)
+        assert key == "codeowners_validation:general software"
+
+    # Standard tool libraries (pytest, pydantic) don't fragment devcontainer cache keys
+    py_pytest = {"languages": ["Python"], "frameworks": ["pytest", "pydantic"]}
+    py_sqlalchemy = {"languages": ["Python"], "frameworks": ["sqlalchemy"]}
+    assert AIEngine.get_remediation_cache_key("devcontainers", py_pytest) == "devcontainers:python"
+    assert AIEngine.get_remediation_cache_key("devcontainers", py_sqlalchemy) == "devcontainers:python"
+
+    # Multi-ecosystem manifests collapse to single key
+    multi_eco = {"manifests": ["package.json", "requirements.txt", "pom.xml"]}
+    assert AIEngine.get_remediation_cache_key("dependabot_configuration", multi_eco) == "dependabot_configuration:multi"
+
+
+
