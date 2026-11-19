@@ -171,12 +171,12 @@ def run_dora_cli(argv: Optional[List[str]] = None) -> int:
         "--prod-envs",
         default="",
         metavar="LIST",
-        help="Prod env names, comma-separated (default: prod,production,prd,live,release).",
+        help="Optional custom environment filter, comma-separated (default: all active deployment environments).",
     )
     parser.add_argument(
         "--include-non-prod",
         action="store_true",
-        help="Include non-prod envs and branches (default: prod only).",
+        help="Include lower/staged deployment environments (default: active deployment environments; staging/dev excluded).",
     )
     parser.add_argument(
         "--incident-labels",
