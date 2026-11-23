@@ -211,8 +211,6 @@ def write_runners_workbook(
     summary.row_dimensions[curr_row].height = 28
     curr_row += 2
 
-    curr_row = section_title(summary, curr_row, "Organization Fleet Breakdown")
-    curr_row = write_table(summary, curr_row, ORG_RUNNER_HEADERS, org_runner_rows, bar_col=1) + 2
 
     if real_failures:
         curr_row = section_title(summary, curr_row, "Items Requiring Review / Failures")
