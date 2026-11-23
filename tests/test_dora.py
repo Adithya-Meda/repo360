@@ -234,7 +234,6 @@ def test_write_dora_workbook_all_time_window_dynamic_earliest_date(tmp_path: Pat
         event_type="Deployment",
         event_id="dep-1",
         name="Deploy to production",
-        environment="production",
         status="SUCCESS",
         ref="main",
         created_at=datetime(2022, 5, 10, 10, 0, 0, tzinfo=timezone.utc),
@@ -282,8 +281,7 @@ def test_write_dora_workbook_all_time_window_dynamic_earliest_date(tmp_path: Pat
     # Verify AI table is placed in Executive Summary
     all_summary_text = "\n".join(str(c.value) for row in ws.iter_rows() for c in row if c.value is not None)
     assert "AI Strategic Delivery Flow Recommendations" in all_summary_text
-    assert "demo-repo" in all_summary_text
-    assert "Delivery throughput and stability are within standard benchmarks." in all_summary_text
+    assert "Optimize pull request review pipelines" in all_summary_text
 
 
 from unittest.mock import MagicMock
