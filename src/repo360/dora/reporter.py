@@ -18,7 +18,7 @@ from ..activity.reporter import (
     write_empty_table,
     write_table,
 )
-from ..common.concurrency import AI_NOT_ENABLED_MESSAGE, is_ai_disabled
+from ..common.concurrency import AI_NOT_ENABLED_LABEL, AI_NOT_ENABLED_MESSAGE, is_ai_disabled
 from ..common.text import pluralize
 from .models import (
     DORA_DEPLOYMENT_HEADERS,
@@ -89,8 +89,35 @@ def write_dora_workbook(
     summary["A1"] = "Repo360 DORA & Engineering Delivery Flow Metrics"
     summary["A1"].font = Font(bold=True, size=16, color=NAVY)
 
+    if cfg.lookback_days == 0:
+        earliest_dt: Optional[datetime] = None
+        for r in deployment_rows:
+            if len(r) > 7 and r[7] and r[7] != "-":
+                try:
+                    dt = datetime.strptime(r[7], "%d-%m-%Y %H:%M")
+                    if earliest_dt is None or dt < earliest_dt:
+                        earliest_dt = dt
+                except Exception:
+                    pass
+        for inc in recovery_rows:
+            if len(inc) > 3 and inc[3] and inc[3] != "-":
+                try:
+                    dt = datetime.strptime(inc[3], "%d-%m-%Y %H:%M")
+                    if earliest_dt is None or dt < earliest_dt:
+                        earliest_dt = dt
+                except Exception:
+                    pass
+
+        if earliest_dt:
+            days_span = max(1, (end_local.date() - earliest_dt.date()).days)
+            window_str = f"Full History ({earliest_dt:{DATE_FMT}} to {end_local:{DATE_FMT}}, {days_span:,} days)"
+        else:
+            window_str = f"Full History (All-Time) as of {end_local:{DATE_FMT}}"
+    else:
+        window_str = f"{since_local:{DATE_FMT}} to {end_local:{DATE_FMT}} ({cfg.lookback_days} days)"
+
     summary["A2"] = (
-        f"Reporting Window: {since_local:{DATE_FMT}} to {end_local:{DATE_FMT}} ({cfg.lookback_days} days) | "
+        f"Reporting Window: {window_str} | "
         f"Generated: {end_local:{DATE_FMT} %H:%M} {LOCAL_TZ_NAME} | Duration: {duration_str}"
     )
     summary["A2"].font = Font(italic=True, color="595959")
@@ -173,6 +200,16 @@ def write_dora_workbook(
     curr_row = section_title(summary, curr_row, "Organization DORA Performance Overview")
     org_last_row = write_table(summary, curr_row, DORA_ORG_HEADERS, org_rows, bar_col=4)
     curr_row = org_last_row + 2
+
+    ai_summary_rows = [
+        [r[0], r[1], r[2], r[14]]
+        for r in repo_rows
+        if len(r) > 14 and r[3] > 0 and r[14] not in ("-", "", AI_NOT_ENABLED_LABEL, AI_NOT_ENABLED_MESSAGE)
+    ]
+    if ai_summary_rows:
+        curr_row = section_title(summary, curr_row, "AI Strategic Delivery Flow Recommendations")
+        ai_table_headers = ("Organization", "Repository", "DORA Tier", "AI Strategic Flow Diagnostic & Advisory")
+        curr_row = write_table(summary, curr_row, ai_table_headers, ai_summary_rows[:25]) + 2
 
     env_scope = (
         "All environments & branches (--include-non-prod)"

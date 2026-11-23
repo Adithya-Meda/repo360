@@ -225,6 +225,67 @@ def test_write_dora_workbook(tmp_path: Path):
     assert "Recovery & MTTR Ledger" in sheet_names
 
 
+def test_write_dora_workbook_all_time_window_dynamic_earliest_date(tmp_path: Path):
+    """Verify lookback_days=0 calculates dynamic reporting window from earliest deployment date."""
+    now = datetime(2026, 11, 23, 12, 0, 0, tzinfo=timezone.utc)
+    since = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+    d1 = DeploymentRecord(
+        event_type="Deployment",
+        event_id="dep-1",
+        name="Deploy to production",
+        environment="production",
+        status="SUCCESS",
+        ref="main",
+        created_at=datetime(2022, 5, 10, 10, 0, 0, tzinfo=timezone.utc),
+        lead_time_hours=1.5,
+    )
+    m = RepoDORAMetrics(
+        org="demo-org",
+        repo="demo-repo",
+        deployments=[d1],
+        flow_advisory="Optimize pull request review pipelines and branch protection rules.",
+    )
+
+    repo_rows, org_rows, deployment_rows, recovery_rows = build_dora_rows(
+        metrics_list=[m],
+        orgs=["demo-org"],
+        window_days=0,
+    )
+
+    out_file = tmp_path / "dora_all_time.xlsx"
+    cfg = DORAConfig(output_dir=str(tmp_path), lookback_days=0)
+
+    write_dora_workbook(
+        path=out_file,
+        cfg=cfg,
+        since=since,
+        end=now,
+        repo_rows=repo_rows,
+        org_rows=org_rows,
+        deployment_rows=deployment_rows,
+        recovery_rows=recovery_rows,
+        failures=[],
+        execution_duration=1.5,
+    )
+
+    wb = load_workbook(out_file)
+    ws = wb["Executive Summary"]
+    a2_val = str(ws["A2"].value)
+
+    assert "1970" not in a2_val
+    assert "(0 days)" not in a2_val
+    assert "Full History" in a2_val
+    assert "10-05-2022" in a2_val
+    assert "23-11-2026" in a2_val
+
+    # Verify AI table is placed in Executive Summary
+    all_summary_text = "\n".join(str(c.value) for row in ws.iter_rows() for c in row if c.value is not None)
+    assert "AI Strategic Delivery Flow Recommendations" in all_summary_text
+    assert "demo-repo" in all_summary_text
+    assert "Delivery throughput and stability are within standard benchmarks." in all_summary_text
+
+
 from unittest.mock import MagicMock
 import requests
 

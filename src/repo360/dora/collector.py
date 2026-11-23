@@ -1348,7 +1348,7 @@ def build_dora_rows(
             )
             unique_dora_groups.setdefault(sig, []).append(item)
 
-        unique_sigs = list(unique_dora_groups.keys())[:30]
+        unique_sigs = list(unique_dora_groups.keys())
         rep_items = [unique_dora_groups[s][0] for s in unique_sigs]
 
         def _diagnose_rep(item: Tuple[int, RepoDORAMetrics, float, str, str, str, str, str]) -> Tuple[str, str, str]:
