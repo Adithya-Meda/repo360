@@ -217,13 +217,21 @@ def write_dora_workbook(
         else (
             f"Configured environments ({', '.join(cfg.prod_environments)}) & default/release branches"
             if cfg.custom_prod_envs
-            else "All deployment environments & default/release branches"
+            else "Production environments & default/release branches only"
         )
     )
     pr_lttc_count = summary_data.get("pr_lttc_count", 0)
     commit_lttc_count = summary_data.get("commit_lttc_count", 0)
     methodology_rows = [
         ["Deployment Scope", env_scope],
+        [
+            "Workflow & Branch Scope",
+            "Default branch (main/master) and release branches only; non-deploy workflows, pull request checks, and feature branches excluded.",
+        ],
+        [
+            "Signal Ingestion & Deduplication",
+            "Aggregates GitHub Deployments, Releases, and production CD workflows; overlapping same-commit events deduplicated.",
+        ],
         [
             "Deployment Frequency",
             "Unique value-delivering code-change deployments per week per active repo (same-SHA/zero-diff cron rebuilds excluded; 0-change or <3 multi-week repos capped at Medium).",
