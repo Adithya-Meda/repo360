@@ -302,7 +302,20 @@ def compute_fleet_dora_summary(
         round((rework_total / cfr_denominator) * 100, 2) if cfr_denominator else None
     )
 
-    weeks = max(1.0, lookback_days / 7.0)
+    effective_days = lookback_days
+    if lookback_days == 0 and deployment_rows:
+        earliest_dt: Optional[datetime] = None
+        for r in deployment_rows:
+            if len(r) > 7 and r[7] and r[7] != "-":
+                try:
+                    dt = datetime.strptime(str(r[7]), "%d-%m-%Y %H:%M")
+                    if earliest_dt is None or dt < earliest_dt:
+                        earliest_dt = dt
+                except Exception:
+                    pass
+        if earliest_dt is not None:
+            effective_days = max(1, (datetime.now().date() - earliest_dt.date()).days)
+    weeks = max(1.0, (effective_days or 1) / 7.0)
     total_df_weekly = round(total_code_change / weeks, 2) if total_code_change else 0.0
     df_values = [float(r[6]) for r in active_rows if len(r) > 6 and isinstance(r[6], (int, float))]
     median_df_weekly: Optional[float] = (
@@ -623,7 +636,15 @@ class RepoDORAMetrics:
         """Calculate value-delivering production deployments (excluding same-SHA no-ops) per 7-day week."""
         if self.code_change_deploys == 0:
             return 0.0
-        weeks = max(1.0, window_days / 7.0)
+        effective_days = window_days
+        if effective_days <= 0:
+            earliest_dt = min((d.created_at for d in self.deployments if d.created_at), default=None)
+            if earliest_dt:
+                now_dt = datetime.now(timezone.utc)
+                effective_days = max(1, (now_dt.date() - earliest_dt.date()).days)
+            else:
+                effective_days = 1
+        weeks = max(1.0, effective_days / 7.0)
         return round(self.code_change_deploys / weeks, 2)
 
     @property
@@ -725,7 +746,15 @@ class RepoDORAMetrics:
         """Return (overall_tier, df_tier, lttc_tier, cfr_tier, mttr_tier)."""
         if self.total_deploys == 0:
             return "N/A", "N/A", "N/A", "N/A", "N/A"
-        df_tier = get_df_tier(self.deployment_frequency_per_week(window_days))
+        effective_days = window_days
+        if effective_days <= 0:
+            earliest_dt = min((d.created_at for d in self.deployments if d.created_at), default=None)
+            if earliest_dt:
+                now_dt = datetime.now(timezone.utc)
+                effective_days = max(1, (now_dt.date() - earliest_dt.date()).days)
+            else:
+                effective_days = 1
+        df_tier = get_df_tier(self.deployment_frequency_per_week(effective_days))
         lttc_tier = get_lttc_tier(self.median_lead_time_hours)
         cfr_tier = get_cfr_tier(self.change_failure_rate_pct)
         mttr_tier = get_mttr_tier(self.median_mttr_hours)
@@ -739,7 +768,7 @@ class RepoDORAMetrics:
             has_open_incidents=self.open_incidents_count > 0,
             successful_deploys=self.successful_deploys,
             code_change_deploys=self.code_change_deploys,
-            window_days=window_days,
+            window_days=effective_days,
         )
         return overall, df_tier, lttc_tier, cfr_tier, mttr_tier
 

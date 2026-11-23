@@ -47,7 +47,8 @@ _DEPLOY_WORKFLOW_RE = re.compile(
     re.IGNORECASE,
 )
 _NON_PROD_ENV_RE = re.compile(
-    r"(?:^|[\s_\-./])(staging|stage|dev(?:elopment)?|qa|uat|test(?:ing)?|eval(?:uation)?|sandbox|preview|ephemeral|demo|preprod|nonprod)(?:$|[\s_\-./])",
+    r"(?:^|[\s_\-./]|to)(?:staging|stage|dev(?:elopment)?|qa|uat|eval(?:uation)?|sandbox|preview|ephemeral|pre[-_ ]?prod|non[-_ ]?prod|snyk|demo(?:environment)?|approv(?:al|er)s?)(?:$|[\s_\-./0-9])"
+    r"|(?:^|[\s_\-./0-9]|instance|smoke|load|perf|integration)test(?:ing)?(?:$|[\s_\-./0-9])",
     re.IGNORECASE,
 )
 _CI_ONLY_WORKFLOW_RE = re.compile(
@@ -1321,9 +1322,25 @@ def build_dora_rows(
     tier_cache: Dict[int, Tuple[str, str, str, str, str, float]] = {}
     ai_disabled = is_ai_disabled(ai_engine)
 
+    effective_window_days = window_days
+    if window_days == 0:
+        now_dt = datetime.now(timezone.utc)
+        earliest_dep_dt = None
+        for m in metrics_list:
+            for d in m.deployments:
+                if d.created_at and (earliest_dep_dt is None or d.created_at < earliest_dep_dt):
+                    earliest_dep_dt = d.created_at
+            for inc in m.incidents:
+                if inc.failure_time and (earliest_dep_dt is None or inc.failure_time < earliest_dep_dt):
+                    earliest_dep_dt = inc.failure_time
+        if earliest_dep_dt is not None:
+            effective_window_days = max(1, (now_dt.date() - earliest_dep_dt.date()).days)
+        else:
+            effective_window_days = 1
+
     for idx, m in enumerate(metrics_list):
-        overall, df_tier, lttc_tier, cfr_tier, mttr_tier = m.get_tiers(window_days)
-        df_weekly = m.deployment_frequency_per_week(window_days)
+        overall, df_tier, lttc_tier, cfr_tier, mttr_tier = m.get_tiers(effective_window_days)
+        df_weekly = m.deployment_frequency_per_week(effective_window_days)
         tier_cache[idx] = (overall, df_tier, lttc_tier, cfr_tier, mttr_tier, df_weekly)
         if m.total_deploys > 0 and ai_engine is not None and not ai_disabled:
             ai_items.append((idx, m, df_weekly, df_tier, lttc_tier, cfr_tier, mttr_tier, overall))
@@ -1534,7 +1551,7 @@ def build_dora_rows(
         total_org_open_incidents = sum(m.open_incidents_count for m in active_repos)
 
         if active_deploy_repos > 0:
-            active_dfs = [m.deployment_frequency_per_week(window_days) for m in active_repos]
+            active_dfs = [m.deployment_frequency_per_week(effective_window_days) for m in active_repos]
             org_df = round(float(statistics.median(active_dfs)), 2)
             org_df_tier = get_df_tier(org_df)
         else:
@@ -1583,7 +1600,7 @@ def build_dora_rows(
                 has_open_incidents=total_org_open_incidents > 0,
                 successful_deploys=total_org_successful,
                 code_change_deploys=total_org_code_change,
-                window_days=window_days,
+                window_days=effective_window_days,
             )
 
         org_rows.append([

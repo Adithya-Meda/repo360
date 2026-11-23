@@ -254,7 +254,7 @@ def write_dora_workbook(
         ],
         [
             "Recovery Time (MTTR)",
-            f"Stream-scoped failure-to-next-success recovery plus resolved incident issues (timestamps in local timezone: {LOCAL_TZ_NAME}; Ledger includes Completed/Updated timestamp). Open unresolved incidents cap tier at Medium.",
+            "Stream-scoped failure-to-next-success recovery plus resolved incident issues. Open unresolved incidents cap tier at Medium.",
         ],
         [
             "Deployment Rework Rate",

@@ -283,7 +283,7 @@ def test_write_dora_workbook_all_time_window_dynamic_earliest_date(tmp_path: Pat
     all_summary_text = "\n".join(str(c.value) for row in ws.iter_rows() for c in row if c.value is not None)
     assert "AI Strategic Delivery Flow Recommendations" in all_summary_text
     assert "demo-repo" in all_summary_text
-    assert "Delivery throughput and stability are within standard benchmarks." in all_summary_text
+    assert "Low deployment frequency despite strong stability." in all_summary_text
     assert "Workflow & Branch Scope" in all_summary_text
     assert "Signal Ingestion & Deduplication" in all_summary_text
 
