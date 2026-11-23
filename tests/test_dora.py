@@ -287,6 +287,20 @@ def test_write_dora_workbook_all_time_window_dynamic_earliest_date(tmp_path: Pat
     assert "Workflow & Branch Scope" in all_summary_text
     assert "Signal Ingestion & Deduplication" in all_summary_text
 
+    # Verify center alignment across sheets
+    repo_sheet = wb["Repository DORA Scorecard"]
+    assert repo_sheet.cell(row=2, column=1).alignment.horizontal == "center"
+    assert repo_sheet.cell(row=2, column=2).alignment.horizontal == "center"
+    assert repo_sheet.cell(row=2, column=3).alignment.horizontal == "center"
+    assert repo_sheet.cell(row=2, column=4).alignment.horizontal == "center"
+
+    dep_sheet = wb["Deployment & Release Ledger"]
+    assert dep_sheet.cell(row=2, column=1).alignment.horizontal == "center"
+    assert dep_sheet.cell(row=2, column=3).alignment.horizontal == "center"
+    assert dep_sheet.cell(row=2, column=4).alignment.horizontal == "center"
+    assert dep_sheet.cell(row=2, column=6).alignment.horizontal == "center"
+    assert dep_sheet.cell(row=2, column=7).alignment.horizontal == "center"
+
 
 from unittest.mock import MagicMock
 import requests

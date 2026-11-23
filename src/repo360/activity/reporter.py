@@ -36,8 +36,8 @@ HEADER_FONT = Font(bold=True, color="FFFFFF")
 BAND_FILL = PatternFill("solid", fgColor="F2F2F2")
 THIN = Side(style="thin", color="BFBFBF")
 BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
-CENTER = Alignment(horizontal="center", vertical="center")
-LEFT = Alignment(horizontal="left", vertical="center")
+CENTER = Alignment(horizontal="center", vertical="center", wrap_text=True)
+LEFT = Alignment(horizontal="left", vertical="center", wrap_text=True)
 CENTERED_VALUES = frozenset({"Yes", "No", "Unknown", "None", "Complete", "Partial", "N/A", "Online", "Offline", "Idle", "Busy"})
 
 STATUS_STYLES = {
@@ -63,20 +63,16 @@ LEFT_HEADERS = {
     "Metric",
     "Scope",
     "Category",
-    "Organization",
-    "Repository",
-    "User",
     "Definition",
     "Issue Description",
     "Target Item",
-    "Teams",
-    "CODEOWNERS Path",
     "What this means",
-    "Topic",
-    "Runner Name",
-    "Last Job Name",
-    "Labels",
-    "Group",
+    "AI Flow Diagnostic & Advisory",
+    "AI Strategic Flow Diagnostic & Advisory",
+    "Methodology & Compliance Scope",
+    "Operational Guidance",
+    "API / Permission Gap Detail",
+    "Error / Permission Detail",
 }
 
 CENTER_HEADERS = {
@@ -229,15 +225,8 @@ def write_table(
             val_str = str(value).strip() if value is not None else ""
             if header in LEFT_HEADERS:
                 alignment = LEFT
-            elif (
-                isinstance(value, (int, float))
-                or header in CENTER_HEADERS
-                or val_str in CENTERED_VALUES
-                or value in _EMPTY_CELL_MESSAGE_VALUES
-            ):
-                alignment = CENTER
             else:
-                alignment = None
+                alignment = CENTER
             styler.apply(cell, fill=band_fill, border=BORDER, alignment=alignment)
 
         if status_col is not None and row[status_col] in STATUS_STYLE_OBJECTS:

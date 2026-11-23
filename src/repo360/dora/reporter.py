@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill
+from openpyxl.styles import Alignment, Font, PatternFill
 
 from ..common.timezones import DATE_FMT, LOCAL_TZ, LOCAL_TZ_NAME
 from ..activity.reporter import (
@@ -62,6 +62,7 @@ def _apply_cell_badge(
             fill, font_col = styles[val]
             cell.fill = PatternFill("solid", fgColor=fill)
             cell.font = Font(bold=True, color=font_col)
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
 
 def write_dora_workbook(
@@ -199,6 +200,11 @@ def write_dora_workbook(
 
     curr_row = section_title(summary, curr_row, "Organization DORA Performance Overview")
     org_last_row = write_table(summary, curr_row, DORA_ORG_HEADERS, org_rows, bar_col=4)
+    if org_rows:
+        for header_name in ("Overall DORA Tier", "DF Tier", "LTTC Tier", "CFR Tier", "MTTR Tier", "Rework Tier"):
+            if header_name in DORA_ORG_HEADERS:
+                col_idx = DORA_ORG_HEADERS.index(header_name) + 1
+                _apply_cell_badge(summary, curr_row + 1, org_last_row, col_idx, DORA_TIER_STYLES)
     curr_row = org_last_row + 2
 
     ai_summary_rows = [
@@ -209,7 +215,9 @@ def write_dora_workbook(
     if ai_summary_rows:
         curr_row = section_title(summary, curr_row, "AI Strategic Delivery Flow Recommendations")
         ai_table_headers = ("Organization", "Repository", "DORA Tier", "AI Strategic Flow Diagnostic & Advisory")
-        curr_row = write_table(summary, curr_row, ai_table_headers, ai_summary_rows[:25]) + 2
+        ai_last_row = write_table(summary, curr_row, ai_table_headers, ai_summary_rows[:25])
+        _apply_cell_badge(summary, curr_row + 1, ai_last_row, 3, DORA_TIER_STYLES)
+        curr_row = ai_last_row + 2
 
     env_scope = (
         "All environments & branches (--include-non-prod)"
@@ -299,9 +307,10 @@ def write_dora_workbook(
         last_repo = write_table(repo_ws, 1, DORA_REPO_HEADERS, repo_rows)
         finalize_sheet(repo_ws, 1, last_repo, len(DORA_REPO_HEADERS), "C2")
 
-        for header_name in ("DORA Tier", "CFR Tier", "Rework Tier"):
-            col_idx = DORA_REPO_HEADERS.index(header_name) + 1
-            _apply_cell_badge(repo_ws, 2, last_repo, col_idx, DORA_TIER_STYLES)
+        for header_name in ("DORA Tier", "DF Tier", "LTTC Tier", "CFR Tier", "MTTR Tier", "Rework Tier"):
+            if header_name in DORA_REPO_HEADERS:
+                col_idx = DORA_REPO_HEADERS.index(header_name) + 1
+                _apply_cell_badge(repo_ws, 2, last_repo, col_idx, DORA_TIER_STYLES)
     else:
         write_empty_table(repo_ws, 1, DORA_REPO_HEADERS, "No repositories found on target organizations.")
 
