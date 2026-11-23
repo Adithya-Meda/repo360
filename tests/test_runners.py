@@ -808,6 +808,85 @@ def test_runners_workflow_profiling_cache_efficiency(tmp_path):
     assert metric.total_duration_seconds == 50 * 300.0  # 5 minutes = 300s
 
 
+def test_runners_artifact_retention_purge_duration_protection(tmp_path):
+    """Verify that workflow runs whose updated_at was bumped by 30-day artifact retention purge are clamped."""
+    now = datetime(2026, 11, 23, 12, 0, tzinfo=timezone.utc)
+    since = now - timedelta(days=90)
+
+    class _RetentionClient:
+        def __init__(self):
+            self.jobs_called = 0
+
+        def paginate_enveloped(self, org, endpoint, key, params=None):
+            if endpoint.endswith("/actions/runner-groups"):
+                return iter([])
+            if endpoint.endswith("/actions/runners"):
+                return iter([])
+            if "/actions/runs" in endpoint and "/jobs" not in endpoint:
+                return iter([
+                    {
+                        "id": 101,
+                        "workflow_id": 99,
+                        "name": "Build",
+                        "path": ".github/workflows/build.yml",
+                        "conclusion": "success",
+                        "created_at": "2026-10-01T10:00:00Z",
+                        "run_started_at": "2026-10-01T10:00:10Z",
+                        "updated_at": "2026-10-01T10:02:10Z",
+                    },
+                    {
+                        "id": 102,
+                        "workflow_id": 99,
+                        "name": "Build",
+                        "path": ".github/workflows/build.yml",
+                        "conclusion": "success",
+                        "created_at": "2026-10-02T10:00:00Z",
+                        "run_started_at": "2026-10-02T10:00:10Z",
+                        "updated_at": "2026-11-02T10:00:10Z",
+                    },
+                ])
+            if "/jobs" in endpoint:
+                self.jobs_called += 1
+                return iter([
+                    {
+                        "id": 501,
+                        "name": "compile",
+                        "runner_id": 0,
+                        "runner_name": "GitHub Actions",
+                        "labels": ["ubuntu-latest"],
+                        "conclusion": "success",
+                        "created_at": "2026-10-01T10:00:00Z",
+                        "started_at": "2026-10-01T10:00:10Z",
+                        "completed_at": "2026-10-01T10:02:10Z",
+                    }
+                ])
+            return iter([])
+
+    from repo360.runners.collector import collect_runners_and_metrics
+
+    client = _RetentionClient()
+    failures = []
+    job_records = []
+    cfg = RunnersConfig(lookback_days=90, output_dir=str(tmp_path))
+
+    runners, runner_metrics, org_metrics = collect_runners_and_metrics(
+        client=client,
+        orgs=["test-org"],
+        targets=[("test-org", "test-repo")],
+        since=since,
+        end=now,
+        cfg=cfg,
+        failures=failures,
+        job_records_out=job_records,
+    )
+
+    metric = runner_metrics[("test-org", "GitHub-Hosted (ubuntu-latest)")]
+    assert metric.total_jobs == 2
+    assert metric.total_duration_seconds == 240.0
+    assert metric.total_compute_hours == 0.07
+
+
+
 
 
 

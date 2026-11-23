@@ -276,7 +276,19 @@ def collect_runners_and_metrics(
                     r_completed_at = parse_ts(r_updated_str) if r_updated_str else None
 
                     r_queue_sec = max(0.0, (r_started_at - r_created_at).total_seconds()) if (r_started_at and r_created_at) else None
+                    if r_queue_sec is not None and r_queue_sec > 86400.0:
+                        r_queue_sec = 86400.0
+
                     r_duration_sec = max(0.0, (r_completed_at - r_started_at).total_seconds()) if (r_completed_at and r_started_at) else None
+                    HOSTED_MAX_JOB_SECONDS = 21600.0  # Hard 6h execution timeout on GitHub-hosted runners
+                    tmpl_dur = cached_profile.get("template_duration_sec")
+                    if r_duration_sec is not None and r_duration_sec > HOSTED_MAX_JOB_SECONDS:
+                        if tmpl_dur is not None and 0.0 < tmpl_dur <= HOSTED_MAX_JOB_SECONDS:
+                            r_duration_sec = tmpl_dur
+                        else:
+                            r_duration_sec = HOSTED_MAX_JOB_SECONDS
+                    elif r_duration_sec is None and tmpl_dur is not None:
+                        r_duration_sec = tmpl_dur
                     r_job_end = r_completed_at or r_started_at
 
                     cached_jobs = cached_profile.get("jobs") or [
@@ -292,6 +304,8 @@ def collect_runners_and_metrics(
                         if (r_duration_sec is not None and len(cached_jobs) > 1)
                         else r_duration_sec
                     )
+                    if sub_duration is not None and sub_duration > HOSTED_MAX_JOB_SECONDS:
+                        sub_duration = HOSTED_MAX_JOB_SECONDS
 
                     workflow_name = run_item.get("name") or run_item.get("path") or "Workflow"
                     actor_name = (
@@ -420,6 +434,20 @@ def collect_runners_and_metrics(
                     )
                     if not is_self_hosted and not cfg.include_github_hosted:
                         continue
+                    created_at = parse_ts(job["created_at"]) if job.get("created_at") else None
+                    started_at = parse_ts(job["started_at"]) if job.get("started_at") else None
+                    completed_at = parse_ts(job["completed_at"]) if job.get("completed_at") else None
+
+                    queue_sec = max(0.0, (started_at - created_at).total_seconds()) if (started_at and created_at) else None
+                    if queue_sec is not None and queue_sec > 86400.0:
+                        queue_sec = 86400.0
+
+                    duration_sec = max(0.0, (completed_at - started_at).total_seconds()) if (completed_at and started_at) else None
+                    max_dur = 259200.0 if is_self_hosted else 21600.0
+                    if duration_sec is not None and duration_sec > max_dur:
+                        duration_sec = max_dur
+                    job_end = completed_at or started_at
+
                     if is_self_hosted:
                         has_self_hosted = True
                     else:
@@ -430,15 +458,8 @@ def collect_runners_and_metrics(
                             "pool_name": pool_name,
                             "os": host_os,
                             "arch": host_arch,
+                            "duration_sec": duration_sec,
                         })
-
-                    created_at = parse_ts(job["created_at"]) if job.get("created_at") else None
-                    started_at = parse_ts(job["started_at"]) if job.get("started_at") else None
-                    completed_at = parse_ts(job["completed_at"]) if job.get("completed_at") else None
-
-                    queue_sec = max(0.0, (started_at - created_at).total_seconds()) if (started_at and created_at) else None
-                    duration_sec = max(0.0, (completed_at - started_at).total_seconds()) if (completed_at and started_at) else None
-                    job_end = completed_at or started_at
 
                     if is_self_hosted:
                         matched_name = r_name or f"runner-{r_id}" if r_id else "runner-unknown"
@@ -567,11 +588,14 @@ def collect_runners_and_metrics(
                     if has_self_hosted:
                         wf_runner_cache[wf_key] = {"has_self_hosted": True}
                     else:
+                        valid_tmpl_durs = [j.get("duration_sec") for j in discovered_jobs_template if j.get("duration_sec") is not None]
+                        total_tmpl_dur = sum(valid_tmpl_durs) if valid_tmpl_durs else None
                         wf_runner_cache[wf_key] = {
                             "has_self_hosted": False,
                             "pool_name": primary_hosted_pool,
                             "host_os": primary_hosted_os,
                             "host_arch": primary_hosted_arch,
+                            "template_duration_sec": total_tmpl_dur,
                             "jobs": discovered_jobs_template or [
                                 {
                                     "name": "job",
