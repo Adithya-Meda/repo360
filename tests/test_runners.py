@@ -886,6 +886,65 @@ def test_runners_artifact_retention_purge_duration_protection(tmp_path):
     assert metric.total_compute_hours == 0.07
 
 
+def test_active_repositories_nowrap_and_compact_row_height(tmp_path):
+    """Verify that multiple repositories listed in a cell do not expand row height and preserve full content."""
+    from openpyxl import load_workbook
+    from repo360.runners.reporter import write_runners_workbook
+    from repo360.runners.models import RunnersConfig, RunnerInfo, RunnerJobMetrics, RUNNER_HEADERS, ORG_RUNNER_HEADERS
+    from repo360.runners.collector import build_runner_rows
+
+    many_repos = [f"repo-microservice-{i:03d}" for i in range(100)]
+    repos_str = ", ".join(many_repos)
+
+    runner = RunnerInfo(
+        id=1, name="hosted-linux", os="Linux", status="Hosted", busy=False,
+        labels=("ubuntu-latest",), runner_group_name="GitHub Actions",
+        org="test-org", arch="x64", runner_version="GitHub Managed", ephemeral=True,
+    )
+    metric = RunnerJobMetrics(total_jobs=10, successful_jobs=10)
+    metric.repos_served = set(many_repos)
+
+    runner_rows, org_runner_rows = build_runner_rows(
+        runners=[runner],
+        runner_metrics={("test-org", "hosted-linux"): metric},
+        org_runner_metrics={"test-org": metric},
+        orgs=["test-org"],
+    )
+
+    out_file = tmp_path / "compact_runners.xlsx"
+    write_runners_workbook(
+        out_file,
+        RunnersConfig(output_dir=str(tmp_path)),
+        datetime(2026, 1, 1, tzinfo=timezone.utc),
+        datetime(2026, 11, 23, tzinfo=timezone.utc),
+        runner_rows=runner_rows,
+        org_runner_rows=org_runner_rows,
+        failures=[],
+    )
+
+    wb = load_workbook(out_file)
+    org_ws = wb["Org Runner Summary"]
+    runner_ws = wb["Runner Fleet Detail"]
+
+    org_col = ORG_RUNNER_HEADERS.index("Active Repositories") + 1
+    runner_col = RUNNER_HEADERS.index("Active Repositories") + 1
+
+    # Data row height is locked to 20pt (no massive 400pt scrolling bloat)
+    assert org_ws.row_dimensions[2].height == 20
+    assert runner_ws.row_dimensions[2].height == 20
+
+    # wrap_text is False/None so text stays on one line (not wrapped)
+    assert not org_ws.cell(row=2, column=org_col).alignment.wrap_text
+    assert not runner_ws.cell(row=2, column=runner_col).alignment.wrap_text
+
+    # All 100 repositories are 100% available in the cell value for clicking/formula bar inspection
+    cell_val = str(org_ws.cell(row=2, column=org_col).value)
+    assert "repo-microservice-000" in cell_val
+    assert "repo-microservice-099" in cell_val
+    assert len(cell_val.split(", ")) == 100
+
+
+
 
 
 

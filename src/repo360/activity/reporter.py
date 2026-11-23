@@ -38,6 +38,7 @@ THIN = Side(style="thin", color="BFBFBF")
 BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 CENTER = Alignment(horizontal="center", vertical="center", wrap_text=True)
 LEFT = Alignment(horizontal="left", vertical="center", wrap_text=True)
+LEFT_NOWRAP = Alignment(horizontal="left", vertical="center", wrap_text=False)
 CENTERED_VALUES = frozenset({"Yes", "No", "Unknown", "None", "Complete", "Partial", "N/A", "Online", "Offline", "Idle", "Busy"})
 
 STATUS_STYLES = {
@@ -73,6 +74,14 @@ LEFT_HEADERS = {
     "Operational Guidance",
     "API / Permission Gap Detail",
     "Error / Permission Detail",
+}
+
+NOWRAP_HEADERS = {
+    "Active Repositories",
+    "Affected Repositories",
+    "Repositories Served",
+    "Repos Served",
+    "Repository List",
 }
 
 CENTER_HEADERS = {
@@ -223,7 +232,9 @@ def write_table(
             header = headers[col_idx - 1] if col_idx - 1 < len(headers) else ""
             cell = ws.cell(row=row_idx, column=col_idx, value=safe_cell(value, header))
             val_str = str(value).strip() if value is not None else ""
-            if header in LEFT_HEADERS:
+            if header in NOWRAP_HEADERS:
+                alignment = LEFT_NOWRAP
+            elif header in LEFT_HEADERS:
                 alignment = LEFT
             else:
                 alignment = CENTER
@@ -275,6 +286,8 @@ def finalize_sheet(ws, header_row: int, last_row: int, columns: int, freeze: str
     ws.freeze_panes = freeze
     ws.row_dimensions[header_row].height = 28
     ws.page_setup.orientation = "landscape"
+    for r in range(header_row + 1, last_row + 1):
+        ws.row_dimensions[r].height = 20
     autofit(ws)
 
 
