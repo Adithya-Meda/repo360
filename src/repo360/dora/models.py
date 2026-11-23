@@ -5,7 +5,7 @@ from __future__ import annotations
 import statistics
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..common.timezones import LOCAL_TZ_NAME

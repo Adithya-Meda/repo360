@@ -1409,5 +1409,68 @@ def test_dora_lifetime_count_and_non_prod_environment_transparency():
     assert "excluded based on configured '--prod-envs' filter" in metrics_filtered.flow_advisory
 
 
+def test_all_time_multi_repo_per_repo_cadence_isolation():
+    """Verify that when window_days=0, each repo's cadence divisor is isolated to its own history.
+
+    A 4-year-old repo with 1 deploy must NOT distort a newly-created repo with 20 deploys in 4 weeks.
+    """
+    now = datetime(2026, 11, 23, 12, 0, 0, tzinfo=timezone.utc)
+
+    # Repo A: 1 deploy 4 years ago (May 2022)
+    d_old = DeploymentRecord(
+        event_type="Deployment",
+        event_id="dep-old",
+        name="Deploy old",
+        environment="production",
+        status="SUCCESS",
+        ref="main",
+        created_at=datetime(2022, 5, 10, 10, 0, 0, tzinfo=timezone.utc),
+        lead_time_hours=1.0,
+        commit_sha="sha-old-1",
+    )
+    repo_a = RepoDORAMetrics(
+        org="test-org",
+        repo="legacy-service",
+        deployments=[d_old],
+    )
+
+    # Repo B: 20 deploys in the last 4 weeks (28 days)
+    b_deploys = []
+    for i in range(20):
+        dt = datetime(2026, 10, 26, 10, 0, 0, tzinfo=timezone.utc) + timedelta(days=i)
+        b_deploys.append(
+            DeploymentRecord(
+                event_type="Deployment",
+                event_id=f"dep-new-{i}",
+                name="Deploy new",
+                environment="production",
+                status="SUCCESS",
+                ref="main",
+                created_at=dt,
+                lead_time_hours=2.0,
+                commit_sha=f"sha-new-{i}",
+            )
+        )
+    repo_b = RepoDORAMetrics(
+        org="test-org",
+        repo="active-service",
+        deployments=b_deploys,
+    )
+
+    repo_rows, org_rows, _, _ = build_dora_rows([repo_a, repo_b], ["test-org"], window_days=0)
+
+    row_a = next(r for r in repo_rows if r[1] == "legacy-service")
+    row_b = next(r for r in repo_rows if r[1] == "active-service")
+
+    # Repo A should have Low DF (~0.0/week)
+    assert row_a[6] <= 0.05
+    assert row_a[7] == "Low"
+
+    # Repo B should have High DF (~5.0/week, 20 deploys over 4 weeks), NOT suppressed to Low by Repo A
+    assert row_b[6] >= 4.0
+    assert row_b[7] == "High"
+
+
+
 
 

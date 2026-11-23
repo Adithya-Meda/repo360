@@ -1339,8 +1339,8 @@ def build_dora_rows(
             effective_window_days = 1
 
     for idx, m in enumerate(metrics_list):
-        overall, df_tier, lttc_tier, cfr_tier, mttr_tier = m.get_tiers(effective_window_days)
-        df_weekly = m.deployment_frequency_per_week(effective_window_days)
+        overall, df_tier, lttc_tier, cfr_tier, mttr_tier = m.get_tiers(window_days)
+        df_weekly = m.deployment_frequency_per_week(window_days)
         tier_cache[idx] = (overall, df_tier, lttc_tier, cfr_tier, mttr_tier, df_weekly)
         if m.total_deploys > 0 and ai_engine is not None and not ai_disabled:
             ai_items.append((idx, m, df_weekly, df_tier, lttc_tier, cfr_tier, mttr_tier, overall))
@@ -1551,7 +1551,7 @@ def build_dora_rows(
         total_org_open_incidents = sum(m.open_incidents_count for m in active_repos)
 
         if active_deploy_repos > 0:
-            active_dfs = [m.deployment_frequency_per_week(effective_window_days) for m in active_repos]
+            active_dfs = [m.deployment_frequency_per_week(window_days) for m in active_repos]
             org_df = round(float(statistics.median(active_dfs)), 2)
             org_df_tier = get_df_tier(org_df)
         else:
