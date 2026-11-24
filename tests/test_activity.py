@@ -83,9 +83,10 @@ def test_build_rows_and_org_rows():
 
     assert alice_row[2] == "Low"
     assert alice_row[4] == 1
-    assert alice_row[17] == "Yes"
-    assert alice_row[18] == "backend-team"
-    assert len(alice_row) == 19
+    from repo360.activity.models import USER_HEADERS
+    assert alice_row[USER_HEADERS.index("Org Member")] == "Yes"
+    assert alice_row[USER_HEADERS.index("Teams")] == "backend-team"
+    assert len(alice_row) == len(USER_HEADERS)
 
     assert bob_row[2] == "Inactive"
     assert bob_row[4] == 0
@@ -344,8 +345,9 @@ def test_activity_hardened_dormancy_partial_errors_reviews_and_normalization():
     )
     assert len(u_rows) == 2
     alice_r = next(r for r in u_rows if r[1].lower() == "alice")
-    assert alice_r[17] == "Yes"
-    assert alice_r[18] == "Platform"
+    from repo360.activity.models import USER_HEADERS
+    assert alice_r[USER_HEADERS.index("Org Member")] == "Yes"
+    assert alice_r[USER_HEADERS.index("Teams")] == "Platform"
     o_rows = build_org_rows(u_rows, {("Acme-Org", "svc"): {"Alice": boundary_act}}, all_orgs=["acme-org"])
     assert len(o_rows) == 1
 
@@ -676,6 +678,140 @@ def test_repository_inventory_pr_metrics_breakdown():
     assert top_row[top_headers.index("Closed PRs")] == 12
     assert top_row[top_headers.index("Merged PRs")] == 11
     assert top_row[top_headers.index("Closed (Unmerged) PRs")] == 1
+
+
+def test_repository_inventory_issue_and_comment_breakdown():
+    """Verify issues breakdown (Total=20, Open=15, Closed=5, Active=0) and isolated PR/Issue comments."""
+    from repo360.activity.collector import build_management_tables, collect_repo_events
+    from repo360.activity.models import REPO_INVENTORY_HEADERS, TOP_REPOS_HEADERS, RepositoryReport
+
+    now = datetime(2026, 11, 24, 12, 0, tzinfo=timezone.utc)
+    since = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+
+    # 15 Open issues, 5 Closed issues created before 'since' (no activity in window -> Active=0)
+    # 8 PR conversation comments on /issues/comments
+    # 4 Issue comments on /issues/comments
+    # 0 PR review inline comments on /pulls/comments
+
+    class MockIssueClient:
+        def paginate(self, org, endpoint, params=None):
+            if endpoint.endswith("/commits"):
+                return iter([])
+            if endpoint.endswith("/issues"):
+                return iter([])  # no issues updated in since_param window
+            if endpoint.endswith("/issues/comments"):
+                comments = []
+                for i in range(1, 9):
+                    comments.append({
+                        "id": 100 + i,
+                        "html_url": f"https://github.com/CanarysPlayground/TaskManager-DemoApp/pull/1#issuecomment-{i}",
+                        "created_at": "2026-09-15T10:00:00Z",
+                        "user": {"login": f"reviewer_{i}"},
+                    })
+                for i in range(1, 5):
+                    comments.append({
+                        "id": 200 + i,
+                        "html_url": f"https://github.com/CanarysPlayground/TaskManager-DemoApp/issues/2#issuecomment-{i}",
+                        "created_at": "2026-09-16T10:00:00Z",
+                        "user": {"login": f"user_{i}"},
+                    })
+                return iter(comments)
+            if endpoint.endswith("/pulls/comments"):
+                return iter([])
+            return iter([])
+
+        def graphql(self, org, query, variables=None):
+            return {
+                "data": {
+                    "repository": {
+                        "openIssues": {"totalCount": 15},
+                        "closedIssues": {"totalCount": 5},
+                        "totalIssues": {"totalCount": 20},
+                        "pullRequests": {"pageInfo": {"hasNextPage": False}, "nodes": []},
+                    }
+                }
+            }
+
+    report = RepositoryReport(
+        metadata={
+            "created_at": "2026-01-01T00:00:00Z",
+            "visibility": "private",
+            "archived": False,
+            "default_branch": "main",
+            "has_pull_requests": True,
+            "has_issues": True,
+        },
+        protected="Yes",
+        protected_branches=("main",),
+        activity_complete=True,
+    )
+
+    from repo360.activity.collector import collect_pull_requests_graphql
+
+    events = []
+    def record_fn(author, metric, ts):
+        if ts:
+            events.append((author.get("login") if author else None, metric, datetime.fromisoformat(ts)))
+
+    collect_pull_requests_graphql(
+        client=MockIssueClient(),
+        org="CanarysPlayground",
+        repo="TaskManager-DemoApp",
+        collected_since=since,
+        since=since,
+        end=now,
+        exclude_bots=True,
+        report=report,
+        record_fn=record_fn,
+    )
+
+    assert report.issues_total == 20
+    assert report.issues_open == 15
+    assert report.issues_closed == 5
+
+    users = collect_repo_events(
+        client=MockIssueClient(),
+        org="CanarysPlayground",
+        repo="TaskManager-DemoApp",
+        since=since,
+        exclude_bots=True,
+        end=now,
+        report=report,
+    )
+
+    assert report.issues_active == 0
+
+    tables = build_management_tables(
+        reports={("CanarysPlayground", "TaskManager-DemoApp"): report},
+        members={"CanarysPlayground": set()},
+        since=since,
+        end=now,
+        organization_status={"CanarysPlayground": True},
+    )
+
+    inv_headers, inv_rows = tables["Repository Inventory"]
+    inv_row = inv_rows[0]
+
+    assert inv_row[inv_headers.index("Total Issues")] == 20
+    assert inv_row[inv_headers.index("Open Issues")] == 15
+    assert inv_row[inv_headers.index("Closed Issues")] == 5
+    assert inv_row[inv_headers.index("Active Issues")] == 0
+
+    assert inv_row[inv_headers.index("PR Comments")] == 8
+    assert inv_row[inv_headers.index("Issue Comments")] == 4
+    assert inv_row[inv_headers.index("PR Review Comments")] == 0
+
+    top_headers, top_rows = tables["Top Active Repositories"]
+    top_row = top_rows[0]
+
+    assert top_row[top_headers.index("Total Issues")] == 20
+    assert top_row[top_headers.index("Open Issues")] == 15
+    assert top_row[top_headers.index("Closed Issues")] == 5
+    assert top_row[top_headers.index("Active Issues")] == 0
+    assert top_row[top_headers.index("PR Comments")] == 8
+    assert top_row[top_headers.index("Issue Comments")] == 4
+    assert top_row[top_headers.index("PR Review Comments")] == 0
+
 
 
 

@@ -51,9 +51,10 @@ METRICS = (
     ("prs_opened", "PRs Opened"),
     ("prs_merged", "PRs Merged"),
     ("reviews", "PR Reviews"),
-    ("review_comments", "Review Comments"),
+    ("review_comments", "PR Review Comments"),
+    ("pr_comments", "PR Comments"),
     ("issues_opened", "Issues Opened"),
-    ("issue_comments", "Issue/PR Comments"),
+    ("issue_comments", "Issue Comments"),
 )
 METRIC_KEYS = tuple(k for k, _ in METRICS)
 METRIC_LABELS = tuple(lbl for _, lbl in METRICS)
@@ -65,9 +66,13 @@ REPO_INVENTORY_METRICS = (
     "Merged PRs",
     "Closed (Unmerged) PRs",
     "PR Reviews",
-    "Review Comments",
-    "Issues Opened",
-    "Issue/PR Comments",
+    "PR Comments",
+    "PR Review Comments",
+    "Total Issues",
+    "Open Issues",
+    "Closed Issues",
+    "Active Issues",
+    "Issue Comments",
 )
 STATUSES = ("Active", "Moderate", "Low", "Inactive")
 STATUS_ORDER = {s: i for i, s in enumerate(STATUSES)}
@@ -142,6 +147,7 @@ class Activity:
     prs_merged: int = 0
     reviews: int = 0
     review_comments: int = 0
+    pr_comments: int = 0
     issues_opened: int = 0
     issue_comments: int = 0
     active_days: Set[str] = field(default_factory=set)
@@ -156,6 +162,7 @@ class Activity:
             + self.prs_merged
             + self.reviews
             + self.review_comments
+            + self.pr_comments
             + self.issues_opened
             + self.issue_comments
         )
@@ -202,6 +209,10 @@ class RepositoryReport:
     prs_closed: int = 0
     prs_merged: int = 0
     prs_closed_unmerged: int = 0
+    issues_total: int = 0
+    issues_open: int = 0
+    issues_closed: int = 0
+    issues_active: int = 0
 
 
 @dataclass(frozen=True)

@@ -47,6 +47,15 @@ def collect_pull_requests_graphql(
     query = """
     query($owner: String!, $name: String!, $cursor: String) {
       repository(owner: $owner, name: $name) {
+        openIssues: issues(states: OPEN) {
+          totalCount
+        }
+        closedIssues: issues(states: CLOSED) {
+          totalCount
+        }
+        totalIssues: issues {
+          totalCount
+        }
         pullRequests(first: 50, after: $cursor, orderBy: {field: UPDATED_AT, direction: DESC}) {
           pageInfo {
             hasNextPage
@@ -109,6 +118,19 @@ def collect_pull_requests_graphql(
         repo_data = (data.get("data") or {}).get("repository")
         if not repo_data:
             return False
+
+        if cursor is None and report is not None:
+            open_count = (repo_data.get("openIssues") or {}).get("totalCount")
+            closed_count = (repo_data.get("closedIssues") or {}).get("totalCount")
+            total_count = (repo_data.get("totalIssues") or {}).get("totalCount")
+            if open_count is not None:
+                report.issues_open = open_count
+            if closed_count is not None:
+                report.issues_closed = closed_count
+            if total_count is not None:
+                report.issues_total = total_count
+            elif report.issues_open or report.issues_closed:
+                report.issues_total = report.issues_open + report.issues_closed
 
         prs = (repo_data.get("pullRequests") or {}).get("nodes") or []
         for pr in prs:
@@ -317,7 +339,29 @@ def collect_repo_events(
         try:
             for issue in client.paginate(org, f"{base}/issues", {"state": "all", **since_param}):
                 if "pull_request" not in issue:
-                    record(issue.get("user"), "issues_opened", issue.get("created_at"))
+                    created_at = issue.get("created_at")
+                    updated_at = issue.get("updated_at")
+                    closed_at = issue.get("closed_at")
+                    created_ts = parse_ts(created_at) if created_at else None
+                    updated_ts = parse_ts(updated_at) if updated_at else None
+                    closed_ts = parse_ts(closed_at) if closed_at else None
+                    is_active = (
+                        (created_ts and since <= created_ts <= end)
+                        or (closed_ts and since <= closed_ts <= end)
+                        or (updated_ts and since <= updated_ts <= end)
+                    )
+                    if is_active and report is not None:
+                        report.issues_active += 1
+
+                    record(issue.get("user"), "issues_opened", created_at)
+
+                    if report is not None and report.issues_total == 0 and report.issues_open == 0:
+                        st = str(issue.get("state") or "").lower()
+                        if st == "open":
+                            report.issues_open += 1
+                        elif st == "closed":
+                            report.issues_closed += 1
+                        report.issues_total += 1
         except Exception as exc:
             issues_accessible = False
             if report:
@@ -326,7 +370,10 @@ def collect_repo_events(
         if issues_accessible:
             try:
                 for comment in client.paginate(org, f"{base}/issues/comments", since_param):
-                    record(comment.get("user"), "issue_comments", comment.get("created_at"))
+                    html_url = comment.get("html_url") or ""
+                    is_pr = "/pull/" in html_url
+                    metric = "pr_comments" if is_pr else "issue_comments"
+                    record(comment.get("user"), metric, comment.get("created_at"))
             except Exception as exc:
                 if report:
                     report.errors.append(_format_error("Issue Comments", exc))
@@ -589,8 +636,7 @@ def build_rows(
             repos_by_user[(org_k, lk)].add(repo.casefold())
             repo_rows.append([
                 disp_org, repo, disp_login, act.total(),
-                act.commits, act.prs_opened, act.prs_merged, act.reviews,
-                act.review_comments, act.issues_opened, act.issue_comments,
+                *(getattr(act, k) for k in METRIC_KEYS),
                 len(act.active_days), fmt_timestamp(act.last_active),
             ])
 
@@ -622,13 +668,7 @@ def build_rows(
             classify(active_days_count, cfg),
             active_days_count,
             act.total(),
-            act.commits,
-            act.prs_opened,
-            act.prs_merged,
-            act.reviews,
-            act.review_comments,
-            act.issues_opened,
-            act.issue_comments,
+            *(getattr(act, k) for k in METRIC_KEYS),
             avg_commits,
             len(repos_by_user.get((org_k, lk), ())),
             fmt_timestamp(act.first_active),
@@ -753,6 +793,23 @@ def build_management_tables(
             prs_closed_unm = 0
             prs_open = max(0, prs_total - prs_closed)
 
+        has_issue_breakdown = (
+            result.issues_total > 0
+            or result.issues_open > 0
+            or result.issues_closed > 0
+            or result.issues_active > 0
+        )
+        if has_issue_breakdown:
+            iss_total = result.issues_total
+            iss_open = result.issues_open
+            iss_closed = result.issues_closed
+            iss_active = result.issues_active
+        else:
+            iss_total = counts["issues_opened"]
+            iss_open = counts["issues_opened"]
+            iss_closed = 0
+            iss_active = counts["issues_opened"]
+
         metric_map = {
             "Commits": counts["commits"],
             "Total PRs": prs_total,
@@ -761,9 +818,13 @@ def build_management_tables(
             "Merged PRs": prs_merged,
             "Closed (Unmerged) PRs": prs_closed_unm,
             "PR Reviews": counts["reviews"],
-            "Review Comments": counts["review_comments"],
-            "Issues Opened": counts["issues_opened"],
-            "Issue/PR Comments": counts["issue_comments"],
+            "PR Comments": counts["pr_comments"],
+            "PR Review Comments": counts["review_comments"],
+            "Total Issues": iss_total,
+            "Open Issues": iss_open,
+            "Closed Issues": iss_closed,
+            "Active Issues": iss_active,
+            "Issue Comments": counts["issue_comments"],
         }
         metric_values = [metric_map[metric] if activity_available else "N/A" for metric in REPO_INVENTORY_METRICS]
         merge_rate = round(result.cohort_merged / result.cohort_opened * 100, 2) if result.cohort_opened else "N/A"
