@@ -80,21 +80,25 @@ def build_finops_ai_recommendations(
     # 2. Actions Caches
     cache_mb_idx = FINOPS_REPO_HEADERS.index("Cache Storage (MB)") if "Cache Storage (MB)" in FINOPS_REPO_HEADERS else 9
     total_cache_mb = sum(r[cache_mb_idx] for r in repo_rows if len(r) > cache_mb_idx and isinstance(r[cache_mb_idx], (int, float)))
-    if total_cache_mb > 1024 or len(cache_rows) > 20:
+    actions_caches_count = sum(1 for r in cache_rows if len(r) > 2 and r[2] == "Actions Cache")
+    if not actions_caches_count and cache_rows and not any(len(r) > 2 and r[2] in ("Git LFS Object", "Release Asset") for r in cache_rows):
+        actions_caches_count = len(cache_rows)
+
+    if total_cache_mb > 1024 or actions_caches_count > 20:
         rows.append([
             "Medium",
             "Cache Hygiene",
-            f"{len(cache_rows)} Actions Caches",
+            f"{actions_caches_count} Actions Caches",
             f"Actions caches consume {total_cache_mb:.1f} MB across repositories.",
             "Purge stale branch caches older than 7 days using GitHub CLI (`gh-actions-cache`) and standardize cache key prefixes.",
             "Keeps cache storage well beneath the 10 GB per-repository GitHub limit and speeds up dependency restoration.",
         ])
-    elif cache_rows:
+    elif actions_caches_count:
         rows.append([
             "Low",
             "Cache Hygiene",
             "Actions Caches",
-            f"Actions cache footprint is well-managed ({total_cache_mb:.1f} MB across {len(cache_rows)} caches).",
+            f"Actions cache footprint is well-managed ({total_cache_mb:.1f} MB across {actions_caches_count} caches).",
             "Maintain current cache eviction cadences and scope keys to package lockfiles.",
             "Ensures fast CI dependency cache hits without approaching storage limits.",
         ])

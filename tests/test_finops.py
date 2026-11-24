@@ -676,3 +676,53 @@ def test_finops_ai_recommendations_sheet(tmp_path):
     assert ai_ws.row_dimensions[2].height == 36
     assert ai_ws.cell(row=2, column=1).value in ("High", "Medium", "Low", "Optimization")
 
+
+def test_finops_billing_period_and_cache_hygiene_scope(tmp_path):
+    """Verify period format is MM-YYYY and cache hygiene recommendation isolates Actions Caches."""
+    from repo360.finops.collector import collect_org_billing, build_billing_rows
+    from repo360.finops.reporter import build_finops_ai_recommendations
+
+    mock_client = MagicMock()
+    mock_client.get.return_value = {
+        "timePeriod": {"year": 2026, "month": 11},
+        "usageItems": [
+            {
+                "product": "Actions",
+                "sku": "actions_linux",
+                "grossQuantity": 100.0,
+                "grossAmount": 0.8,
+                "discountAmount": 0.8,
+                "netAmount": 0.0,
+                "unitType": "minutes",
+            }
+        ],
+    }
+
+    summary = collect_org_billing(mock_client, "TestOrg")
+    assert summary.period == "11-2026"
+
+    bill_rows = build_billing_rows({"TestOrg": summary})
+    assert len(bill_rows) >= 1
+    assert bill_rows[0][2] == "11-2026"
+
+    # Mixed cache_package_rows: 25 Actions Caches, 50 LFS Objects
+    mixed_cp_rows = [
+        ["TestOrg", "repo-a", "Actions Cache", "cache-key-1", 10.0, "2026-11-20", "2026-11-24", "details"]
+        for _ in range(25)
+    ] + [
+        ["TestOrg", "repo-b", "Git LFS Object", "lfs-oid-1", 50.0, "2026-11-20", "2026-11-24", "details"]
+        for _ in range(50)
+    ]
+    repo_rows = [["TestOrg", "repo-a", "private", 10.0, 0, 0.0, 0, 30, 25, 250.0, 0, 0.0, 0.0, 260.0, "Low Waste", "Rec"]]
+    
+    ai_recs = build_finops_ai_recommendations(
+        repo_rows=repo_rows,
+        artifact_rows=[],
+        cache_rows=mixed_cp_rows,
+        org_billing={"TestOrg": summary},
+    )
+    cache_rec = next(r for r in ai_recs if r[1] == "Cache Hygiene")
+    assert cache_rec[2] == "25 Actions Caches"
+    assert "25 Actions Caches" in cache_rec[2]
+
+

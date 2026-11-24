@@ -725,7 +725,7 @@ def collect_org_billing(
         if isinstance(sum_data, dict):
             tp = sum_data.get("timePeriod") or {}
             if tp.get("year") and tp.get("month"):
-                summary.period = f"{tp['year']}-{int(tp['month']):02d}"
+                summary.period = f"{int(tp['month']):02d}-{tp['year']}"
             for it in sum_data.get("usageItems") or []:
                 if not isinstance(it, dict):
                     continue
