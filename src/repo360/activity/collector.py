@@ -9,9 +9,10 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote
 
 from ..common.client import ResilientGitHubClient
-from ..common.concurrency import map_concurrent
+from ..common.concurrency import is_ai_live, map_concurrent
 from ..common.timezones import fmt_timestamp, parse_ts
 from .models import (
+    AI_REC_HEADERS,
     LOCAL_TZ,
     LOCAL_TZ_NAME,
     METRIC_KEYS,
@@ -1228,5 +1229,182 @@ def build_management_tables(
 
     tables["Management KPIs"] = (MGMT_KPI_HEADERS, kpis)
     return tables
+
+
+def build_ai_recommendations(
+    user_rows: List[list],
+    org_rows: List[list],
+    management_tables: Optional[Dict[str, Tuple[Tuple[str, ...], List[list]]]] = None,
+    ai_engine: Optional[Any] = None,
+) -> List[list]:
+    """Compile prioritized, structured engineering recommendations for the AI sheet."""
+    rows: List[list] = []
+    org_names = ", ".join(str(r[0]) for r in org_rows) if org_rows else "Monitored Fleet"
+    inv_headers, inv_rows = management_tables.get("Repository Inventory", ((), [])) if management_tables else ((), [])
+
+    total_contributors = len(user_rows)
+    active_contributors = sum(1 for r in user_rows if len(r) > TOTAL_IDX and r[TOTAL_IDX] > 0)
+    total_activities = sum(r[TOTAL_IDX] for r in user_rows if len(r) > TOTAL_IDX)
+    total_commits = sum(r[TOTAL_IDX + 1] for r in user_rows if len(r) > TOTAL_IDX + 1)
+    prs_opened = sum(r[TOTAL_IDX + 2] for r in user_rows if len(r) > TOTAL_IDX + 2)
+    prs_merged = sum(r[TOTAL_IDX + 3] for r in user_rows if len(r) > TOTAL_IDX + 3)
+
+    if ai_engine and is_ai_live(ai_engine):
+        cadence_advisory = ai_engine.generate_activity_insights(
+            org_name=org_names,
+            total_contributors=total_contributors,
+            active_contributors=active_contributors,
+            total_activities=total_activities,
+            total_commits=total_commits,
+            prs_opened=prs_opened,
+            prs_merged=prs_merged,
+        )
+    else:
+        cadence_advisory = (
+            f"Engineering cadence across {org_names}: {active_contributors} active contributors ({total_activities:,} actions, {prs_merged:,} PRs merged). Maintain balanced code review assignments to prevent reviewer fatigue."
+        )
+
+    rows.append([
+        "High" if active_contributors < total_contributors * 0.3 and total_contributors > 5 else "Medium",
+        "Cadence & Delivery",
+        f"{org_names} Fleet",
+        f"{active_contributors} of {total_contributors} contributors active; {total_commits:,} commits and {prs_merged:,} merged PRs recorded.",
+        cadence_advisory,
+        "Maintains predictable release cadence and prevents reviewer fatigue on critical paths.",
+    ])
+
+    inactive_users = [r[1] for r in user_rows if len(r) > STATUS_IDX and r[STATUS_IDX] == "Inactive"]
+    if inactive_users:
+        sample_str = ", ".join(str(u) for u in inactive_users[:3])
+        more = f" (+{len(inactive_users) - 3} more)" if len(inactive_users) > 3 else ""
+        rows.append([
+            "Optimization" if len(inactive_users) < 10 else "High",
+            "Seat Optimization",
+            f"{len(inactive_users)} Inactive Member(s)",
+            f"{len(inactive_users)} onboarded member(s) recorded zero contributions ({sample_str}{more}).",
+            "Audit seat allocation; reclaim unused GitHub Enterprise licenses or transition dormant users to outside collaborators.",
+            "Reduces annual enterprise licensing expenditure and eliminates orphaned identity attack surface.",
+        ])
+
+    if inv_rows and "Protected Branches" in inv_headers:
+        prot_idx = inv_headers.index("Protected Branches")
+        repo_idx = inv_headers.index("Repository") if "Repository" in inv_headers else 1
+        tot_act_idx = inv_headers.index("Total Activities") if "Total Activities" in inv_headers else -1
+
+        unprotected = [
+            str(r[repo_idx]) for r in inv_rows
+            if str(r[prot_idx]).strip() in ("None", "No", "")
+            and (tot_act_idx < 0 or (isinstance(r[tot_act_idx], int) and r[tot_act_idx] > 0))
+        ]
+        if unprotected:
+            sample_str = ", ".join(unprotected[:3])
+            more = f" (+{len(unprotected) - 3} more)" if len(unprotected) > 3 else ""
+            rows.append([
+                "High",
+                "Branch Protection",
+                f"{len(unprotected)} Active Repositories",
+                f"{len(unprotected)} active repositories lack branch protection on default branch ({sample_str}{more}).",
+                "Apply branch rulesets requiring at least 1 pull request review approval and passing CI status checks before merge.",
+                "Prevents unreviewed code modifications and eliminates direct pushes that could destabilize production branches.",
+            ])
+        else:
+            rows.append([
+                "Low",
+                "Branch Protection",
+                "Monitored Repositories",
+                "All active repositories enforce branch protection on their default branch.",
+                "Maintain current branch policies and periodically audit ruleset bypass permissions.",
+                "Ensures continuous compliance with organizational change control standards.",
+            ])
+
+    if inv_rows and "CODEOWNERS Present" in inv_headers:
+        codeowner_idx = inv_headers.index("CODEOWNERS Present")
+        repo_idx = inv_headers.index("Repository") if "Repository" in inv_headers else 1
+        tot_act_idx = inv_headers.index("Total Activities") if "Total Activities" in inv_headers else -1
+
+        no_codeowners = [
+            str(r[repo_idx]) for r in inv_rows
+            if str(r[codeowner_idx]).strip() in ("No", "")
+            and (tot_act_idx < 0 or (isinstance(r[tot_act_idx], int) and r[tot_act_idx] > 0))
+        ]
+        if no_codeowners:
+            sample_str = ", ".join(no_codeowners[:3])
+            more = f" (+{len(no_codeowners) - 3} more)" if len(no_codeowners) > 3 else ""
+            rows.append([
+                "Medium",
+                "Review Governance",
+                f"{len(no_codeowners)} Active Repositories",
+                f"{len(no_codeowners)} active repositories lack a recognized CODEOWNERS configuration ({sample_str}{more}).",
+                "Add .github/CODEOWNERS to automate reviewer routing and map explicit team ownership across services.",
+                "Eliminates pull request review assignment delays and removes single-maintainer bottlenecks.",
+            ])
+
+    if inv_rows and "Avg First Review Hours" in inv_headers:
+        rev_hours_idx = inv_headers.index("Avg First Review Hours")
+        repo_idx = inv_headers.index("Repository") if "Repository" in inv_headers else 1
+        slow_reviews = [
+            (str(r[repo_idx]), float(r[rev_hours_idx])) for r in inv_rows
+            if isinstance(r[rev_hours_idx], (int, float)) and r[rev_hours_idx] > 24
+        ]
+        open_prs_idx = inv_headers.index("Open PRs") if "Open PRs" in inv_headers else -1
+        total_open_prs = sum(r[open_prs_idx] for r in inv_rows if open_prs_idx >= 0 and isinstance(r[open_prs_idx], int))
+
+        if slow_reviews:
+            slow_reviews.sort(key=lambda x: -x[1])
+            sample_str = ", ".join(f"{name} ({hrs:.1f}h)" for name, hrs in slow_reviews[:3])
+            rows.append([
+                "High" if any(hrs > 48 for _, hrs in slow_reviews) else "Medium",
+                "Review Turnaround",
+                f"{len(slow_reviews)} High-Latency Repos",
+                f"First review turnaround exceeds 24 hours on {len(slow_reviews)} repositories ({sample_str}).",
+                "Adopt team review SLAs (<24h) and configure GitHub review auto-assignment to distribute review workload.",
+                "Shortens cycle time from PR creation to merge, accelerating overall feature delivery.",
+            ])
+        elif total_open_prs > 0:
+            rows.append([
+                "Low",
+                "PR Velocity",
+                f"{total_open_prs} Open Pull Requests",
+                f"{total_open_prs} pull requests currently open across monitored fleet with healthy turnaround times.",
+                "Maintain current review cadences and ensure stale draft pull requests are audited periodically.",
+                "Maintains high engineering throughput with balanced reviewer assignments.",
+            ])
+
+    if inv_rows and "Open Issues" in inv_headers:
+        open_iss_idx = inv_headers.index("Open Issues")
+        closed_iss_idx = inv_headers.index("Closed Issues") if "Closed Issues" in inv_headers else -1
+        tot_open = sum(r[open_iss_idx] for r in inv_rows if isinstance(r[open_iss_idx], int))
+        tot_closed = sum(r[closed_iss_idx] for r in inv_rows if closed_iss_idx >= 0 and isinstance(r[closed_iss_idx], int))
+
+        if tot_open > 50:
+            rows.append([
+                "Medium",
+                "Issue Backlog",
+                f"{tot_open} Open Issues",
+                f"Significant open issue backlog volume ({tot_open:,} open vs {tot_closed:,} closed).",
+                "Schedule bi-weekly backlog grooming and deploy GitHub Actions workflows to auto-label and triage stale issues.",
+                "Focuses engineering bandwidth on active roadmap priorities and prevents issue tracker debt.",
+            ])
+
+    if inv_rows and "Total Activities" in inv_headers:
+        tot_act_idx = inv_headers.index("Total Activities")
+        repo_idx = inv_headers.index("Repository") if "Repository" in inv_headers else 1
+        dormant = [
+            str(r[repo_idx]) for r in inv_rows
+            if r[tot_act_idx] == 0 or r[tot_act_idx] == "0"
+        ]
+        if dormant:
+            sample_str = ", ".join(dormant[:3])
+            more = f" (+{len(dormant) - 3} more)" if len(dormant) > 3 else ""
+            rows.append([
+                "Low",
+                "Repository Hygiene",
+                f"{len(dormant)} Inactive Repositories",
+                f"{len(dormant)} repositories had zero commit or PR activity during the reporting window ({sample_str}{more}).",
+                "Archive abandoned or read-only repositories to reduce attack surface and declutter organization inventory.",
+                "Improves audit compliance and prevents developers from inadvertently building on legacy codebases.",
+            ])
+
+    return rows
 
 

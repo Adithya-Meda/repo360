@@ -33,6 +33,7 @@ __all__ = [
     "ORG_HEADERS",
     "REPO_INVENTORY_HEADERS",
     "TOP_REPOS_HEADERS",
+    "AI_REC_HEADERS",
     "Activity",
     "ActivityConfig",
     "RepositoryReport",
@@ -126,6 +127,7 @@ TOP_REPOS_HEADERS = (
 )
 
 MGMT_KPI_HEADERS = ("Scope", "Category", "Metric", "Value", "What this means")
+AI_REC_HEADERS = ("Priority", "Category", "Scope", "Finding", "Recommended Action", "Expected Impact")
 
 
 def is_bot(user: Dict[str, Any]) -> bool:

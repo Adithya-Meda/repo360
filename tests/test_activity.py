@@ -1114,6 +1114,128 @@ def test_include_forks_and_external_when_explicitly_enabled(tmp_path):
     assert "cbeams" in user_logins
 
 
+def test_ai_recommendations_sheet_and_cell_fitting(tmp_path):
+    """Verify that the dedicated 'AI Recommendations' sheet is written with clean, fitted cells and proper styling."""
+    from openpyxl import load_workbook
+    from repo360.activity.collector import build_ai_recommendations, build_management_tables, build_rows
+    from repo360.activity.models import AI_REC_HEADERS, Activity, ActivityConfig, RepositoryReport
+    from repo360.activity.reporter import write_activity_workbook
+
+    now = datetime(2026, 11, 24, 12, 0, tzinfo=timezone.utc)
+    since = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+
+    # 1 active user, 1 inactive user
+    act_alice = Activity()
+    act_alice.add("commits", now)
+    act_alice.add("prs_opened", now)
+
+    user_rows, repo_rows = build_rows(
+        results={("test-org", "service-x"): {"alice": act_alice}},
+        members={"test-org": {"alice", "dormant-dev"}},
+        cfg=ActivityConfig(include_inactive_members=True),
+        end=now,
+        teams_by_user={},
+        org_team_complete={"test-org": True},
+    )
+
+    # 1 protected repo, 1 unprotected repo
+    rep_safe = RepositoryReport(
+        metadata={"created_at": "2026-01-01T00:00:00Z", "visibility": "private", "default_branch": "main"},
+        protected="Yes",
+        protected_branches=("main",),
+        codeowners="Yes",
+        activity_complete=True,
+    )
+    rep_risk = RepositoryReport(
+        metadata={"created_at": "2026-01-01T00:00:00Z", "visibility": "public", "default_branch": "main"},
+        protected="No",
+        protected_branches=(),
+        codeowners="No",
+        activity_complete=True,
+        events=[("alice", "commits", now)],
+    )
+
+    reports = {
+        ("test-org", "safe-repo"): rep_safe,
+        ("test-org", "risk-repo"): rep_risk,
+    }
+    mgmt_tables = build_management_tables(
+        reports=reports,
+        members={"test-org": {"alice", "dormant-dev"}},
+        since=since,
+        end=now,
+        organization_status={"test-org": True},
+        cfg=ActivityConfig(),
+    )
+
+    ai_rows = build_ai_recommendations(
+        user_rows=user_rows,
+        org_rows=[["test-org", 2, 1, 1, 0, 0, 1, 2]],
+        management_tables=mgmt_tables,
+    )
+
+    assert len(ai_rows) >= 3
+    # Verify categories present
+    categories = {r[1] for r in ai_rows}
+    assert "Seat Optimization" in categories
+    assert "Branch Protection" in categories
+    assert "Review Governance" in categories
+
+    xlsx_path = tmp_path / "activity_with_ai_sheet.xlsx"
+    write_activity_workbook(
+        path=xlsx_path,
+        cfg=ActivityConfig(output_dir=str(tmp_path)),
+        since=since,
+        end=now,
+        user_rows=user_rows,
+        repo_rows=repo_rows,
+        org_rows=[["test-org", 2, 1, 1, 0, 0, 1, 2]],
+        failures=[],
+        repos_scanned=2,
+        management_tables=mgmt_tables,
+        execution_duration=1.8,
+    )
+
+    wb = load_workbook(xlsx_path)
+    sheet_names = wb.sheetnames
+    assert "AI Recommendations" in sheet_names
+    # Placed right after Executive Summary
+    assert sheet_names[1] == "AI Recommendations"
+
+    ai_ws = wb["AI Recommendations"]
+    headers = [ai_ws.cell(row=1, column=c).value for c in range(1, len(AI_REC_HEADERS) + 1)]
+    assert tuple(headers) == AI_REC_HEADERS
+
+    # Verify column widths are properly fitted
+    assert ai_ws.column_dimensions["A"].width == 15  # Priority
+    assert ai_ws.column_dimensions["B"].width == 24  # Category
+    assert ai_ws.column_dimensions["C"].width == 28  # Scope
+    assert ai_ws.column_dimensions["D"].width == 48  # Finding
+    assert ai_ws.column_dimensions["E"].width == 64  # Recommended Action
+    assert ai_ws.column_dimensions["F"].width == 48  # Expected Impact
+
+    # Verify data row heights are comfortable (36) to prevent clipping
+    assert ai_ws.row_dimensions[2].height == 36
+
+    # Verify text alignments and formatting
+    assert ai_ws.cell(row=2, column=1).alignment.horizontal == "center"
+    assert ai_ws.cell(row=2, column=4).alignment.wrap_text is True
+    assert ai_ws.cell(row=2, column=5).alignment.wrap_text is True
+
+    # Verify Priority badge colors are applied
+    for r in range(2, len(ai_rows) + 2):
+        prio_val = ai_ws.cell(row=r, column=1).value
+        assert prio_val in ("High", "Medium", "Low", "Optimization")
+        fill_color = ai_ws.cell(row=r, column=1).fill.fgColor.rgb
+        assert fill_color is not None
+        # Check text length is clean and short (under 300 characters per cell)
+        finding = ai_ws.cell(row=r, column=4).value
+        action = ai_ws.cell(row=r, column=5).value
+        assert len(finding) < 300
+        assert len(action) < 300
+
+
+
 
 
 

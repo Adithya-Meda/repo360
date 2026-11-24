@@ -16,6 +16,7 @@ from openpyxl.utils import get_column_letter
 
 from ..common.concurrency import AI_NOT_ENABLED_MESSAGE, is_ai_disabled, is_ai_live
 from .models import (
+    AI_REC_HEADERS,
     DATE_FMT,
     LOCAL_TZ,
     LOCAL_TZ_NAME,
@@ -61,6 +62,13 @@ STATUS_STYLE_OBJECTS = {
     for status, (fill, font) in STATUS_STYLES.items()
 }
 
+PRIORITY_STYLES = {
+    "High": ("FFC7CE", "9C0006"),
+    "Medium": ("FFEB9C", "9C5700"),
+    "Low": ("C6EFCE", "006100"),
+    "Optimization": ("D9E1F2", "1F4E78"),
+}
+
 LEFT_HEADERS = {
     "Metric",
     "Scope",
@@ -69,6 +77,9 @@ LEFT_HEADERS = {
     "Issue Description",
     "Target Item",
     "What this means",
+    "Finding",
+    "Recommended Action",
+    "Expected Impact",
     "AI Flow Diagnostic & Advisory",
     "AI Strategic Flow Diagnostic & Advisory",
     "Methodology & Compliance Scope",
@@ -466,6 +477,13 @@ def write_activity_workbook(
     summary.cell(curr_row, 1, safe_cell(advisory_text))
     summary.cell(curr_row, 1).font = Font(name="Calibri", size=10, italic=True)
     summary.row_dimensions[curr_row].height = 28
+    curr_row += 1
+    summary.cell(
+        curr_row,
+        1,
+        "See dedicated 'AI Recommendations' sheet for actionable engineering governance, review velocity, and seat optimization advisories.",
+    )
+    summary.cell(curr_row, 1).font = Font(name="Calibri", size=9, bold=True, color=NAVY)
     curr_row += 2
 
     curr_row = section_title(summary, curr_row, "Organization Governance & Activity Overview")
@@ -486,6 +504,44 @@ def write_activity_workbook(
 
     autofit(summary, skip_rows=2)
     summary.sheet_view.showGridLines = False
+
+    from .collector import build_ai_recommendations
+
+    ai_rows = build_ai_recommendations(
+        user_rows=user_rows,
+        org_rows=org_rows,
+        management_tables=management_tables,
+        ai_engine=ai_engine,
+    )
+
+    ai_ws = wb.create_sheet("AI Recommendations")
+    last_ai = write_table(ai_ws, 1, AI_REC_HEADERS, ai_rows)
+    finalize_sheet(ai_ws, 1, last_ai, len(AI_REC_HEADERS), "C2")
+    ai_ws.sheet_view.showGridLines = False
+
+    prio_col_idx = AI_REC_HEADERS.index("Priority") + 1
+    for r_idx in range(2, last_ai + 1):
+        cell = ai_ws.cell(row=r_idx, column=prio_col_idx)
+        prio_val = str(cell.value).strip()
+        if prio_val in PRIORITY_STYLES:
+            fill_c, font_c = PRIORITY_STYLES[prio_val]
+            cell.fill = PatternFill("solid", fgColor=fill_c)
+            cell.font = Font(bold=True, color=font_c)
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+        ai_ws.row_dimensions[r_idx].height = 36
+
+    col_widths = {
+        "Priority": 15,
+        "Category": 24,
+        "Scope": 28,
+        "Finding": 48,
+        "Recommended Action": 64,
+        "Expected Impact": 48,
+    }
+    for h_name, w in col_widths.items():
+        if h_name in AI_REC_HEADERS:
+            c_letter = get_column_letter(AI_REC_HEADERS.index(h_name) + 1)
+            ai_ws.column_dimensions[c_letter].width = w
 
     users_ws = wb.create_sheet("User Activity")
     last = write_table(users_ws, 1, USER_HEADERS, user_rows, status_col=STATUS_IDX, bar_col=TOTAL_IDX)
