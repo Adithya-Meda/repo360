@@ -242,7 +242,11 @@ def collect_repo_events(
     end = end or datetime.now(timezone.utc)
     month_start = end.astimezone(LOCAL_TZ).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     collected_since = min(since, end - timedelta(days=30), month_start) if report else since
-    since_param = {"since": collected_since.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+    since_param = (
+        {"since": collected_since.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+        if collected_since.year > 1970
+        else {}
+    )
 
     def record(user: Optional[Dict[str, Any]], metric: str, timestamp: Optional[str]) -> None:
         if not timestamp or (user and exclude_bots and is_bot(user)):

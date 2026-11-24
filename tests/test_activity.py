@@ -827,5 +827,51 @@ def test_repository_inventory_issue_and_comment_breakdown():
     assert top_row[top_headers.index("PR Review Comments")] == 0
 
 
+def test_collect_repo_events_full_history_omits_epoch_since():
+    """Verify that when since is 1970 (Full History), since_param omits 'since' so GitHub REST API does not return empty issues."""
+    from repo360.activity.collector import collect_repo_events
+    from repo360.activity.models import RepositoryReport
+
+    now = datetime(2026, 11, 24, 12, 0, tzinfo=timezone.utc)
+    epoch_since = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+    calls = []
+
+    class MockClient:
+        def paginate(self, org, endpoint, params=None):
+            calls.append((endpoint, params))
+            if endpoint.endswith("/issues"):
+                return iter([{
+                    "id": 1,
+                    "created_at": "2024-05-10T10:00:00Z",
+                    "updated_at": "2024-05-10T10:00:00Z",
+                    "closed_at": None,
+                    "state": "open",
+                    "user": {"login": "alice"},
+                }])
+            return iter([])
+
+        def graphql(self, org, query, variables=None):
+            return {}
+
+    report = RepositoryReport(metadata={"has_pull_requests": False, "has_issues": True})
+    act = collect_repo_events(
+        client=MockClient(),
+        org="demo-org",
+        repo="demo-repo",
+        since=epoch_since,
+        exclude_bots=True,
+        end=now,
+        report=report,
+    )
+
+    issue_call = next(c for c in calls if c[0].endswith("/issues"))
+    assert "since" not in issue_call[1]
+    assert report.issues_active == 1
+    assert "alice" in act
+    assert act["alice"].issues_opened == 1
+
+
+
 
 
