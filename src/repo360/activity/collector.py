@@ -852,6 +852,7 @@ def build_management_tables(
         is_new_repo = bool(created_dt and (end - created_dt) <= timedelta(days=180))
         repo_age = "New" if is_new_repo else ("Old" if created_dt else "Unknown")
         archived = "Yes" if meta.get("archived") else "No"
+        fork = "Yes" if meta.get("fork") else "No"
         default_branch = meta.get("default_branch", "")
 
         if result.protected == "Yes":
@@ -936,6 +937,7 @@ def build_management_tables(
             created_str,
             repo_age,
             archived,
+            fork,
             default_branch,
             protected_branches_str,
             result.codeowners,
@@ -1101,6 +1103,18 @@ def build_management_tables(
                 ),
                 f"Selected repositories currently set to {visibility} visibility.",
             )
+        add(
+            "Repository Landscape",
+            "Forked repositories",
+            sum(bool(item.metadata and item.metadata.get("fork")) for item in selected),
+            "Repositories in selected scope that are forks of upstream repositories.",
+        )
+        add(
+            "Repository Landscape",
+            "Archived repositories",
+            sum(bool(item.metadata and item.metadata.get("archived")) for item in selected),
+            "Repositories in selected scope that are archived.",
+        )
         add(
             "Repository Landscape",
             "Total issues tracked",

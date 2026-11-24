@@ -101,6 +101,7 @@ REPO_INVENTORY_HEADERS = (
     f"Created ({LOCAL_TZ_NAME})",
     "Repository Age",
     "Archived",
+    "Fork",
     "Default Branch",
     "Protected Branches",
     "CODEOWNERS Present",

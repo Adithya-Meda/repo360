@@ -256,14 +256,17 @@ def test_build_management_tables_and_sheets(tmp_path):
     inv_headers, inv_rows = tables["Repository Inventory"]
     assert inv_headers == REPO_INVENTORY_HEADERS
     assert len(inv_rows) == 2
-    assert inv_rows[0][0] == "test-org"
-    assert inv_rows[0][1] == "repo-active"
-    assert inv_rows[0][2] == "private"
-    assert inv_rows[0][4] == "New"
-    assert inv_rows[0][7] == "main"
-    assert inv_rows[0][8] == "Yes"
-    assert inv_rows[0][11] == 3
-    assert inv_rows[0][12] == 2
+    assert inv_rows[0][inv_headers.index("Organization")] == "test-org"
+    assert inv_rows[0][inv_headers.index("Repository")] == "repo-active"
+    assert inv_rows[0][inv_headers.index("Visibility")] == "private"
+    assert inv_rows[0][inv_headers.index("Repository Age")] == "New"
+    assert inv_rows[0][inv_headers.index("Archived")] == "No"
+    assert inv_rows[0][inv_headers.index("Fork")] == "No"
+    assert inv_rows[0][inv_headers.index("Default Branch")] == "main"
+    assert inv_rows[0][inv_headers.index("Protected Branches")] == "main"
+    assert inv_rows[0][inv_headers.index("CODEOWNERS Present")] == "Yes"
+    assert inv_rows[0][inv_headers.index("Total Activities")] == 3
+    assert inv_rows[0][inv_headers.index("Active Contributors")] == 2
     assert inv_rows[0][inv_headers.index("Total PRs")] == 1
     assert inv_rows[0][inv_headers.index("Open PRs")] == 1
     assert inv_rows[0][inv_headers.index("Closed PRs")] == 0
@@ -296,6 +299,8 @@ def test_build_management_tables_and_sheets(tmp_path):
     assert "Total issues tracked" in kpi_metric_names
     assert "Pull request discussion comments" in kpi_metric_names
     assert "Issue discussion comments" in kpi_metric_names
+    assert "Forked repositories" in kpi_metric_names
+    assert "Archived repositories" in kpi_metric_names
 
     cfg = ActivityConfig(output_dir=str(tmp_path))
     xlsx_path = tmp_path / "activity_with_management.xlsx"
@@ -471,7 +476,7 @@ def test_activity_hardened_dormancy_partial_errors_reviews_and_normalization():
         organization_status={"acme-org": False},
     )
     inv_headers, inv_row = mgmt["Repository Inventory"][0], mgmt["Repository Inventory"][1][0]
-    assert inv_row[11] == "N/A"
+    assert inv_row[inv_headers.index("Total Activities")] == "N/A"
     assert inv_row[inv_headers.index("Coverage")] == "Partial"
     kpi_rows = mgmt["Management KPIs"][1]
     rolling_30 = next(r for r in kpi_rows if r[2] == "Rolling 30-day active users")
@@ -1414,6 +1419,109 @@ def test_dynamic_fork_and_archived_scope_specification(tmp_path, monkeypatch):
     assert "source & forked repositories; archived included" in summary_content
     assert "forked repositories are excluded" not in summary_content
     assert "Repository Age Rule" in summary_content
+
+
+def test_fork_identification_in_inventory_and_kpis(tmp_path):
+    """Verify that forked repositories are explicitly tagged with Fork == 'Yes' and accounted for in Management KPIs."""
+    from repo360.activity.models import ActivityConfig, REPO_INVENTORY_HEADERS, RepositoryReport
+    from repo360.activity.collector import build_management_tables
+    from repo360.activity.reporter import write_activity_workbook
+    from openpyxl import load_workbook
+
+    now = datetime(2026, 11, 24, 12, 0, tzinfo=timezone.utc)
+    since = now - timedelta(days=90)
+
+    report_source = RepositoryReport(
+        metadata={
+            "created_at": "2026-08-01T00:00:00Z",
+            "visibility": "private",
+            "archived": False,
+            "fork": False,
+            "default_branch": "main",
+        },
+        protected="Yes",
+        protected_branches=("main",),
+        codeowners="Yes",
+        codeowners_path=".github/CODEOWNERS",
+        activity_complete=True,
+        events=[("alice", "commits", now)],
+    )
+
+    report_fork = RepositoryReport(
+        metadata={
+            "created_at": "2026-09-01T00:00:00Z",
+            "visibility": "public",
+            "archived": False,
+            "fork": True,
+            "default_branch": "main",
+        },
+        protected="No",
+        protected_branches=(),
+        codeowners="No",
+        codeowners_path="Not found",
+        activity_complete=True,
+        events=[("bob", "commits", now)],
+    )
+
+    reports = {
+        ("test-org", "source-repo"): report_source,
+        ("test-org", "forked-repo"): report_fork,
+    }
+
+    cfg = ActivityConfig(include_forks=True)
+    tables = build_management_tables(
+        reports=reports,
+        members={"test-org": {"alice", "bob"}},
+        since=since,
+        end=now,
+        organization_status={"test-org": True},
+        cfg=cfg,
+    )
+
+    inv_headers, inv_rows = tables["Repository Inventory"]
+    assert "Fork" in inv_headers
+    fork_idx = inv_headers.index("Fork")
+    repo_idx = inv_headers.index("Repository")
+
+    rows_by_name = {r[repo_idx]: r for r in inv_rows}
+    assert rows_by_name["source-repo"][fork_idx] == "No"
+    assert rows_by_name["forked-repo"][fork_idx] == "Yes"
+
+    kpi_headers, kpi_rows = tables["Management KPIs"]
+    kpi_map = {r[2]: r[3] for r in kpi_rows if r[1] == "Repository Landscape"}
+    assert kpi_map["Forked repositories"] == 1
+    assert kpi_map["Repositories hosted (selected scope)"] == 2
+
+    # Verify Excel workbook output has the column properly rendered
+    xlsx_path = tmp_path / "fork_identification.xlsx"
+    write_activity_workbook(
+        path=xlsx_path,
+        cfg=cfg,
+        since=since,
+        end=now,
+        user_rows=[],
+        repo_rows=[],
+        org_rows=[["test-org", 2, 2, 2, 0, 0, 0, 2]],
+        failures=[],
+        repos_scanned=2,
+        management_tables=tables,
+    )
+
+    wb = load_workbook(xlsx_path)
+    ws = wb["Repository Inventory"]
+    headers = [cell.value for cell in ws[1]]
+    assert "Fork" in headers
+    fork_col_idx = headers.index("Fork") + 1
+
+    # Check cell values in rows 2 and 3
+    row_values = {}
+    for r in range(2, ws.max_row + 1):
+        repo_name = ws.cell(r, headers.index("Repository") + 1).value
+        row_values[repo_name] = ws.cell(r, fork_col_idx).value
+
+    assert row_values["source-repo"] == "No"
+    assert row_values["forked-repo"] == "Yes"
+
 
 
 
