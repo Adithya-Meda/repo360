@@ -538,3 +538,18 @@ def test_runners_empty_fleet_completes(app_credentials, monkeypatch, tmp_path: P
     assert "No accessible repositories discovered" in out
     assert "Warnings / Errors" not in out
     assert "[SUCCESS] Runner analysis completed across 0 runners" in out
+
+
+def test_worker_and_workers_flag_interchangeability() -> None:
+    import argparse
+    from repo360.common.cli import add_common_scan_arguments
+
+    parser = argparse.ArgumentParser()
+    add_common_scan_arguments(parser, ai_subject="test")
+
+    args_plural = parser.parse_args(["--workers", "8"])
+    args_singular = parser.parse_args(["--worker", "8"])
+
+    assert args_plural.workers == 8
+    assert args_singular.workers == 8
+

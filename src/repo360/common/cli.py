@@ -66,6 +66,7 @@ def add_common_scan_arguments(
     )
     parser.add_argument(
         "--workers",
+        "--worker",
         type=parse_workers_arg,
         default=0,
         metavar="N",
