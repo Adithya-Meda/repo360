@@ -289,6 +289,13 @@ def test_build_management_tables_and_sheets(tmp_path):
     assert "Collaboration" in categories
     assert "Security & Governance" in categories
     assert "Coverage" in categories
+    kpi_metric_names = {r[2] for r in kpi_rows}
+    assert "Currently open pull requests" in kpi_metric_names
+    assert "Open issue backlog" in kpi_metric_names
+    assert "Closed issues" in kpi_metric_names
+    assert "Total issues tracked" in kpi_metric_names
+    assert "Pull request discussion comments" in kpi_metric_names
+    assert "Issue discussion comments" in kpi_metric_names
 
     cfg = ActivityConfig(output_dir=str(tmp_path))
     xlsx_path = tmp_path / "activity_with_management.xlsx"
@@ -314,6 +321,13 @@ def test_build_management_tables_and_sheets(tmp_path):
     assert "Repository Inventory" in sheet_names
     assert "Top Active Repositories" in sheet_names
     assert "Management KPIs" in sheet_names
+
+    ws_exec = wb["Executive Summary"]
+    exec_metric_names = [ws_exec.cell(row=r, column=1).value for r in range(5, 30)]
+    assert "Currently Open PRs" in exec_metric_names
+    assert "Open Issues Backlog" in exec_metric_names
+    assert "Closed Issues" in exec_metric_names
+    assert "Total Issues Tracked" in exec_metric_names
 
 
 def test_activity_hardened_dormancy_partial_errors_reviews_and_normalization():

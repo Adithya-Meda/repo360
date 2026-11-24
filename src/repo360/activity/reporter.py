@@ -409,6 +409,25 @@ def write_activity_workbook(
             else f"Engineering activity across {org_names}: {active_contributors} active contributors ({total_activities} actions, {prs_merged} PRs merged). Maintain balanced code review assignments to prevent reviewer fatigue."
         )
 
+    open_prs_total = None
+    open_issues_total = None
+    closed_issues_total = None
+    total_issues_count = None
+    if management_tables and "Repository Inventory" in management_tables:
+        inv_headers, inv_rows = management_tables["Repository Inventory"]
+        if "Open PRs" in inv_headers:
+            open_prs_idx = inv_headers.index("Open PRs")
+            open_prs_total = sum(r[open_prs_idx] for r in inv_rows if isinstance(r[open_prs_idx], int))
+        if "Open Issues" in inv_headers:
+            open_iss_idx = inv_headers.index("Open Issues")
+            open_issues_total = sum(r[open_iss_idx] for r in inv_rows if isinstance(r[open_iss_idx], int))
+        if "Closed Issues" in inv_headers:
+            closed_iss_idx = inv_headers.index("Closed Issues")
+            closed_issues_total = sum(r[closed_iss_idx] for r in inv_rows if isinstance(r[closed_iss_idx], int))
+        if "Total Issues" in inv_headers:
+            tot_iss_idx = inv_headers.index("Total Issues")
+            total_issues_count = sum(r[tot_iss_idx] for r in inv_rows if isinstance(r[tot_iss_idx], int))
+
     kpis = [
         ["Total Duration", duration_str],
         ["Organizations Scanned", len(org_rows)],
@@ -418,8 +437,16 @@ def write_activity_workbook(
         *([f"{s} Users", status_counts[s]] for s in STATUSES),
         ["Total Activities", total_activities],
         *([label, sum(row[TOTAL_IDX + 1 + i] for row in user_rows)] for i, label in enumerate(METRIC_LABELS)),
-        ["Unprocessed Items", len(failures)],
     ]
+    if open_prs_total is not None:
+        kpis.append(["Currently Open PRs", open_prs_total])
+    if open_issues_total is not None:
+        kpis.append(["Open Issues Backlog", open_issues_total])
+    if closed_issues_total is not None:
+        kpis.append(["Closed Issues", closed_issues_total])
+    if total_issues_count is not None:
+        kpis.append(["Total Issues Tracked", total_issues_count])
+    kpis.append(["Unprocessed Items", len(failures)])
     curr_row = write_table(summary, 4, ("Metric", "Value"), kpis) + 2
 
     curr_row = section_title(summary, curr_row, advisory_title)

@@ -987,6 +987,30 @@ def build_management_tables(
                 ),
                 f"Selected repositories currently set to {visibility} visibility.",
             )
+        add(
+            "Repository Landscape",
+            "Total issues tracked",
+            sum(item.issues_total for item in selected),
+            "Total cumulative issues (open and closed) across monitored repositories.",
+        )
+        add(
+            "Repository Landscape",
+            "Open issue backlog",
+            sum(item.issues_open for item in selected),
+            "Current volume of unresolved open issues across monitored repositories.",
+        )
+        add(
+            "Repository Landscape",
+            "Closed issues",
+            sum(item.issues_closed for item in selected),
+            "Total resolved and closed issues across monitored repositories.",
+        )
+        add(
+            "Repository Landscape",
+            "Issue discussion comments",
+            counts["issue_comments"],
+            "Comments posted on issue conversation threads during the report period.",
+        )
 
         add(
             "Developer Activity",
@@ -1027,6 +1051,12 @@ def build_management_tables(
         )
         add(
             "Collaboration",
+            "Currently open pull requests",
+            sum(item.prs_open for item in selected),
+            "Pull requests currently open and awaiting review or merge across monitored repositories.",
+        )
+        add(
+            "Collaboration",
             "Pull requests merged",
             counts["prs_merged"],
             "Pull requests merged during the report period, even if they were opened earlier.",
@@ -1042,6 +1072,18 @@ def build_management_tables(
             "Code reviews completed",
             counts["reviews"],
             "Submitted pull-request reviews during the period. Draft reviews are excluded; submitted reviews count even if later dismissed.",
+        )
+        add(
+            "Collaboration",
+            "Pull request discussion comments",
+            counts["pr_comments"],
+            "Conversation comments posted on pull request discussion threads during the report period.",
+        )
+        add(
+            "Collaboration",
+            "Code review inline comments",
+            counts["review_comments"],
+            "Inline comments submitted on pull request code diff lines during reviews.",
         )
         add(
             "Collaboration",
