@@ -18,6 +18,7 @@ from .models import (
     METRIC_LABELS,
     MGMT_KPI_HEADERS,
     REPO_INVENTORY_HEADERS,
+    REPO_INVENTORY_METRICS,
     STATUS_IDX,
     STATUS_ORDER,
     TOP_REPOS_HEADERS,
@@ -57,6 +58,8 @@ def collect_pull_requests_graphql(
             createdAt
             mergedAt
             updatedAt
+            state
+            closedAt
             author {
               login
             }
@@ -122,6 +125,19 @@ def collect_pull_requests_graphql(
                 report.cohort_opened += 1
                 if pr.get("mergedAt") and parse_ts(pr["mergedAt"]) <= end:
                     report.cohort_merged += 1
+
+                raw_state = str(pr.get("state") or "").upper()
+                is_merged = (raw_state == "MERGED") or bool(pr.get("mergedAt"))
+                is_closed_unm = (raw_state == "CLOSED" and not is_merged) or (bool(pr.get("closedAt")) and not is_merged)
+                report.prs_total += 1
+                if is_merged:
+                    report.prs_merged += 1
+                    report.prs_closed += 1
+                elif is_closed_unm:
+                    report.prs_closed_unmerged += 1
+                    report.prs_closed += 1
+                else:
+                    report.prs_open += 1
 
             first_review: Optional[datetime] = None
             reviews_conn = pr.get("reviews") or {}
@@ -259,6 +275,19 @@ def collect_repo_events(
                         report.cohort_opened += 1
                         if pr.get("merged_at") and parse_ts(pr["merged_at"]) <= end:
                             report.cohort_merged += 1
+
+                        raw_state = str(pr.get("state") or "").upper()
+                        is_merged = (raw_state == "MERGED") or bool(pr.get("merged_at"))
+                        is_closed_unm = (raw_state == "CLOSED" and not is_merged) or (bool(pr.get("closed_at")) and not is_merged)
+                        report.prs_total += 1
+                        if is_merged:
+                            report.prs_merged += 1
+                            report.prs_closed += 1
+                        elif is_closed_unm:
+                            report.prs_closed_unmerged += 1
+                            report.prs_closed += 1
+                        else:
+                            report.prs_open += 1
 
                     first_review: Optional[datetime] = None
                     for review in client.paginate(org, f"{base}/pulls/{pr['number']}/reviews"):
@@ -703,7 +732,40 @@ def build_management_tables(
         )
         total_activities = len(events) if activity_available else "N/A"
         active_contributors = len(contributors) if activity_available else "N/A"
-        metric_values = [counts[metric] if activity_available else "N/A" for metric in METRIC_KEYS]
+
+        has_pr_breakdown = (
+            result.prs_total > 0
+            or result.prs_open > 0
+            or result.prs_closed > 0
+            or result.prs_merged > 0
+            or result.prs_closed_unmerged > 0
+        )
+        if has_pr_breakdown:
+            prs_total = result.prs_total
+            prs_open = result.prs_open
+            prs_closed = result.prs_closed
+            prs_merged = result.prs_merged
+            prs_closed_unm = result.prs_closed_unmerged
+        else:
+            prs_total = counts["prs_opened"]
+            prs_merged = counts["prs_merged"]
+            prs_closed = prs_merged
+            prs_closed_unm = 0
+            prs_open = max(0, prs_total - prs_closed)
+
+        metric_map = {
+            "Commits": counts["commits"],
+            "Total PRs": prs_total,
+            "Open PRs": prs_open,
+            "Closed PRs": prs_closed,
+            "Merged PRs": prs_merged,
+            "Closed (Unmerged) PRs": prs_closed_unm,
+            "PR Reviews": counts["reviews"],
+            "Review Comments": counts["review_comments"],
+            "Issues Opened": counts["issues_opened"],
+            "Issue/PR Comments": counts["issue_comments"],
+        }
+        metric_values = [metric_map[metric] if activity_available else "N/A" for metric in REPO_INVENTORY_METRICS]
         merge_rate = round(result.cohort_merged / result.cohort_opened * 100, 2) if result.cohort_opened else "N/A"
         avg_review_hours = round(sum(result.review_hours) / len(result.review_hours), 2) if result.review_hours else "N/A"
         review_samples = len(result.review_hours)
@@ -763,7 +825,7 @@ def build_management_tables(
                 row[inv_repo_idx],
                 row[inv_tot_idx],
                 row[inv_contrib_idx],
-                *(row[REPO_INVENTORY_HEADERS.index(label)] for label in METRIC_LABELS),
+                *(row[REPO_INVENTORY_HEADERS.index(label)] for label in REPO_INVENTORY_METRICS),
                 row[inv_last7_idx],
                 row[inv_cov_idx],
             ])

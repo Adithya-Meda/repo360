@@ -263,10 +263,14 @@ def test_build_management_tables_and_sheets(tmp_path):
     assert inv_rows[0][8] == "Yes"
     assert inv_rows[0][11] == 3
     assert inv_rows[0][12] == 2
-    assert inv_rows[0][14] == 1
-    assert inv_rows[0][20] == 80.0
-    assert inv_rows[0][21] == 3.0
-    assert inv_rows[0][23] == "Complete"
+    assert inv_rows[0][inv_headers.index("Total PRs")] == 1
+    assert inv_rows[0][inv_headers.index("Open PRs")] == 1
+    assert inv_rows[0][inv_headers.index("Closed PRs")] == 0
+    assert inv_rows[0][inv_headers.index("Merged PRs")] == 0
+    assert inv_rows[0][inv_headers.index("Closed (Unmerged) PRs")] == 0
+    assert inv_rows[0][inv_headers.index("PR Cohort Merge Rate (%)")] == 80.0
+    assert inv_rows[0][inv_headers.index("Avg First Review Hours")] == 3.0
+    assert inv_rows[0][inv_headers.index("Coverage")] == "Complete"
 
     top_headers, top_rows = tables["Top Active Repositories"]
     assert top_headers == TOP_REPOS_HEADERS
@@ -450,9 +454,9 @@ def test_activity_hardened_dormancy_partial_errors_reviews_and_normalization():
         end=end,
         organization_status={"acme-org": False},
     )
-    inv_row = mgmt["Repository Inventory"][1][0]
+    inv_headers, inv_row = mgmt["Repository Inventory"][0], mgmt["Repository Inventory"][1][0]
     assert inv_row[11] == "N/A"
-    assert inv_row[23] == "Partial"
+    assert inv_row[inv_headers.index("Coverage")] == "Partial"
     kpi_rows = mgmt["Management KPIs"][1]
     rolling_30 = next(r for r in kpi_rows if r[2] == "Rolling 30-day active users")
     assert rolling_30[3] >= 3
@@ -544,5 +548,134 @@ def test_activity_all_time_lookback_window_reporting(tmp_path):
     assert "Full History" in a2_val
     assert "15-04-2023" in a2_val
     assert "24-11-2026" in a2_val
+
+
+def test_repository_inventory_pr_metrics_breakdown():
+    """Verify exact PR state breakdown: Total (23), Open (11), Closed (12), Merged (11), Closed Unmerged (1)."""
+    from repo360.activity.collector import build_management_tables, collect_pull_requests_graphql
+    from repo360.activity.models import REPO_INVENTORY_HEADERS, TOP_REPOS_HEADERS, RepositoryReport
+
+    now = datetime(2026, 11, 24, 12, 0, tzinfo=timezone.utc)
+    since = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+
+    # 11 Open PRs, 11 Merged PRs, 1 Closed Unmerged PR = 23 Total PRs
+    mock_pr_nodes = []
+    # 11 Open
+    for i in range(1, 12):
+        mock_pr_nodes.append({
+            "id": f"PR_OPEN_{i}",
+            "number": i,
+            "createdAt": "2026-09-01T10:00:00Z",
+            "mergedAt": None,
+            "closedAt": None,
+            "updatedAt": "2026-10-01T10:00:00Z",
+            "state": "OPEN",
+            "author": {"login": f"dev_{i}"},
+            "reviews": {"pageInfo": {"hasNextPage": False}, "nodes": []},
+        })
+    # 11 Merged
+    for i in range(12, 23):
+        mock_pr_nodes.append({
+            "id": f"PR_MERGED_{i}",
+            "number": i,
+            "createdAt": "2026-09-02T10:00:00Z",
+            "mergedAt": "2026-09-10T12:00:00Z",
+            "closedAt": "2026-09-10T12:00:00Z",
+            "updatedAt": "2026-09-10T12:00:00Z",
+            "state": "MERGED",
+            "author": {"login": f"dev_{i}"},
+            "reviews": {"pageInfo": {"hasNextPage": False}, "nodes": []},
+        })
+    # 1 Closed (Unmerged)
+    mock_pr_nodes.append({
+        "id": "PR_CLOSED_23",
+        "number": 23,
+        "createdAt": "2026-09-03T10:00:00Z",
+        "mergedAt": None,
+        "closedAt": "2026-09-05T10:00:00Z",
+        "updatedAt": "2026-09-05T10:00:00Z",
+        "state": "CLOSED",
+        "author": {"login": "dev_abandoned"},
+        "reviews": {"pageInfo": {"hasNextPage": False}, "nodes": []},
+    })
+
+    class MockClient:
+        def graphql(self, org, query, variables):
+            return {
+                "data": {
+                    "repository": {
+                        "pullRequests": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": mock_pr_nodes,
+                        }
+                    }
+                }
+            }
+
+    report = RepositoryReport(
+        metadata={
+            "created_at": "2026-01-01T00:00:00Z",
+            "visibility": "private",
+            "archived": False,
+            "default_branch": "main",
+        },
+        protected="Yes",
+        protected_branches=("main",),
+        activity_complete=True,
+    )
+
+    events = []
+    def record_fn(author, metric, ts):
+        if ts:
+            events.append((author.get("login") if author else None, metric, datetime.fromisoformat(ts)))
+
+    success = collect_pull_requests_graphql(
+        client=MockClient(),
+        org="CanarysPlayground",
+        repo="TaskManager-DemoApp",
+        collected_since=since,
+        since=since,
+        end=now,
+        exclude_bots=True,
+        report=report,
+        record_fn=record_fn,
+    )
+
+    assert success is True
+    assert report.prs_total == 23
+    assert report.prs_open == 11
+    assert report.prs_closed == 12
+    assert report.prs_merged == 11
+    assert report.prs_closed_unmerged == 1
+
+    report.events = events
+    tables = build_management_tables(
+        reports={("CanarysPlayground", "TaskManager-DemoApp"): report},
+        members={"CanarysPlayground": set()},
+        since=since,
+        end=now,
+        organization_status={"CanarysPlayground": True},
+    )
+
+    inv_headers, inv_rows = tables["Repository Inventory"]
+    assert inv_headers == REPO_INVENTORY_HEADERS
+    inv_row = inv_rows[0]
+
+    assert inv_row[inv_headers.index("Total PRs")] == 23
+    assert inv_row[inv_headers.index("Open PRs")] == 11
+    assert inv_row[inv_headers.index("Closed PRs")] == 12
+    assert inv_row[inv_headers.index("Merged PRs")] == 11
+    assert inv_row[inv_headers.index("Closed (Unmerged) PRs")] == 1
+
+    top_headers, top_rows = tables["Top Active Repositories"]
+    assert top_headers == TOP_REPOS_HEADERS
+    top_row = top_rows[0]
+
+    assert top_row[top_headers.index("Total PRs")] == 23
+    assert top_row[top_headers.index("Open PRs")] == 11
+    assert top_row[top_headers.index("Closed PRs")] == 12
+    assert top_row[top_headers.index("Merged PRs")] == 11
+    assert top_row[top_headers.index("Closed (Unmerged) PRs")] == 1
+
 
 

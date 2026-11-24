@@ -22,6 +22,7 @@ __all__ = [
     "METRICS",
     "METRIC_KEYS",
     "METRIC_LABELS",
+    "REPO_INVENTORY_METRICS",
     "STATUSES",
     "STATUS_ORDER",
     "USER_HEADERS",
@@ -56,6 +57,18 @@ METRICS = (
 )
 METRIC_KEYS = tuple(k for k, _ in METRICS)
 METRIC_LABELS = tuple(lbl for _, lbl in METRICS)
+REPO_INVENTORY_METRICS = (
+    "Commits",
+    "Total PRs",
+    "Open PRs",
+    "Closed PRs",
+    "Merged PRs",
+    "Closed (Unmerged) PRs",
+    "PR Reviews",
+    "Review Comments",
+    "Issues Opened",
+    "Issue/PR Comments",
+)
 STATUSES = ("Active", "Moderate", "Low", "Inactive")
 STATUS_ORDER = {s: i for i, s in enumerate(STATUSES)}
 
@@ -89,7 +102,7 @@ REPO_INVENTORY_HEADERS = (
     "Activity Last 7 Days",
     "Total Activities",
     "Active Contributors",
-    *METRIC_LABELS,
+    *REPO_INVENTORY_METRICS,
     "PR Cohort Merge Rate (%)",
     "Avg First Review Hours",
     "First Review Sample PRs",
@@ -102,7 +115,7 @@ TOP_REPOS_HEADERS = (
     "Repository",
     "Total Activities",
     "Active Contributors",
-    *METRIC_LABELS,
+    *REPO_INVENTORY_METRICS,
     "Activity Last 7 Days",
     "Coverage",
 )
@@ -184,6 +197,11 @@ class RepositoryReport:
     cohort_opened: int = 0
     cohort_merged: int = 0
     events: List[Tuple[Optional[str], str, datetime]] = field(default_factory=list)
+    prs_total: int = 0
+    prs_open: int = 0
+    prs_closed: int = 0
+    prs_merged: int = 0
+    prs_closed_unmerged: int = 0
 
 
 @dataclass(frozen=True)
