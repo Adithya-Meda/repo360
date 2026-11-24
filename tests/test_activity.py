@@ -1350,5 +1350,72 @@ def test_fork_exclusion_and_workflow_summary_specification(tmp_path, monkeypatch
     assert "Repository Age Rule" in summary_content
 
 
+def test_dynamic_fork_and_archived_scope_specification(tmp_path, monkeypatch):
+    """Verify that when include_forks=True and include_archived=True, reports and summaries reflect included scope."""
+    from repo360.activity.cli import print_activity_scorecard
+    from repo360.activity.models import ActivityConfig
+    from repo360.activity.reporter import write_activity_workbook
+    from repo360.activity.collector import build_management_tables
+    from openpyxl import load_workbook
+
+    summary_file = tmp_path / "step_summary_dynamic.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary_file))
+
+    now = datetime(2026, 11, 24, 12, 0, tzinfo=timezone.utc)
+    since = now - timedelta(days=90)
+    xlsx_path = tmp_path / "dynamic_scope_test.xlsx"
+
+    cfg = ActivityConfig(lookback_days=90, include_forks=True, include_archived=True)
+
+    write_activity_workbook(
+        path=xlsx_path,
+        cfg=cfg,
+        since=since,
+        end=now,
+        user_rows=[["test-org", "alice", "Active", 10, 50, 40, 5, 5, 0, 0, 0, 0, 0, 4.0, 1, "2026-09-01", "2026-11-20", 4, "Yes", "None"]],
+        repo_rows=[["test-org", "core-repo", 50, 1, 40, 5, 5, 0, 0, 0, 0, 0, "2026-11-20"]],
+        org_rows=[["test-org", 1, 1, 1, 0, 0, 0, 50]],
+        failures=[],
+        repos_scanned=2,
+        execution_duration=2.0,
+    )
+
+    wb = load_workbook(xlsx_path)
+    summary_ws = wb["Executive Summary"]
+
+    # 1. Verify A2 subtitle notes dynamic scope
+    a2_val = str(summary_ws["A2"].value)
+    assert "Source & forked repos" in a2_val
+    assert "archived included" in a2_val
+    assert "forked repos excluded" not in a2_val
+
+    # 2. Verify KPI table includes dynamic scope
+    kpi_rows = [
+        (summary_ws.cell(r, 1).value, summary_ws.cell(r, 2).value)
+        for r in range(4, 25)
+        if summary_ws.cell(r, 1).value
+    ]
+    kpi_dict = dict(kpi_rows)
+    assert "Repository Scope" in kpi_dict
+    assert "Source and forked repositories (archived included)" == kpi_dict["Repository Scope"]
+
+    # 3. Verify CLI scorecard and GitHub Step Summary emission with cfg
+    print_activity_scorecard(
+        user_rows=[["test-org", "alice", "Active", 10, 50, 40, 5, 5, 0, 0, 0, 0, 0]],
+        org_rows=[["test-org", 1, 1, 1, 0, 0, 0, 50]],
+        repos_count=2,
+        xlsx_path=xlsx_path,
+        elapsed_seconds=2.0,
+        cfg=cfg,
+    )
+
+    assert summary_file.exists()
+    summary_content = summary_file.read_text(encoding="utf-8")
+    assert "source & forked repositories; archived included" in summary_content
+    assert "forked repositories are excluded" not in summary_content
+    assert "Repository Age Rule" in summary_content
+
+
+
 
 

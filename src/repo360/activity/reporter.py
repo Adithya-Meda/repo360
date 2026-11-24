@@ -390,10 +390,18 @@ def write_activity_workbook(
     since_local, end_local = since.astimezone(LOCAL_TZ), end.astimezone(LOCAL_TZ)
     duration_str = f"{execution_duration:.1f}s" if execution_duration else "N/A"
     window_str = resolve_reporting_window(cfg.lookback_days, since, end, activity_dates)
+    fork_scope_txt = "forks included" if cfg.include_forks else "forked repos excluded"
+    arch_scope_txt = "archived included" if cfg.include_archived else "archived excluded"
+    repo_scope_prefix = "Source & forked repos" if cfg.include_forks else "Source repos only"
+    scope_full_txt = (
+        f"Scope: {repo_scope_prefix} ({arch_scope_txt})"
+        if cfg.include_forks
+        else f"Scope: Source repos only ({fork_scope_txt}, {arch_scope_txt})"
+    )
     summary["A2"] = (
         f"Reporting Window: {window_str} "
         f"| Generated: {end_local:{DATE_FMT} %H:%M} {LOCAL_TZ_NAME} | Duration: {duration_str} "
-        f"| Scope: Source repos only (forked repos excluded)"
+        f"| {scope_full_txt}"
     )
     summary["A2"].font = Font(italic=True, color="595959")
 
@@ -454,12 +462,17 @@ def write_activity_workbook(
             tot_iss_idx = inv_headers.index("Total Issues")
             total_issues_count = sum(r[tot_iss_idx] for r in inv_rows if isinstance(r[tot_iss_idx], int))
 
+    repo_scope_kpi = (
+        f"Source and forked repositories ({arch_scope_txt})"
+        if cfg.include_forks
+        else f"Source repositories only (forked repositories excluded, {arch_scope_txt})"
+    )
     kpis = [
         ["Total Duration", duration_str],
         ["Organizations Scanned", len(org_rows)],
         ["Repositories Scanned", repos_scanned],
-        ["Repository Scope", "Source repositories only (forked repositories excluded)"],
-        ["Contributor Scope", "Organization members only (external contributors excluded)"],
+        ["Repository Scope", repo_scope_kpi],
+        ["Contributor Scope", "Organization members only (external contributors excluded)" if not cfg.include_external else "All contributors (including external)"],
         ["Active Contributors", active_contributors],
         ["Total Users Reported", len(user_rows)],
         *([f"{s} Users", status_counts[s]] for s in STATUSES),
@@ -494,13 +507,24 @@ def write_activity_workbook(
     curr_row = write_table(summary, curr_row, ORG_HEADERS, org_rows, bar_col=len(ORG_HEADERS) - 1) + 2
 
     curr_row = section_title(summary, curr_row, "Activity Threshold Definitions")
+    fork_def = (
+        "Forked repositories are included in metric rollups and inventory"
+        if cfg.include_forks
+        else "Forked repositories are excluded from all metric rollups and inventory"
+    )
+    arch_def = (
+        "Archived repositories are included in analysis and inventory"
+        if cfg.include_archived
+        else "Archived repositories are excluded from analysis and inventory"
+    )
     definitions = [
         ["Active", f"Contributed on {cfg.active_min_days} or more distinct days"],
         ["Moderate", f"Contributed on {cfg.moderate_min_days} to {cfg.active_min_days - 1} distinct days"],
         ["Low", f"Contributed on 1 to {cfg.moderate_min_days - 1} distinct days"],
         ["Inactive", "Organization member or assigned seat with zero recorded contributions"],
         ["Repository Age", "New: created <= 180 days ago (~6 months); Old: created > 180 days ago"],
-        ["Fork Exclusion", "Forked repositories are excluded from all metric rollups and inventory"],
+        ["Fork Scope" if cfg.include_forks else "Fork Exclusion", fork_def],
+        ["Archived Scope", arch_def],
     ]
     curr_row = write_table(summary, curr_row, ("Status", "Definition"), definitions, status_col=0) + 2
 

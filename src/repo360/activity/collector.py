@@ -1059,11 +1059,23 @@ def build_management_tables(
             "Distinct people with tracked activity during the last 30 days, including non-members.",
         )
 
+        include_forks = cfg.include_forks if cfg else False
+        include_archived = cfg.include_archived if cfg else False
+
+        fork_text = "source and forked repositories" if include_forks else "source repositories only; forked repositories are excluded"
+        arch_text = "archived repositories included" if include_archived else "archived repositories excluded"
+        hosted_desc = (
+            f"Repositories selected in inventory that this App can access ({fork_text}; {arch_text}). "
+            "This may not include every repository in the enterprise."
+        )
+        new_repo_fork_desc = "Forked repositories are included." if include_forks else "Forked repositories are excluded."
+        new_repo_desc = f"Repositories created within the last 180 days (6-month industry standard). {new_repo_fork_desc}"
+
         add(
             "Repository Landscape",
             "Repositories hosted (selected scope)",
             len(selected),
-            "Repositories selected in inventory that this App can access (source repositories only; forked repositories are excluded). This may not include every repository in the enterprise.",
+            hosted_desc,
         )
         add(
             "Repository Landscape",
@@ -1073,7 +1085,7 @@ def build_management_tables(
                 for (owner, _), created in created_dates.items()
                 if owner.casefold() == org.casefold()
             ),
-            "Repositories created within the last 180 days (6-month industry standard). Forked repositories are excluded.",
+            new_repo_desc,
         )
         for visibility in ("private", "internal", "public"):
             add(

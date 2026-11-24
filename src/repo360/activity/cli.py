@@ -45,6 +45,7 @@ def print_activity_scorecard(
     elapsed_seconds: float,
     failures: Optional[List[Tuple[str, str]]] = None,
     ai_engine: Optional[Any] = None,
+    cfg: Optional[ActivityConfig] = None,
 ) -> None:
     """Print an executive, color-coded terminal scorecard."""
     G = "\033[92m"
@@ -65,12 +66,26 @@ def print_activity_scorecard(
         else f"{elapsed_seconds:.1f}s"
     )
 
+    include_forks = cfg.include_forks if cfg else False
+    include_archived = cfg.include_archived if cfg else False
+    include_external = cfg.include_external if cfg else False
+
+    fork_label = "forks included" if include_forks else "forked repos excluded"
+    arch_label = "archived included" if include_archived else "archived excluded"
+    repo_scope_label = "source & forked repos" if include_forks else "source repos"
+    member_scope = "All contributors" if include_external else "Org members only"
+
+    if include_forks:
+        repo_scanned_desc = f"{repo_scope_label}; {arch_label}"
+    else:
+        repo_scanned_desc = f"source repos; forked repos excluded; {arch_label}"
+
     print(f"\n{C}{'=' * 76}{X}")
     print(f"{B}{C}   REPO360 CONTRIBUTOR & USER ACTIVITY SCORECARD{X}")
     print(f"{C}{'=' * 76}{X}")
     print(f"   {B}Organizations Scanned :{X} {len(org_rows)}")
-    print(f"   {B}Repositories Scanned  :{X} {repos_count} (source repos; forked repos excluded)")
-    print(f"   {B}Total Users Tracked   :{X} {len(user_rows)} (organization members only)")
+    print(f"   {B}Repositories Scanned  :{X} {repos_count} ({repo_scanned_desc})")
+    print(f"   {B}Total Users Tracked   :{X} {len(user_rows)} ({'all contributors' if include_external else 'organization members only'})")
     print(f"   {B}Active Users          :{X} {G}{active_count:<5} Active (>= threshold){X}")
     print(f"   {B}Moderate Users        :{X} {Y}{moderate_count:<5} Moderate{X}")
     print(f"   {B}Low Users             :{X} {low_count:<5} Low")
@@ -78,7 +93,7 @@ def print_activity_scorecard(
     print(f"   {B}Total Activities      :{X} {B}{total_activities:,}{X}")
     if failures:
         print(f"   {B}Warnings / Errors     :{X} {Y}{len(failures)} items (see workbook Summary){X}")
-    print(f"   {B}Scope & Filters       :{X} Org members only; forked repositories excluded")
+    print(f"   {B}Scope & Filters       :{X} {member_scope}; {fork_label}; {arch_label}")
     print(f"   {B}AI Insights Engine    :{X} {format_ai_scorecard_status(ai_engine)}")
     print(f"   {B}Duration              :{X} {elapsed_str}")
     print(f"{C}{'-' * 76}{X}")
@@ -89,12 +104,17 @@ def print_activity_scorecard(
     step_summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if step_summary_path:
         try:
+            if include_forks:
+                summary_repo_note = f"source & forked repositories; {arch_label}"
+            else:
+                summary_repo_note = f"source repositories only; forked repositories are excluded; {arch_label}"
+
             with open(step_summary_path, "a", encoding="utf-8") as f:
                 f.write(
                     f"### Repo360 Contributor & Activity Scorecard\n\n"
                     f"- **Organizations Scanned**: {len(org_rows)}\n"
-                    f"- **Repositories Scanned**: {repos_count} *(source repositories only; forked repositories are excluded)*\n"
-                    f"- **Tracked Users**: {len(user_rows)} *(organization members only; external contributors excluded)*\n"
+                    f"- **Repositories Scanned**: {repos_count} *({summary_repo_note})*\n"
+                    f"- **Tracked Users**: {len(user_rows)} *({'all contributors' if include_external else 'organization members only; external contributors excluded'})*\n"
                     f"- **Active Contributors**: {active_count}\n"
                     f"- **Total Activities**: {total_activities:,}\n"
                     f"- **Repository Age Rule**: New (<= 180 days / ~6 months) vs Old (> 180 days)\n"
@@ -220,7 +240,10 @@ def run_activity_cli(argv: Optional[List[str]] = None) -> int:
             "Check the GitHub App's repository access settings."
         )
 
-    print(f"\033[96m[INFO]\033[0m Scanning {pluralize(len(targets), 'repository', 'repositories', include_count=True)} across {pluralize(len(orgs), 'organization', include_count=True)} (source repos; forked repos excluded)...")
+    fork_desc = "forks included" if cfg.include_forks else "forked repos excluded"
+    arch_desc = "archived included" if cfg.include_archived else "archived excluded"
+    repo_scope_desc = "source & forked repos" if cfg.include_forks else "source repos"
+    print(f"\033[96m[INFO]\033[0m Scanning {pluralize(len(targets), 'repository', 'repositories', include_count=True)} across {pluralize(len(orgs), 'organization', include_count=True)} ({repo_scope_desc}; {fork_desc}, {arch_desc})...")
 
     for org_name in orgs:
         perms = auth.get_installation_permissions(org_name)
@@ -338,5 +361,6 @@ def run_activity_cli(argv: Optional[List[str]] = None) -> int:
         elapsed_seconds=elapsed,
         failures=failures,
         ai_engine=ai_engine,
+        cfg=cfg,
     )
     return 0
