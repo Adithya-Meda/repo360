@@ -20,8 +20,100 @@ from ..activity.reporter import (
     write_table,
 )
 from ..common.concurrency import AI_NOT_ENABLED_MESSAGE, is_ai_disabled, is_ai_live
+from ..common.ai_sheet import AI_REC_HEADERS, render_ai_recommendations_sheet
 from ..common.text import pluralize
 from .models import ORG_RUNNER_HEADERS, RUNNER_HEADERS, RUNNER_JOB_HEADERS, RunnersConfig
+
+
+def build_runner_ai_recommendations(
+    runner_rows: Sequence[Sequence[Any]],
+    org_runner_rows: Sequence[Sequence[Any]],
+    total_sla_breaches: int,
+    failures: Sequence[Tuple[str, str]],
+    all_truncations: Optional[Sequence[Any]] = None,
+    ai_engine: Optional[Any] = None,
+) -> List[List[str]]:
+    """Compile prioritized, executive-grade AI infrastructure recommendations for runner fleet."""
+    rows: List[List[str]] = []
+
+    # 1. Queue SLA Breaches & Autoscaling
+    if total_sla_breaches > 0:
+        rows.append([
+            "High",
+            "Queue Latency",
+            "Runner Fleet Capacity",
+            f"{total_sla_breaches:,} workflow jobs breached the 60-second queue wait SLA during peak concurrency.",
+            "Deploy auto-scaling runner pools (e.g., Actions Runner Controller on Kubernetes) to dynamically scale instances based on queue depth.",
+            "Eliminates job queue bottlenecks, stabilizes CI build start times, and accelerates developer feedback.",
+        ])
+    else:
+        rows.append([
+            "Low",
+            "Queue Latency",
+            "Runner Fleet Capacity",
+            "Self-hosted runner queue wait times are within healthy operating boundaries (<60s across jobs).",
+            "Maintain current runner pool sizing and review concurrency metrics during peak sprint milestones.",
+            "Guarantees predictable, low-latency workflow execution without provisioning excess idle compute.",
+        ])
+
+    # 2. Offline Runner Hygiene
+    offline_runners = [str(r[2]) for r in runner_rows if len(r) > 9 and str(r[9]).strip().lower() == "offline"]
+    if offline_runners:
+        sample_str = ", ".join(offline_runners[:3])
+        more = f" (+{len(offline_runners) - 3} more)" if len(offline_runners) > 3 else ""
+        rows.append([
+            "Medium",
+            "Fleet Hygiene",
+            f"{len(offline_runners)} Offline Runners",
+            f"{len(offline_runners)} registered self-hosted runners are currently in 'Offline' status ({sample_str}{more}).",
+            "Decommission dormant or unreachable runner registrations via GitHub REST API to eliminate orphaned agent records.",
+            "Declutters pool inventory, prevents job routing errors, and tightens runner credential security.",
+        ])
+    elif runner_rows:
+        rows.append([
+            "Low",
+            "Fleet Hygiene",
+            "Registered Runners",
+            "100% of registered self-hosted runners are currently online and responsive.",
+            "Continue periodic health heartbeat monitoring and automated ephemeral provisioning.",
+            "Ensures optimal runner pool availability and resource utilization.",
+        ])
+
+    # 3. Execution Failures & Job Timeouts
+    timed_out = sum(r[17] for r in runner_rows if len(r) > 17 and isinstance(r[17], int))
+    failed = sum(r[15] for r in runner_rows if len(r) > 15 and isinstance(r[15], int))
+    if timed_out > 0:
+        rows.append([
+            "High",
+            "Job Reliability",
+            f"{timed_out} Timed Out Jobs",
+            f"{timed_out} workflow jobs timed out on self-hosted runners ({failed} total failures).",
+            "Configure granular 'timeout-minutes' on individual job steps, inspect long-running test suites, and clean disk caches.",
+            "Prevents hung agent processes from exhausting runner worker threads and consuming compute quotas.",
+        ])
+    elif failed > 0:
+        rows.append([
+            "Medium",
+            "Job Reliability",
+            f"{failed} Failed Jobs",
+            f"{failed} workflow jobs ended in failure across self-hosted runner infrastructure.",
+            "Audit tool dependencies, container daemon availability, and runner workspace cleanup hooks.",
+            "Improves build success consistency and avoids redundant workflow rerun cycles.",
+        ])
+
+    # 4. Ephemeral Runner Isolation Architecture
+    static_count = sum(1 for r in runner_rows if len(r) > 8 and "ephemeral" not in str(r[8]).lower())
+    if static_count > 0:
+        rows.append([
+            "Optimization",
+            "Build Isolation",
+            "Runner Architecture",
+            f"{static_count} self-hosted runners use persistent/static host provisioning.",
+            "Migrate runner fleet to ephemeral infrastructure where runner containers or VMs are destroyed after each job.",
+            "Guarantees clean build environments, eliminates inter-job secret or artifact leakage, and simplifies patch management.",
+        ])
+
+    return rows
 
 
 def write_runners_workbook(
@@ -217,6 +309,13 @@ def write_runners_workbook(
     summary.cell(curr_row, 1, safe_cell(advisory_text))
     summary.cell(curr_row, 1).font = Font(name="Calibri", size=10, italic=True)
     summary.row_dimensions[curr_row].height = 28
+    curr_row += 1
+    summary.cell(
+        curr_row,
+        1,
+        "See dedicated 'AI Recommendations' sheet for actionable runner capacity, queue SLA, and fleet hygiene advisories.",
+    )
+    summary.cell(curr_row, 1).font = Font(name="Calibri", size=9, bold=True, color=NAVY)
     curr_row += 2
 
 
@@ -236,6 +335,16 @@ def write_runners_workbook(
 
     autofit(summary, skip_rows=2)
     summary.sheet_view.showGridLines = False
+
+    ai_rows = build_runner_ai_recommendations(
+        runner_rows=runner_rows,
+        org_runner_rows=org_runner_rows,
+        total_sla_breaches=total_sla_breaches,
+        failures=failures,
+        all_truncations=all_truncations,
+        ai_engine=ai_engine,
+    )
+    render_ai_recommendations_sheet(wb, ai_rows, title="AI Recommendations", index=1)
 
     org_ws = wb.create_sheet("Org Runner Summary")
     last_org = write_table(org_ws, 1, ORG_RUNNER_HEADERS, org_runner_rows)

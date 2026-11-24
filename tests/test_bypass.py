@@ -676,4 +676,42 @@ def test_bypass_plan_matching_precision_and_bot_actor_resolution():
     assert rec.actor == "my-deploy-bot"
 
 
+def test_bypass_ai_recommendations_sheet(tmp_path: Path):
+    """Verify bypass feature generates dedicated AI Recommendations sheet placed after Executive Summary."""
+    from repo360.common.ai_sheet import AI_REC_HEADERS
+    from repo360.bypass.reporter import write_bypass_workbook
+
+    now = datetime(2026, 11, 24, 12, 0, tzinfo=timezone.utc)
+    since = now - timedelta(days=90)
+    out_file = tmp_path / "bypass_ai_test.xlsx"
+
+    push_rows = [["test-org", "api-gateway", 1, "Slack Bot Token", "dev-user", "2026-11-20 10:00", "test", "demo", "High", "Rotate", "Yes", "https://github.com"]]
+    ruleset_rows = [["test-org", "api-gateway", 101, "refs/heads/main", "admin-user", "Repository", "prod-ruleset", "bypassed", "pull_request", "abcdef1", "2026-11-20 10:05", "https://github.com"]]
+    actor_rows = [["dev-user", 1, 0, 1, 1, 0, "Slack Bot Token", "High", "2026-11-20 10:00"]]
+
+    write_bypass_workbook(
+        path=out_file,
+        cfg=BypassConfig(output_dir=str(tmp_path), lookback_days=90),
+        since=since,
+        end=now,
+        push_rows=push_rows,
+        ruleset_rows=ruleset_rows,
+        org_rows=[["test-org", 1, 1, 0, 1, 1, 2, 1, "Slack Bot Token", "High"]],
+        actor_rows=actor_rows,
+        failures=[],
+        execution_duration=1.5,
+    )
+
+    wb = load_workbook(out_file)
+    assert "AI Recommendations" in wb.sheetnames
+    assert wb.sheetnames[1] == "AI Recommendations"
+
+    ai_ws = wb["AI Recommendations"]
+    headers = [ai_ws.cell(row=1, column=c).value for c in range(1, len(AI_REC_HEADERS) + 1)]
+    assert tuple(headers) == AI_REC_HEADERS
+    assert ai_ws.row_dimensions[2].height == 36
+    assert ai_ws.cell(row=2, column=1).value in ("High", "Medium", "Low", "Optimization")
+
+
+
 

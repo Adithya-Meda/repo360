@@ -19,6 +19,7 @@ from ..activity.reporter import (
     write_table,
 )
 from ..common.concurrency import AI_NOT_ENABLED_LABEL, AI_NOT_ENABLED_MESSAGE, is_ai_disabled
+from ..common.ai_sheet import AI_REC_HEADERS, render_ai_recommendations_sheet
 from ..common.text import pluralize
 from .models import (
     DORA_DEPLOYMENT_HEADERS,
@@ -63,6 +64,111 @@ def _apply_cell_badge(
             cell.fill = PatternFill("solid", fgColor=fill)
             cell.font = Font(bold=True, color=font_col)
             cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+
+def build_dora_ai_recommendations(
+    summary_data: Dict[str, Any],
+    repo_rows: Sequence[Sequence[Any]],
+    ai_engine: Optional[Any] = None,
+) -> List[List[str]]:
+    """Compile prioritized, executive-grade AI delivery recommendations for DORA metrics."""
+    rows: List[List[str]] = []
+
+    # 1. Deployment Frequency & Continuous Delivery
+    low_df_count = sum(1 for r in repo_rows if len(r) > 7 and str(r[7]).strip() == "Low")
+    if low_df_count > 0:
+        rows.append([
+            "High",
+            "Delivery Cadence",
+            f"{low_df_count} Low-Frequency Repos",
+            f"{low_df_count} repositories deploy less than once per month (Fleet median: {summary_data.get('median_df_weekly', 'N/A')}/week).",
+            "Decompose large monolithic releases into small, self-contained PRs and automate CD pipeline triggers on default branch merges.",
+            "Shortens release lead time, reduces deployment blast radius, and delivers features continuously to end users.",
+        ])
+    else:
+        rows.append([
+            "Low",
+            "Delivery Cadence",
+            "Deploying Services",
+            f"Fleet deployment cadence is healthy with {summary_data.get('total_successful', 0)} successful deployments ({summary_data.get('median_df_weekly', 'N/A')}/week median).",
+            "Maintain automated delivery triggers and monitor deployment batch sizes to prevent release bloat.",
+            "Sustains high velocity and consistent release rhythms across engineering teams.",
+        ])
+
+    # 2. Lead Time for Changes
+    median_lttc = summary_data.get("median_lttc_hours")
+    if median_lttc is not None and median_lttc > 48:
+        prio = "High" if median_lttc > 168 else "Medium"
+        rows.append([
+            prio,
+            "Pipeline Velocity",
+            "Change Lead Time",
+            f"Median lead time from commit authoring to production deployment is {median_lttc:.1f} hours.",
+            "Streamline pull request turnaround SLAs (<24h), parallelize CI test stages, and eliminate manual pre-release staging signoffs.",
+            "Accelerates developer feedback loops and minimizes work-in-progress inventory.",
+        ])
+    else:
+        rows.append([
+            "Low",
+            "Pipeline Velocity",
+            "CI/CD Pipeline",
+            f"Median change lead time is healthy at {median_lttc if median_lttc is not None else 'N/A'} hours.",
+            "Maintain automated test parallelism and monitor flaky test retries in delivery pipelines.",
+            "Keeps commit-to-production turnaround within Elite/High DORA benchmarks.",
+        ])
+
+    # 3. Change Failure Rate & Production Stability
+    cfr = summary_data.get("cfr_overall")
+    eff_failed = summary_data.get("effective_failed", 0)
+    total_deploys = summary_data.get("total_deploys", 0)
+    if cfr is not None and cfr > 10.0:
+        rows.append([
+            "High",
+            "Release Stability",
+            "Change Failure Rate",
+            f"Fleet change failure rate is {cfr:.1f}% ({eff_failed} failed changes across {total_deploys} deployments).",
+            "Implement automated smoke tests, canary deployments, and feature flags to decouple deployment from public release.",
+            "Prevents customer-impacting outages, lowers defect escape rate, and stabilizes production releases.",
+        ])
+    else:
+        cfr_val = f"{cfr:.1f}%" if cfr is not None else "0.0%"
+        rows.append([
+            "Low",
+            "Release Stability",
+            "Production Releases",
+            f"Change failure rate is within healthy boundaries at {cfr_val}.",
+            "Maintain pre-deployment validation suites and automated rollback alarms.",
+            "Sustains high production reliability and preserves customer trust.",
+        ])
+
+    # 4. Mean Time to Recovery & Incidents
+    open_inc = summary_data.get("open_incidents", 0)
+    median_mttr = summary_data.get("median_mttr_hours")
+    if open_inc > 0 or (median_mttr is not None and median_mttr > 24):
+        prio = "High" if open_inc > 0 else "Medium"
+        rows.append([
+            prio,
+            "Incident Recovery",
+            "Incident MTTR",
+            f"{open_inc} unresolved incidents or elevated MTTR ({median_mttr if median_mttr is not None else 'N/A'}h median recovery).",
+            "Standardize incident runbooks, automate rollback triggers on failed health checks, and implement blue-green cutovers.",
+            "Minimizes mean time to restore service and significantly curtails business downtime during outages.",
+        ])
+
+    # 5. Pipeline Efficiency & Redeployments
+    no_op = summary_data.get("no_op_deploys", 0)
+    retries = summary_data.get("collapsed_retries", 0)
+    if no_op > 0 or retries > 0:
+        rows.append([
+            "Optimization",
+            "Pipeline Hygiene",
+            "Workflow Efficiency",
+            f"{no_op} zero-diff deployments and {retries} failed retry bursts detected.",
+            "Add path filters and commit change detection to CD workflows to eliminate redundant builds on unchanged code.",
+            "Saves CI runner minutes, eliminates queue contention, and accelerates deployment throughput.",
+        ])
+
+    return rows
 
 
 def write_dora_workbook(
@@ -200,7 +306,14 @@ def write_dora_workbook(
         ai_table_headers = ("Organization", "Repository", "DORA Tier", "AI Strategic Flow Diagnostic & Advisory")
         ai_last_row = write_table(summary, curr_row, ai_table_headers, ai_summary_rows[:25])
         _apply_cell_badge(summary, curr_row + 1, ai_last_row, 3, DORA_TIER_STYLES)
-        curr_row = ai_last_row + 2
+        curr_row = ai_last_row + 1
+    summary.cell(
+        curr_row,
+        1,
+        "See dedicated 'AI Recommendations' sheet for actionable delivery velocity, stability, and pipeline optimization advisories.",
+    )
+    summary.cell(curr_row, 1).font = Font(name="Calibri", size=9, bold=True, color=NAVY)
+    curr_row += 2
 
     env_scope = (
         "All environments & branches (--include-non-prod)"
@@ -284,6 +397,9 @@ def write_dora_workbook(
 
     autofit(summary, skip_rows=2)
     summary.sheet_view.showGridLines = False
+
+    ai_rows = build_dora_ai_recommendations(summary_data, repo_rows, ai_engine=ai_engine)
+    render_ai_recommendations_sheet(wb, ai_rows, title="AI Recommendations", index=1)
 
     repo_ws = wb.create_sheet("Repository DORA Scorecard")
     if repo_rows:

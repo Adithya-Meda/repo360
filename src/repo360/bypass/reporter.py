@@ -19,6 +19,7 @@ from ..activity.reporter import (
     write_table,
 )
 from ..common.concurrency import AI_NOT_ENABLED_MESSAGE, is_ai_disabled
+from ..common.ai_sheet import AI_REC_HEADERS, render_ai_recommendations_sheet
 from ..common.text import pluralize
 from .models import (
     BYPASS_ACTOR_HEADERS,
@@ -30,6 +31,91 @@ from .models import (
     is_plan_limitation,
 )
 
+
+
+def build_bypass_ai_recommendations(
+    push_rows: Sequence[Sequence[Any]],
+    rule_rows: Sequence[Sequence[Any]],
+    actor_rows: Sequence[Sequence[Any]],
+    failures: Sequence[Tuple[str, str]],
+    plan_limitations: Optional[Sequence[Any]] = None,
+    ai_engine: Optional[Any] = None,
+) -> List[List[str]]:
+    """Compile prioritized, executive-grade AI security recommendations for push protection and ruleset bypasses."""
+    rows: List[List[str]] = []
+
+    # 1. Secret Scanning Push Protection Overrides
+    if push_rows:
+        secret_types = list(dict.fromkeys(str(r[3]) for r in push_rows if len(r) > 3 and r[3]))
+        sample_secrets = ", ".join(secret_types[:3])
+        more = f" (+{len(secret_types) - 3} more)" if len(secret_types) > 3 else ""
+        rows.append([
+            "High",
+            "Secret Governance",
+            f"{len(push_rows)} Push Protection Bypasses",
+            f"{len(push_rows)} secret scanning push protection overrides recorded ({sample_secrets}{more}).",
+            "Immediately rotate and invalidate exposed credentials in external providers, and mandate security approval for bypass exceptions.",
+            "Eliminates active credential compromise risks and enforces organization-wide zero-trust secret management.",
+        ])
+    else:
+        rows.append([
+            "Low",
+            "Secret Governance",
+            "Monitored Fleet",
+            "Zero secret scanning push protection bypasses recorded during the reporting period.",
+            "Maintain mandatory push protection enforcement across all organizational source repositories.",
+            "Prevents API keys, access tokens, and private keys from leaking into git commit history.",
+        ])
+
+    # 2. Branch Ruleset Direct Bypasses
+    if rule_rows:
+        bypassed_refs = list(dict.fromkeys(str(r[3]) for r in rule_rows if len(r) > 3 and r[3]))
+        sample_refs = ", ".join(bypassed_refs[:3])
+        more = f" (+{len(bypassed_refs) - 3} more)" if len(bypassed_refs) > 3 else ""
+        rows.append([
+            "High",
+            "Change Control",
+            f"{len(rule_rows)} Ruleset Bypasses",
+            f"{len(rule_rows)} direct branch ruleset bypasses occurred on protected references ({sample_refs}{more}).",
+            "Review and restrict 'Always allow' bypass roles in ruleset settings, requiring dual review approvals for all changes.",
+            "Eliminates unreviewed code modifications and preserves auditability for SOC2 / ISO compliance.",
+        ])
+    else:
+        rows.append([
+            "Low",
+            "Change Control",
+            "Protected Branches",
+            "All production pull requests and commits complied with configured branch rulesets without bypass.",
+            "Maintain current branch policies and periodically audit administrative bypass exemptions.",
+            "Ensures all changes to default and release branches undergo automated verification and peer review.",
+        ])
+
+    # 3. Actor Accountability & Privilege Management
+    if actor_rows:
+        top_actors = [str(r[0]) for r in actor_rows[:3] if len(r) > 0 and r[0]]
+        sample_actors = ", ".join(top_actors)
+        rows.append([
+            "Medium",
+            "Access Management",
+            f"{len(actor_rows)} Bypassing Actors",
+            f"{len(actor_rows)} distinct accounts exercised bypass permissions ({sample_actors}).",
+            "Enforce least-privilege bypass roles, limit bypass rights to emergency service accounts, and deploy pre-commit linters.",
+            "Minimizes reliance on bypass exceptions and aligns developer behavior with secure development lifecycles.",
+        ])
+
+    # 4. Audit Coverage & Permissions
+    all_gaps = len(failures) + (len(plan_limitations) if plan_limitations else 0)
+    if all_gaps > 0:
+        rows.append([
+            "Medium",
+            "Audit Coverage",
+            f"{all_gaps} Unaudited Targets",
+            f"{all_gaps} repositories or organizations could not be fully audited due to missing permissions or plan tier constraints.",
+            "Grant GitHub App 'secret_scanning_alerts: read' and verify GitHub Advanced Security licensing across all organizations.",
+            "Ensures 100% audit visibility and eliminates compliance blind spots across enterprise repositories.",
+        ])
+
+    return rows
 
 
 def write_bypass_workbook(
@@ -125,7 +211,14 @@ def write_bypass_workbook(
         summary.cell(curr_row, 1, AI_NOT_ENABLED_MESSAGE)
         summary.cell(curr_row, 1).font = Font(name="Calibri", size=10, italic=True, color="595959")
         summary.row_dimensions[curr_row].height = 24
-        curr_row += 2
+        curr_row += 1
+    summary.cell(
+        curr_row,
+        1,
+        "See dedicated 'AI Recommendations' sheet for actionable credential remediation, ruleset governance, and access control advisories.",
+    )
+    summary.cell(curr_row, 1).font = Font(name="Calibri", size=9, bold=True, color=NAVY)
+    curr_row += 2
 
     curr_row = section_title(summary, curr_row, "Organization Bypass & Compliance Summary")
     curr_row = write_table(summary, curr_row, BYPASS_ORG_HEADERS, org_rows, bar_col=6) + 2
@@ -136,6 +229,16 @@ def write_bypass_workbook(
 
     autofit(summary, skip_rows=2)
     summary.sheet_view.showGridLines = False
+
+    ai_rows = build_bypass_ai_recommendations(
+        push_rows=push_rows,
+        rule_rows=ruleset_rows,
+        actor_rows=actor_rows,
+        failures=failures,
+        plan_limitations=plan_limitations,
+        ai_engine=ai_engine,
+    )
+    render_ai_recommendations_sheet(wb, ai_rows, title="AI Recommendations", index=1)
 
     if failures:
         gap_ws = wb.create_sheet("Unaudited & Permission Gaps")

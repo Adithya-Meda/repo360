@@ -636,3 +636,43 @@ def test_finops_retention_rounding_precision_lfs_and_billing(tmp_path: Path):
     assert prod_kpis["Actions Compute Minutes (Current Period)"] == 34.0
     assert prod_kpis["Actions Compute Minutes (YTD)"] == 615.0
     assert prod_kpis["Billing Gross Usage Value (YTD USD)"] == 3.7691
+
+
+def test_finops_ai_recommendations_sheet(tmp_path):
+    """Verify FinOps feature creates dedicated AI Recommendations sheet placed after Executive Summary."""
+    from repo360.common.ai_sheet import AI_REC_HEADERS
+    from repo360.finops.reporter import write_finops_workbook
+    from repo360.finops.models import FinOpsConfig
+
+    now = datetime(2026, 11, 24, 12, 0, tzinfo=timezone.utc)
+    out_file = tmp_path / "finops_ai_test.xlsx"
+
+    repo_rows = [
+        ["test-org", "web-app", "public", 120.0, 5, 250.0, 5, 90, 2, 45.0, 0, 0.0, 0.0, 415.0, "Moderate Waste", "Rec"]
+    ]
+    org_rows = [
+        ["test-org", 1, 120.0, 5, 250.0, 5, 2, 45.0, 0, 415.0, 150.0, "Moderate", 1, 0.0, 0.0]
+    ]
+
+    write_finops_workbook(
+        path=out_file,
+        cfg=FinOpsConfig(output_dir=str(tmp_path)),
+        now=now,
+        repo_rows=repo_rows,
+        org_rows=org_rows,
+        artifact_rows=[],
+        cache_package_rows=[],
+        failures=[],
+        execution_duration=1.1,
+    )
+
+    wb = load_workbook(out_file)
+    assert "AI Recommendations" in wb.sheetnames
+    assert wb.sheetnames[1] == "AI Recommendations"
+
+    ai_ws = wb["AI Recommendations"]
+    headers = [ai_ws.cell(row=1, column=c).value for c in range(1, len(AI_REC_HEADERS) + 1)]
+    assert tuple(headers) == AI_REC_HEADERS
+    assert ai_ws.row_dimensions[2].height == 36
+    assert ai_ws.cell(row=2, column=1).value in ("High", "Medium", "Low", "Optimization")
+

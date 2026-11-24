@@ -1471,6 +1471,48 @@ def test_all_time_multi_repo_per_repo_cadence_isolation():
     assert row_b[7] == "High"
 
 
+def test_dora_ai_recommendations_sheet(tmp_path):
+    """Verify DORA feature creates dedicated AI Recommendations sheet placed after Executive Summary."""
+    from repo360.common.ai_sheet import AI_REC_HEADERS
+    from repo360.dora.reporter import write_dora_workbook
+    from repo360.dora.models import DORAConfig
+
+    now = datetime(2026, 11, 24, 12, 0, tzinfo=timezone.utc)
+    since = now - timedelta(days=90)
+    out_file = tmp_path / "dora_ai_test.xlsx"
+
+    repo_rows = [
+        ["test-org", "web-service", "High", 12, 10, 2, 2.5, "High", 5.2, "Elite", 16.7, "Medium", 2.0, "High", "Advisory", 0.0, "Elite", 0, "Complete", "No"]
+    ]
+    org_rows = [
+        ["test-org", 1, 1, "High", 12, 2.5, "High", 5.2, "Elite", 16.7, "Medium", 2.0, "High", 0.0, "Elite", 0, 0]
+    ]
+
+    write_dora_workbook(
+        path=out_file,
+        cfg=DORAConfig(lookback_days=90),
+        since=since,
+        end=now,
+        repo_rows=repo_rows,
+        org_rows=org_rows,
+        deployment_rows=[],
+        recovery_rows=[],
+        failures=[],
+        execution_duration=1.2,
+    )
+
+    wb = load_workbook(out_file)
+    assert "AI Recommendations" in wb.sheetnames
+    assert wb.sheetnames[1] == "AI Recommendations"
+
+    ai_ws = wb["AI Recommendations"]
+    headers = [ai_ws.cell(row=1, column=c).value for c in range(1, len(AI_REC_HEADERS) + 1)]
+    assert tuple(headers) == AI_REC_HEADERS
+    assert ai_ws.row_dimensions[2].height == 36
+    assert ai_ws.cell(row=2, column=1).value in ("High", "Medium", "Low", "Optimization")
+
+
+
 
 
 

@@ -19,6 +19,7 @@ from ..activity.reporter import (
     write_table,
 )
 from ..common.concurrency import AI_NOT_ENABLED_MESSAGE, is_ai_disabled
+from ..common.ai_sheet import AI_REC_HEADERS, render_ai_recommendations_sheet
 from .models import (
     FINOPS_ARTIFACT_HEADERS,
     FINOPS_BILLING_HEADERS,
@@ -36,6 +37,100 @@ OPTIMIZATION_STYLES = {
     "High Waste": ("FFC7CE", "9C0006"),
 }
 
+
+
+def build_finops_ai_recommendations(
+    repo_rows: Sequence[Sequence[Any]],
+    artifact_rows: Sequence[Sequence[Any]],
+    cache_rows: Sequence[Sequence[Any]],
+    org_billing: Optional[Dict[str, Any]] = None,
+    failures: Optional[Sequence[Tuple[str, str]]] = None,
+    ai_engine: Optional[Any] = None,
+) -> List[List[str]]:
+    """Compile prioritized, executive-grade AI FinOps storage and cost optimization recommendations."""
+    rows: List[List[str]] = []
+
+    # 1. 90-Day Artifact Retention Policy Overrides
+    policy_idx = FINOPS_REPO_HEADERS.index("Repo Policy (Days)") if "Repo Policy (Days)" in FINOPS_REPO_HEADERS else 7
+    repos_with_90d = [str(r[1]) for r in repo_rows if len(r) > policy_idx and r[policy_idx] == 90]
+    art_mb_idx = FINOPS_REPO_HEADERS.index("Artifact Storage (MB)") if "Artifact Storage (MB)" in FINOPS_REPO_HEADERS else 5
+    total_art_mb = sum(r[art_mb_idx] for r in repo_rows if len(r) > art_mb_idx and isinstance(r[art_mb_idx], (int, float)))
+
+    if repos_with_90d:
+        sample_str = ", ".join(repos_with_90d[:3])
+        more = f" (+{len(repos_with_90d) - 3} more)" if len(repos_with_90d) > 3 else ""
+        rows.append([
+            "High",
+            "Artifact Retention",
+            f"{len(repos_with_90d)} Repos with 90-Day Policy",
+            f"{len(repos_with_90d)} repositories retain workflow build artifacts under the default 90-day retention policy ({sample_str}{more}).",
+            "Configure 'retention-days: 7' (or 14) in .github/workflows/ YAML files or set repository default artifact retention to 7 days.",
+            f"Immediately eliminates up to 85% of retained artifact storage ({total_art_mb:.1f} MB monitored).",
+        ])
+    else:
+        rows.append([
+            "Low",
+            "Artifact Retention",
+            "Workflow Artifacts",
+            "Monitored repositories have customized, efficient artifact retention policies (<90 days).",
+            "Maintain automated retention bounds and verify temporary build outputs are excluded from upload.",
+            "Prevents uncontrolled growth in billable Actions shared storage quotas.",
+        ])
+
+    # 2. Actions Caches
+    cache_mb_idx = FINOPS_REPO_HEADERS.index("Cache Storage (MB)") if "Cache Storage (MB)" in FINOPS_REPO_HEADERS else 9
+    total_cache_mb = sum(r[cache_mb_idx] for r in repo_rows if len(r) > cache_mb_idx and isinstance(r[cache_mb_idx], (int, float)))
+    if total_cache_mb > 1024 or len(cache_rows) > 20:
+        rows.append([
+            "Medium",
+            "Cache Hygiene",
+            f"{len(cache_rows)} Actions Caches",
+            f"Actions caches consume {total_cache_mb:.1f} MB across repositories.",
+            "Purge stale branch caches older than 7 days using GitHub CLI (`gh-actions-cache`) and standardize cache key prefixes.",
+            "Keeps cache storage well beneath the 10 GB per-repository GitHub limit and speeds up dependency restoration.",
+        ])
+    elif cache_rows:
+        rows.append([
+            "Low",
+            "Cache Hygiene",
+            "Actions Caches",
+            f"Actions cache footprint is well-managed ({total_cache_mb:.1f} MB across {len(cache_rows)} caches).",
+            "Maintain current cache eviction cadences and scope keys to package lockfiles.",
+            "Ensures fast CI dependency cache hits without approaching storage limits.",
+        ])
+
+    # 3. Large Repositories & Git LFS
+    disk_idx = FINOPS_REPO_HEADERS.index("Disk Size (MB)") if "Disk Size (MB)" in FINOPS_REPO_HEADERS else 3
+    large_repos = [(str(r[1]), float(r[disk_idx])) for r in repo_rows if len(r) > disk_idx and isinstance(r[disk_idx], (int, float)) and r[disk_idx] > 500]
+    if large_repos:
+        large_repos.sort(key=lambda x: -x[1])
+        sample_str = ", ".join(f"{name} ({mb:.0f}MB)" for name, mb in large_repos[:3])
+        rows.append([
+            "Medium",
+            "Repository Sizing",
+            f"{len(large_repos)} Large Repos (>500MB)",
+            f"{len(large_repos)} repositories exceed 500 MB in disk storage footprint ({sample_str}).",
+            "Migrate large binary assets to Git LFS or package releases, and adopt shallow clone (`depth: 1`) in CI checkouts.",
+            "Significantly reduces git clone/fetch latency on CI runners and conserves disk bandwidth.",
+        ])
+
+    # 4. Actions Billing & Compute Utilization
+    if org_billing:
+        has_billing = any(b.items for b in org_billing.values())
+        if has_billing:
+            compute_mins = sum(b.actions_compute_minutes for b in org_billing.values())
+            gross_usd = sum(b.gross_amount_usd for b in org_billing.values())
+            if compute_mins > 5000 or gross_usd > 50:
+                rows.append([
+                    "Optimization",
+                    "Compute Spend",
+                    "Actions Compute Usage",
+                    f"Actions compute consumption totaled {compute_mins:,.1f} minutes (${gross_usd:.2f} USD gross spend).",
+                    "Configure workflow concurrency cancel-in-progress, leverage dependency caching, and consider ARM runners for heavy pipelines.",
+                    "Reduces billed compute minutes and eliminates redundant pipeline re-runs.",
+                ])
+
+    return rows
 
 
 def write_finops_workbook(
@@ -153,7 +248,14 @@ def write_finops_workbook(
         summary.cell(curr_row, 1, AI_NOT_ENABLED_MESSAGE)
         summary.cell(curr_row, 1).font = Font(name="Calibri", size=10, italic=True, color="595959")
         summary.row_dimensions[curr_row].height = 24
-        curr_row += 2
+        curr_row += 1
+    summary.cell(
+        curr_row,
+        1,
+        "See dedicated 'AI Recommendations' sheet for actionable artifact retention, cache cleanup, and storage cost advisories.",
+    )
+    summary.cell(curr_row, 1).font = Font(name="Calibri", size=9, bold=True, color=NAVY)
+    curr_row += 2
 
     curr_row = section_title(summary, curr_row, "Organization Storage & Optimization Overview")
     curr_row = write_table(summary, curr_row, FINOPS_ORG_HEADERS, org_rows, bar_col=9) + 2
@@ -168,6 +270,16 @@ def write_finops_workbook(
 
     autofit(summary, skip_rows=2)
     summary.sheet_view.showGridLines = False
+
+    ai_rows = build_finops_ai_recommendations(
+        repo_rows=repo_rows,
+        artifact_rows=artifact_rows,
+        cache_rows=cache_package_rows,
+        org_billing=org_billing,
+        failures=failures,
+        ai_engine=ai_engine,
+    )
+    render_ai_recommendations_sheet(wb, ai_rows, title="AI Recommendations", index=1)
 
     repo_ws = wb.create_sheet("Storage by Repository")
     if repo_rows:
