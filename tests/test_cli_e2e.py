@@ -212,7 +212,7 @@ def _patch_activity_collectors(
     failing_repo: Optional[str] = None,
     partial_repo: Optional[str] = None,
 ) -> None:
-    def _collect(client, org, repo, since, end, exclude_bots, metadata):
+    def _collect(client, org, repo, since, end, exclude_bots, metadata=None, *args, **kwargs):
         if repo == failing_repo:
             raise RuntimeError("simulated GraphQL outage")
         events = [("alice", "commits", d) for d in range(1, 10)] + [("bob", "prs_opened", 2)]

@@ -354,13 +354,26 @@ def write_activity_workbook(
         if f"First Activity ({LOCAL_TZ_NAME})" in USER_HEADERS
         else -1
     )
+    member_idx = (
+        USER_HEADERS.index("Org Member")
+        if "Org Member" in USER_HEADERS
+        else -1
+    )
     if first_act_idx >= 0:
         for r in user_rows:
+            if member_idx >= 0 and len(r) > member_idx and r[member_idx] not in ("Yes", "Unknown"):
+                continue
             if len(r) > first_act_idx and r[first_act_idx]:
                 activity_dates.append(r[first_act_idx])
-    for r in repo_rows:
-        if len(r) > 6 and r[6]:
-            activity_dates.append(r[6])
+    repo_act_idx = (
+        REPO_HEADERS.index(f"Last Activity ({LOCAL_TZ_NAME})")
+        if f"Last Activity ({LOCAL_TZ_NAME})" in REPO_HEADERS
+        else -1
+    )
+    if repo_act_idx >= 0:
+        for r in repo_rows:
+            if len(r) > repo_act_idx and r[repo_act_idx]:
+                activity_dates.append(r[repo_act_idx])
 
     since_local, end_local = since.astimezone(LOCAL_TZ), end.astimezone(LOCAL_TZ)
     duration_str = f"{execution_duration:.1f}s" if execution_duration else "N/A"

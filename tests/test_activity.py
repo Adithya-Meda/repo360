@@ -872,6 +872,250 @@ def test_collect_repo_events_full_history_omits_epoch_since():
     assert act["alice"].issues_opened == 1
 
 
+def test_org_members_only_filtering_and_external_exclusion(tmp_path):
+    """Verify that external non-members and forked repos are excluded from user rows, inventory, and reporting window."""
+    from repo360.activity.collector import (
+        build_management_tables,
+        build_rows,
+        collect_repo_events,
+        collect_repository,
+    )
+    from repo360.activity.models import Activity, ActivityConfig, RepositoryReport
+    from repo360.activity.reporter import write_activity_workbook
+    from openpyxl import load_workbook
+
+    now = datetime(2026, 11, 24, 12, 0, tzinfo=timezone.utc)
+    epoch_since = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    org_members = {"alice"}
+
+    class MockOrgClient:
+        def paginate(self, org, endpoint, params=None):
+            if endpoint.endswith("/commits"):
+                return iter([
+                    {
+                        "commit": {"author": {"date": "2024-05-10T10:00:00Z"}},
+                        "author": {"login": "alice"},
+                    },
+                    {
+                        "commit": {"author": {"date": "2010-09-02T13:21:00Z"}},
+                        "author": {"login": "cbeams"},
+                    },
+                ])
+            return iter([])
+
+        def graphql(self, org, query, variables=None):
+            return {
+                "data": {
+                    "repository": {
+                        "openIssues": {"totalCount": 0},
+                        "closedIssues": {"totalCount": 0},
+                        "totalIssues": {"totalCount": 0},
+                        "pullRequests": {
+                            "pageInfo": {"hasNextPage": False},
+                            "nodes": [
+                                {
+                                    "id": "PR_1",
+                                    "number": 1,
+                                    "createdAt": "2024-06-01T10:00:00Z",
+                                    "mergedAt": "2024-06-02T10:00:00Z",
+                                    "updatedAt": "2024-06-02T10:00:00Z",
+                                    "state": "MERGED",
+                                    "author": {"login": "alice"},
+                                    "reviews": {"pageInfo": {"hasNextPage": False}, "nodes": []},
+                                },
+                                {
+                                    "id": "PR_2",
+                                    "number": 2,
+                                    "createdAt": "2010-09-02T10:00:00Z",
+                                    "mergedAt": "2010-09-03T10:00:00Z",
+                                    "updatedAt": "2010-09-03T10:00:00Z",
+                                    "state": "MERGED",
+                                    "author": {"login": "cbeams"},
+                                    "reviews": {"pageInfo": {"hasNextPage": False}, "nodes": []},
+                                },
+                            ],
+                        },
+                    }
+                }
+            }
+
+        def get(self, org, endpoint, params=None, allow_404=False):
+            return {}
+
+    cfg = ActivityConfig(lookback_days=0, include_external=False, include_forks=False, output_dir=str(tmp_path))
+
+    report = RepositoryReport(metadata={"has_pull_requests": True, "has_issues": False}, activity_complete=True)
+    users = collect_repo_events(
+        client=MockOrgClient(),
+        org="demo-org",
+        repo="demo-repo",
+        since=epoch_since,
+        exclude_bots=True,
+        end=now,
+        report=report,
+        org_members=org_members,
+        include_external=cfg.include_external,
+    )
+
+    assert "alice" in users
+    assert "cbeams" not in users
+    assert users["alice"].commits == 1
+    assert users["alice"].prs_opened == 1
+    assert users["alice"].prs_merged == 1
+    assert report.cohort_opened == 1
+    assert report.cohort_merged == 1
+    assert report.prs_total == 1
+    assert all(e[0] != "cbeams" for e in report.events)
+
+    fork_report = collect_repository(
+        client=MockOrgClient(),
+        org="demo-org",
+        repo="forked-repo",
+        since=epoch_since,
+        end=now,
+        exclude_bots=True,
+        cached_metadata={"fork": True, "size": 100},
+        org_members=org_members,
+        include_external=cfg.include_external,
+        include_forks=cfg.include_forks,
+    )
+    assert fork_report.activity_complete is True
+    assert fork_report.users == {}
+
+    user_rows, repo_rows = build_rows(
+        results={("demo-org", "demo-repo"): users},
+        members={"demo-org": org_members},
+        cfg=cfg,
+        end=now,
+        teams_by_user={},
+        org_team_complete={"demo-org": True},
+    )
+
+    user_logins = [r[1] for r in user_rows]
+    assert "alice" in user_logins
+    assert "cbeams" not in user_logins
+    assert len(user_rows) == 1
+
+    tables = build_management_tables(
+        reports={("demo-org", "demo-repo"): report},
+        members={"demo-org": org_members},
+        since=epoch_since,
+        end=now,
+        organization_status={"demo-org": True},
+        cfg=cfg,
+    )
+
+    inv_headers, inv_rows = tables["Repository Inventory"]
+    inv_row = inv_rows[0]
+    assert inv_row[inv_headers.index("Commits")] == 1
+    assert inv_row[inv_headers.index("Total PRs")] == 1
+    assert inv_row[inv_headers.index("Active Contributors")] == 1
+
+    xlsx_path = tmp_path / "member_only_test.xlsx"
+    write_activity_workbook(
+        path=xlsx_path,
+        cfg=cfg,
+        since=epoch_since,
+        end=now,
+        user_rows=user_rows,
+        repo_rows=repo_rows,
+        org_rows=[["demo-org", 1, 1, 1, 0, 0, 0, 3]],
+        failures=[],
+        repos_scanned=1,
+        management_tables=tables,
+        execution_duration=2.0,
+    )
+
+    wb = load_workbook(xlsx_path)
+    summary = wb["Executive Summary"]
+    reporting_window_str = str(summary["A2"].value)
+    assert "2010" not in reporting_window_str
+    assert "2024" in reporting_window_str
+
+
+def test_include_forks_and_external_when_explicitly_enabled(tmp_path):
+    """Verify that when include_external=True and include_forks=True, forks and external users are processed."""
+    from repo360.activity.collector import (
+        collect_repo_events,
+        collect_repository,
+        build_rows,
+    )
+    from repo360.activity.models import ActivityConfig, RepositoryReport
+
+    now = datetime(2026, 11, 24, 12, 0, tzinfo=timezone.utc)
+    epoch_since = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    org_members = {"alice"}
+
+    class MockClient:
+        def paginate(self, org, endpoint, params=None):
+            if endpoint.endswith("/commits"):
+                return iter([
+                    {
+                        "commit": {"author": {"date": "2024-05-10T10:00:00Z"}},
+                        "author": {"login": "alice"},
+                    },
+                    {
+                        "commit": {"author": {"date": "2010-09-02T13:21:00Z"}},
+                        "author": {"login": "cbeams"},
+                    },
+                ])
+            return iter([])
+
+        def graphql(self, org, query, variables=None):
+            return {}
+
+        def get(self, org, endpoint, params=None, allow_404=False):
+            return {}
+
+    cfg = ActivityConfig(include_external=True, include_forks=True, output_dir=str(tmp_path))
+
+    report = RepositoryReport(metadata={"has_pull_requests": False, "has_issues": False}, activity_complete=True)
+    users = collect_repo_events(
+        client=MockClient(),
+        org="demo-org",
+        repo="demo-repo",
+        since=epoch_since,
+        exclude_bots=True,
+        end=now,
+        report=report,
+        org_members=org_members,
+        include_external=cfg.include_external,
+    )
+
+    assert "alice" in users
+    assert "cbeams" in users
+
+    fork_report = collect_repository(
+        client=MockClient(),
+        org="demo-org",
+        repo="forked-repo",
+        since=epoch_since,
+        end=now,
+        exclude_bots=True,
+        cached_metadata={"fork": True, "size": 100, "has_pull_requests": False, "has_issues": False},
+        org_members=org_members,
+        include_external=cfg.include_external,
+        include_forks=cfg.include_forks,
+    )
+    assert fork_report.activity_complete is True
+    assert "alice" in fork_report.users
+    assert "cbeams" in fork_report.users
+
+    user_rows, repo_rows = build_rows(
+        results={("demo-org", "demo-repo"): users},
+        members={"demo-org": org_members},
+        cfg=cfg,
+        end=now,
+        teams_by_user={},
+        org_team_complete={"demo-org": True},
+    )
+    user_logins = [r[1] for r in user_rows]
+    assert "alice" in user_logins
+    assert "cbeams" in user_logins
+
+
+
+
 
 
 

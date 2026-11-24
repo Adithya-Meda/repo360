@@ -42,8 +42,22 @@ def collect_pull_requests_graphql(
     exclude_bots: bool,
     report: Optional[RepositoryReport],
     record_fn: Any,
+    org_members: Optional[Set[str]] = None,
+    include_external: bool = False,
 ) -> bool:
     """Collect PRs, merges, and reviews via batched GraphQL query for fast retrieval."""
+    norm_members: Optional[Set[str]] = (
+        {m.casefold() for m in org_members}
+        if (org_members is not None and not include_external)
+        else None
+    )
+
+    def _is_allowed(login: Optional[str]) -> bool:
+        if not login:
+            return False
+        if norm_members is None:
+            return True
+        return login.casefold() in norm_members
     query = """
     query($owner: String!, $name: String!, $cursor: String) {
       repository(owner: $owner, name: $name) {
@@ -139,10 +153,13 @@ def collect_pull_requests_graphql(
                 return True
 
             author_dict = {"login": pr["author"]["login"]} if pr.get("author") and pr["author"].get("login") else None
-            record_fn(author_dict, "prs_opened", pr.get("createdAt"))
-            record_fn(author_dict, "prs_merged", pr.get("mergedAt"))
+            author_login = author_dict.get("login") if author_dict else None
+            is_author_allowed = _is_allowed(author_login)
+            if is_author_allowed:
+                record_fn(author_dict, "prs_opened", pr.get("createdAt"))
+                record_fn(author_dict, "prs_merged", pr.get("mergedAt"))
             created = parse_ts(pr["createdAt"])
-            eligible = not (exclude_bots and author_dict and is_bot(author_dict))
+            eligible = not (exclude_bots and author_dict and is_bot(author_dict)) and is_author_allowed
             if report is not None and eligible and since <= created <= end:
                 report.cohort_opened += 1
                 if pr.get("mergedAt") and parse_ts(pr["mergedAt"]) <= end:
@@ -184,11 +201,15 @@ def collect_pull_requests_graphql(
                 if review.get("state") == "PENDING" or not review.get("submittedAt"):
                     continue
                 rev_dict = {"login": review["author"]["login"]} if review.get("author") and review["author"].get("login") else None
-                record_fn(rev_dict, "reviews", review["submittedAt"])
+                rev_login = rev_dict.get("login") if rev_dict else None
+                is_rev_allowed = _is_allowed(rev_login)
+                if is_rev_allowed:
+                    record_fn(rev_dict, "reviews", review["submittedAt"])
                 submitted = parse_ts(review["submittedAt"])
                 if (
-                    rev_dict and rev_dict.get("login") and author_dict
-                    and rev_dict["login"].lower() != (author_dict.get("login") or "").lower()
+                    rev_dict and rev_login and author_dict
+                    and is_rev_allowed
+                    and rev_login.lower() != (author_dict.get("login") or "").lower()
                     and not (exclude_bots and is_bot(rev_dict))
                     and created <= submitted <= end
                 ):
@@ -235,6 +256,8 @@ def collect_repo_events(
     exclude_bots: bool,
     end: Optional[datetime] = None,
     report: Optional[RepositoryReport] = None,
+    org_members: Optional[Set[str]] = None,
+    include_external: bool = False,
 ) -> Dict[str, Activity]:
     """Collect commit, PR, review, and issue activities for a single repository."""
     activity: Dict[str, Activity] = defaultdict(Activity)
@@ -248,11 +271,28 @@ def collect_repo_events(
         else {}
     )
 
+    norm_members: Optional[Set[str]] = (
+        {m.casefold() for m in org_members}
+        if (org_members is not None and not include_external)
+        else None
+    )
+
+    def _is_allowed(login: Optional[str]) -> bool:
+        if not login:
+            return False
+        if norm_members is None:
+            return True
+        return login.casefold() in norm_members
+
     def record(user: Optional[Dict[str, Any]], metric: str, timestamp: Optional[str]) -> None:
-        if not timestamp or (user and exclude_bots and is_bot(user)):
+        if not timestamp or not user or not isinstance(user, dict):
+            return
+        if exclude_bots and is_bot(user):
+            return
+        login = user.get("login")
+        if not _is_allowed(login):
             return
         when = parse_ts(timestamp)
-        login = user.get("login") if user else None
         if collected_since <= when <= end and report is not None:
             report.events.append((login.lower() if login else None, metric, when))
         if since <= when <= end and login:
@@ -281,7 +321,17 @@ def collect_repo_events(
         pr_success = False
         try:
             pr_success = collect_pull_requests_graphql(
-                client, org, repo, collected_since, since, end, exclude_bots, report, record
+                client,
+                org,
+                repo,
+                collected_since,
+                since,
+                end,
+                exclude_bots,
+                report,
+                record,
+                org_members=org_members,
+                include_external=include_external,
             )
         except Exception as exc:
             logger.debug("GraphQL PR collection failed for %s/%s (%s); falling back to REST", org, repo, exc)
@@ -293,10 +343,14 @@ def collect_repo_events(
                 for pr in pulls:
                     if parse_ts(pr["updated_at"]) < collected_since:
                         break
-                    record(pr.get("user"), "prs_opened", pr.get("created_at"))
-                    record(pr.get("user"), "prs_merged", pr.get("merged_at"))
+                    pr_user = pr.get("user") or {}
+                    pr_login = pr_user.get("login")
+                    is_pr_allowed = _is_allowed(pr_login)
+                    if is_pr_allowed:
+                        record(pr.get("user"), "prs_opened", pr.get("created_at"))
+                        record(pr.get("user"), "prs_merged", pr.get("merged_at"))
                     created = parse_ts(pr["created_at"])
-                    eligible = not (exclude_bots and is_bot(pr.get("user") or {}))
+                    eligible = not (exclude_bots and is_bot(pr.get("user") or {})) and is_pr_allowed
                     if report is not None and eligible and since <= created <= end:
                         report.cohort_opened += 1
                         if pr.get("merged_at") and parse_ts(pr["merged_at"]) <= end:
@@ -318,13 +372,16 @@ def collect_repo_events(
                     first_review: Optional[datetime] = None
                     for review in client.paginate(org, f"{base}/pulls/{pr['number']}/reviews"):
                         reviewer = review.get("user") or {}
+                        rev_login = reviewer.get("login")
                         if review.get("state") == "PENDING" or not review.get("submitted_at"):
                             continue
-                        record(reviewer, "reviews", review["submitted_at"])
+                        if _is_allowed(rev_login):
+                            record(reviewer, "reviews", review["submitted_at"])
                         submitted = parse_ts(review["submitted_at"])
                         if (
-                            reviewer.get("login")
-                            and reviewer["login"].lower() != (pr.get("user") or {}).get("login", "").lower()
+                            rev_login
+                            and _is_allowed(rev_login)
+                            and rev_login.lower() != (pr.get("user") or {}).get("login", "").lower()
                             and not (exclude_bots and is_bot(reviewer))
                             and created <= submitted <= end
                         ):
@@ -401,6 +458,9 @@ def collect_repository(
     end: datetime,
     exclude_bots: bool,
     cached_metadata: Optional[Dict[str, Any]] = None,
+    org_members: Optional[Set[str]] = None,
+    include_external: bool = False,
+    include_forks: bool = False,
 ) -> RepositoryReport:
     """Perform complete activity inspection and governance audit for a repository."""
     report = RepositoryReport()
@@ -415,6 +475,14 @@ def collect_repository(
             report.errors.append(f"Metadata: {exc}")
             return report
 
+    if not include_forks and report.metadata.get("fork"):
+        report.users = {}
+        report.activity_complete = True
+        report.protected = "No"
+        report.protected_branches = ()
+        report.codeowners = "No"
+        return report
+
     size = report.metadata.get("size", 1)
     pushed_at = parse_ts(report.metadata["pushed_at"]) if report.metadata.get("pushed_at") else None
     updated_at = parse_ts(report.metadata["updated_at"]) if report.metadata.get("updated_at") else None
@@ -428,7 +496,17 @@ def collect_repository(
     else:
         pre_errors = len(report.errors)
         try:
-            report.users = collect_repo_events(client, org, repo, since, exclude_bots, end, report)
+            report.users = collect_repo_events(
+                client,
+                org,
+                repo,
+                since,
+                exclude_bots,
+                end,
+                report,
+                org_members=org_members,
+                include_external=include_external,
+            )
             report.activity_complete = len(report.errors) == pre_errors
         except Exception as exc:
             report.errors.append(f"Activity: {exc}")
@@ -627,6 +705,8 @@ def build_rows(
         repo_user_agg: Dict[str, Tuple[str, Activity]] = {}
         for login, act in users.items():
             lk = login.casefold()
+            if not cfg.include_external and org_k in norm_members and lk not in norm_members[org_k]:
+                continue
             disp_login = canonical_login.setdefault((org_k, lk), login)
             if lk not in repo_user_agg:
                 merged_act = Activity()
@@ -651,6 +731,8 @@ def build_rows(
 
     user_rows: List[list] = []
     for (org_k, lk), act in per_user.items():
+        if not cfg.include_external and org_k in norm_members and lk not in norm_members[org_k]:
+            continue
         disp_org = canonical_org.get(org_k, org_k)
         disp_login = canonical_login.get((org_k, lk), lk)
         member_flag = ("Yes" if lk in norm_members[org_k] else "No") if org_k in norm_members else "Unknown"
@@ -734,11 +816,13 @@ def build_management_tables(
     since: datetime,
     end: datetime,
     organization_status: Optional[Dict[str, bool]] = None,
+    cfg: Optional[ActivityConfig] = None,
 ) -> Dict[str, Tuple[Tuple[str, ...], List[list]]]:
     """Construct Repository Inventory, Top Active Repositories, and Management KPIs tables."""
     tables: Dict[str, Tuple[Tuple[str, ...], List[list]]] = {}
     inventory: List[list] = []
     created_dates: Dict[Tuple[str, str], Optional[datetime]] = {}
+    members_norm = {k.casefold(): {login.lower() for login in v} for k, v in members.items()}
 
     for key, result in reports.items():
         raw_created = result.metadata.get("created_at") if result.metadata else None
@@ -751,7 +835,14 @@ def build_management_tables(
             visibility = "private" if meta.get("private") else ("public" if meta.get("private") is False else "Unknown")
         visibility = str(visibility).lower()
 
-        events = [event for event in result.events if since <= event[2] <= end]
+        org_members = members_norm.get(org.casefold(), set())
+        if cfg and not cfg.include_external and org_members:
+            events = [
+                event for event in result.events
+                if since <= event[2] <= end and (event[0] and event[0].casefold() in org_members)
+            ]
+        else:
+            events = [event for event in result.events if since <= event[2] <= end]
         counts = Counter(metric for _, metric, _ in events)
         contributors = {login for login, _, _ in events if login}
 
@@ -898,7 +989,6 @@ def build_management_tables(
 
     kpis: List[list] = []
     org_status_norm = {k.casefold(): v for k, v in (organization_status or {}).items()}
-    members_norm = {k.casefold(): {login.lower() for login in v} for k, v in members.items()}
     org_lookup: Dict[str, str] = {}
     for org, _ in reports:
         org_lookup.setdefault(org.casefold(), org)
@@ -912,22 +1002,28 @@ def build_management_tables(
     for org in organizations:
         org_k = org.casefold()
         selected = [result for (owner, _), result in reports.items() if owner.casefold() == org_k]
-        events = [event for result in selected for event in result.events if since <= event[2] <= end]
+        org_members = members_norm.get(org_k, set())
+        if cfg and not cfg.include_external and org_members:
+            events = [
+                event for result in selected for event in result.events
+                if since <= event[2] <= end and (event[0] and event[0].casefold() in org_members)
+            ]
+        else:
+            events = [event for result in selected for event in result.events if since <= event[2] <= end]
         counts = Counter(metric for _, metric, _ in events)
         contributors = {login for login, _, _ in events if login}
-        org_members = members_norm.get(org_k, set())
         member_coverage = org_k in members_norm
         rolling = {
             login
             for result in selected
             for login, _, when in result.events
-            if login and end - timedelta(days=30) <= when <= end
+            if login and end - timedelta(days=30) <= when <= end and (not (cfg and not cfg.include_external and org_members) or login.casefold() in org_members)
         }
         monthly = {
             login
             for result in selected
             for login, _, when in result.events
-            if login and month_start <= when <= end
+            if login and month_start <= when <= end and (not (cfg and not cfg.include_external and org_members) or login.casefold() in org_members)
         }
         hours = [h for result in selected for h in result.review_hours]
         opened = sum(result.cohort_opened for result in selected)

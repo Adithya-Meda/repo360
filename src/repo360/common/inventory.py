@@ -46,7 +46,7 @@ def discover_app_repositories(
     client: Any,
     org_filter: Optional[List[str]] = None,
     include_archived: bool = False,
-    include_forks: bool = True,
+    include_forks: bool = False,
 ) -> Tuple[List[Tuple[str, str]], Dict[Tuple[str, str], Dict[str, Any]]]:
     """Auto-discover all repositories directly accessible to the GitHub App across installed organizations.
 
@@ -152,7 +152,7 @@ def resolve_scan_targets(
     client: Any,
     org_filter: Optional[List[str]] = None,
     include_archived: bool = False,
-    include_forks: bool = True,
+    include_forks: bool = False,
 ) -> Tuple[List[Tuple[str, str]], Dict[Tuple[str, str], Dict[str, Any]]]:
     """Resolve scan targets dynamically via direct GitHub App auto-discovery."""
     return discover_app_repositories(

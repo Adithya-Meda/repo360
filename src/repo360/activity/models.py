@@ -223,7 +223,8 @@ class ActivityConfig:
     active_min_days: int = 8
     moderate_min_days: int = 3
     include_archived: bool = False
-    include_forks: bool = True
+    include_forks: bool = False
+    include_external: bool = False
     exclude_bots: bool = True
     include_inactive_members: bool = True
     max_workers: int = 0
@@ -231,3 +232,8 @@ class ActivityConfig:
     max_retries: int = 5
     output_dir: str = "./repo360-output"
     file_prefix: str = "repo360_activity"
+
+    @property
+    def only_org_members(self) -> bool:
+        """Convenience property indicating whether only verified organization members are tracked."""
+        return not self.include_external

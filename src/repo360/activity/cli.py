@@ -115,6 +115,18 @@ def run_activity_cli(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help="Include bot accounts (default: excluded).",
     )
+    parser.add_argument(
+        "--include-forks",
+        action="store_true",
+        default=False,
+        help="Include forked repositories (default: excluded).",
+    )
+    parser.add_argument(
+        "--include-external",
+        action="store_true",
+        default=False,
+        help="Include external/third-party contributors who are not organization members (default: excluded).",
+    )
 
     args = parser.parse_args(argv)
     if args.moderate_min_days > args.active_min_days:
@@ -140,6 +152,8 @@ def run_activity_cli(argv: Optional[List[str]] = None) -> int:
         active_min_days=args.active_min_days,
         moderate_min_days=args.moderate_min_days,
         include_archived=args.include_archived,
+        include_forks=args.include_forks,
+        include_external=args.include_external,
         exclude_bots=not args.include_bots,
         max_workers=args.workers,
         output_dir=args.output_dir,
@@ -201,6 +215,12 @@ def run_activity_cli(argv: Optional[List[str]] = None) -> int:
                 f"       https://github.com/organizations/{org_name}/settings/installations"
             )
 
+    print("\033[96m[INFO]\033[0m Fetching organization members and teams...")
+    members = fetch_members(client, orgs, cfg.exclude_bots, failures)
+    teams_by_user, org_team_complete = fetch_team_access(
+        client, orgs, cfg.exclude_bots
+    )
+
     reports: Dict[Tuple[str, str], RepositoryReport] = {}
 
     from ..common.concurrency import resolve_worker_count
@@ -218,6 +238,9 @@ def run_activity_cli(argv: Optional[List[str]] = None) -> int:
                 end,
                 cfg.exclude_bots,
                 metadata_cache.get((org.casefold(), repo.casefold())),
+                org_members=members.get(org),
+                include_external=cfg.include_external,
+                include_forks=cfg.include_forks,
             ): (org, repo)
             for org, repo in targets
         }
@@ -238,12 +261,6 @@ def run_activity_cli(argv: Optional[List[str]] = None) -> int:
         raise
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
-
-    print("\033[96m[INFO]\033[0m Fetching organization members and teams...")
-    members = fetch_members(client, orgs, cfg.exclude_bots, failures)
-    teams_by_user, org_team_complete = fetch_team_access(
-        client, orgs, cfg.exclude_bots
-    )
 
     results = {k: v.users for k, v in reports.items() if v.activity_complete or v.users}
     user_rows, repo_rows = build_rows(results, members, cfg, end, teams_by_user, org_team_complete)
@@ -269,6 +286,7 @@ def run_activity_cli(argv: Optional[List[str]] = None) -> int:
         since=since,
         end=end,
         organization_status=organization_status,
+        cfg=cfg,
     )
 
     out_dir = Path(cfg.output_dir)
