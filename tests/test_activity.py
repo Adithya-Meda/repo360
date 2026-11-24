@@ -500,3 +500,49 @@ def test_activity_commit_unlinked_author_fallback():
     assert "verified-committer" in users
     assert users["verified-committer"].commits == 1
 
+
+def test_activity_all_time_lookback_window_reporting(tmp_path):
+    """Verify that lookback_days=0 calculates dynamic reporting window from earliest activity date, never showing 1970."""
+    from openpyxl import load_workbook
+    now = datetime(2026, 11, 24, 12, 0, tzinfo=timezone.utc)
+    inception = datetime(2023, 4, 15, 10, 0, tzinfo=timezone.utc)
+    act = Activity()
+    act.add("commits", inception)
+    act.add("commits", now)
+
+    cfg = ActivityConfig(output_dir=str(tmp_path), lookback_days=0)
+    user_rows, repo_rows = build_rows(
+        results={("acme-org", "service-a"): {"alice": act}},
+        members={"acme-org": {"alice"}},
+        cfg=cfg,
+        end=now,
+        teams_by_user={},
+        org_team_complete={"acme-org": True},
+    )
+    org_rows = build_org_rows(user_rows, {("acme-org", "service-a"): {"alice": act}})
+
+    xlsx_path = tmp_path / "activity_all_time.xlsx"
+    write_activity_workbook(
+        path=xlsx_path,
+        cfg=cfg,
+        since=datetime(1970, 1, 1, tzinfo=timezone.utc),
+        end=now,
+        user_rows=user_rows,
+        repo_rows=repo_rows,
+        org_rows=org_rows,
+        failures=[],
+        repos_scanned=1,
+        execution_duration=1.0,
+    )
+
+    wb = load_workbook(xlsx_path)
+    ws = wb["Executive Summary"]
+    a2_val = str(ws["A2"].value)
+
+    assert "1970" not in a2_val
+    assert "(0 days)" not in a2_val
+    assert "Full History" in a2_val
+    assert "15-04-2023" in a2_val
+    assert "24-11-2026" in a2_val
+
+

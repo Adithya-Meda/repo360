@@ -13,6 +13,7 @@ from ..common.timezones import (
     LOCAL_TZ_NAME,
     fmt_timestamp,
     parse_ts,
+    resolve_reporting_window,
 )
 
 __all__ = [
@@ -37,6 +38,7 @@ __all__ = [
     "is_bot",
     "fmt_timestamp",
     "parse_ts",
+    "resolve_reporting_window",
     "DATE_FMT",
 ]
 

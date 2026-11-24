@@ -1010,6 +1010,51 @@ def test_job_url_nowrap_left_aligned_and_wide_column(tmp_path):
     assert url_cell.value == test_url
 
 
+def test_runners_all_time_lookback_window_reporting(tmp_path):
+    """Verify that lookback_days=0 calculates dynamic reporting window from earliest job date, never showing 1970."""
+    from openpyxl import load_workbook
+    now = datetime(2026, 11, 24, 12, 0, tzinfo=timezone.utc)
+    inception = datetime(2024, 2, 10, 8, 30, tzinfo=timezone.utc)
+
+    runner = RunnerInfo(
+        id=1, name="hosted-linux", os="Linux", status="Hosted", busy=False,
+        labels=("ubuntu-latest",), runner_group_name="GitHub Actions",
+        org="test-org", arch="x64", runner_version="GitHub Managed", ephemeral=True,
+    )
+    metric = RunnerJobMetrics(total_jobs=10, successful_jobs=10, first_job_time=inception, last_job_time=now)
+    metric.repos_served = {"test-repo"}
+
+    runner_rows, org_runner_rows = build_runner_rows(
+        runners=[runner],
+        runner_metrics={("test-org", "hosted-linux"): metric},
+        org_runner_metrics={"test-org": metric},
+        orgs=["test-org"],
+    )
+
+    out_file = tmp_path / "all_time_runners.xlsx"
+    write_runners_workbook(
+        out_file,
+        RunnersConfig(output_dir=str(tmp_path), lookback_days=0),
+        since=datetime(1970, 1, 1, tzinfo=timezone.utc),
+        end=now,
+        runner_rows=runner_rows,
+        org_runner_rows=org_runner_rows,
+        failures=[],
+        org_runner_metrics={"test-org": metric},
+    )
+
+    wb = load_workbook(out_file)
+    ws = wb["Executive Summary"]
+    a2_val = str(ws["A2"].value)
+
+    assert "1970" not in a2_val
+    assert "(0 days)" not in a2_val
+    assert "Full History" in a2_val
+    assert "10-02-2024" in a2_val
+    assert "24-11-2026" in a2_val
+
+
+
 
 
 

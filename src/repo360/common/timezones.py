@@ -7,7 +7,7 @@ import os
 import time
 import zoneinfo
 from datetime import datetime, timedelta, timezone, tzinfo
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 logger = logging.getLogger("repo360.timezones")
 
@@ -187,3 +187,60 @@ def fmt_timestamp(
         dt = dt.replace(tzinfo=timezone.utc)
     target_tz = tz or get_local_timezone()
     return dt.astimezone(target_tz).strftime("%d-%m-%Y %H:%M")
+
+
+def resolve_reporting_window(
+    lookback_days: int,
+    since: datetime,
+    end: datetime,
+    activity_dates: Optional[Sequence[Any]] = None,
+) -> str:
+    """Format an executive-grade reporting window string.
+
+    When lookback_days == 0 (All-Time / Full History):
+      Derives the true inception date from actual recorded activity timestamps,
+      displaying: 'Full History (DD-MM-YYYY to DD-MM-YYYY, X days)'.
+      If no activity is recorded, safely falls back to: 'Full History (All-Time) as of DD-MM-YYYY'.
+      Never displays Unix epoch (1970) or '(0 days)'.
+
+    When lookback_days > 0:
+      Displays: 'DD-MM-YYYY to DD-MM-YYYY (X days)'.
+    """
+    end_local = end.astimezone(LOCAL_TZ)
+    if lookback_days > 0:
+        since_local = since.astimezone(LOCAL_TZ)
+        return f"{since_local:{DATE_FMT}} to {end_local:{DATE_FMT}} ({lookback_days} days)"
+
+    earliest_dt: Optional[datetime] = None
+    if activity_dates:
+        for item in activity_dates:
+            if not item or item in ("-", "--", "---", "None", "No activity", "N/A"):
+                continue
+            dt_obj: Optional[datetime] = None
+            if isinstance(item, datetime):
+                dt_obj = item if item.tzinfo else item.replace(tzinfo=timezone.utc)
+            elif isinstance(item, str):
+                s = item.strip()
+                for fmt in ("%d-%m-%Y %H:%M", "%d-%m-%Y", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+                    try:
+                        dt_obj = datetime.strptime(s, fmt).replace(tzinfo=LOCAL_TZ)
+                        break
+                    except ValueError:
+                        continue
+                if dt_obj is None:
+                    try:
+                        dt_obj = parse_ts(s)
+                    except Exception:
+                        continue
+
+            if dt_obj is not None:
+                dt_local = dt_obj.astimezone(LOCAL_TZ)
+                # Ignore Unix epoch / 1970 artifacts or future dates beyond end
+                if dt_local.year > 1970 and dt_local <= end_local:
+                    if earliest_dt is None or dt_local < earliest_dt:
+                        earliest_dt = dt_local
+
+    if earliest_dt is not None:
+        days_span = max(1, (end_local.date() - earliest_dt.date()).days)
+        return f"Full History ({earliest_dt:{DATE_FMT}} to {end_local:{DATE_FMT}}, {days_span:,} days)"
+    return f"Full History (All-Time) as of {end_local:{DATE_FMT}}"

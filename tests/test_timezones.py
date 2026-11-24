@@ -18,6 +18,7 @@ from repo360.common.timezones import (
     get_local_timezone,
     get_local_tz_name,
     parse_ts,
+    resolve_reporting_window,
 )
 
 
@@ -165,3 +166,59 @@ def test_numeric_zone_names_get_uniform_utc_offset_label():
         assert get_local_tz_name() == "UTC+14:00"
     with patch.dict(os.environ, {"REPO360_TIMEZONE": "America/Sao_Paulo"}):
         assert get_local_tz_name() == "UTC-03:00"
+
+
+def test_resolve_reporting_window_lookback_positive():
+    """Verify positive lookback_days formats as 'since to end (X days)'."""
+    since = datetime(2026, 8, 25, 0, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 11, 23, 12, 0, tzinfo=timezone.utc)
+    res = resolve_reporting_window(90, since, end)
+    assert "(90 days)" in res
+    assert "2026" in res
+    assert "1970" not in res
+    assert "(0 days)" not in res
+
+
+def test_resolve_reporting_window_all_time_with_activity():
+    """Verify lookback_days=0 derives inception date from activity records and never shows 1970."""
+    since = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    end = datetime(2026, 11, 23, 12, 0, tzinfo=timezone.utc)
+    activity_dates = [
+        "15-04-2023 10:30",
+        "20-08-2024 16:45",
+        datetime(2022, 5, 10, 8, 0, tzinfo=timezone.utc),
+        "-",
+        "No activity",
+    ]
+    res = resolve_reporting_window(0, since, end, activity_dates)
+    assert "Full History" in res
+    assert "10-05-2022" in res
+    assert "1970" not in res
+    assert "(0 days)" not in res
+    assert "days)" in res
+
+
+def test_resolve_reporting_window_all_time_empty_activity():
+    """Verify lookback_days=0 safely falls back to 'Full History (All-Time)' when no activity exists."""
+    since = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    end = datetime(2026, 11, 23, 12, 0, tzinfo=timezone.utc)
+    res = resolve_reporting_window(0, since, end, [])
+    assert "Full History (All-Time)" in res
+    assert "1970" not in res
+    assert "(0 days)" not in res
+
+
+def test_resolve_reporting_window_ignores_epoch_artifacts():
+    """Verify epoch 1970 artifacts in activity dates are ignored."""
+    since = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    end = datetime(2026, 11, 23, 12, 0, tzinfo=timezone.utc)
+    activity_dates = [
+        datetime(1970, 1, 1, tzinfo=timezone.utc),
+        "01-01-1970 05:30",
+        "15-03-2024 14:00",
+    ]
+    res = resolve_reporting_window(0, since, end, activity_dates)
+    assert "Full History" in res
+    assert "15-03-2024" in res
+    assert "1970" not in res
+

@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 
-from ..common.timezones import DATE_FMT, LOCAL_TZ, LOCAL_TZ_NAME
+from ..common.timezones import DATE_FMT, LOCAL_TZ, LOCAL_TZ_NAME, resolve_reporting_window
 from ..activity.reporter import (
     NAVY,
     autofit,
@@ -49,15 +49,6 @@ def write_runners_workbook(
 
     since_local, end_local = since.astimezone(LOCAL_TZ), end.astimezone(LOCAL_TZ)
     duration_str = f"{execution_duration:.1f}s" if execution_duration else "N/A"
-    window_str = (
-        f"Reporting Window: Full History (All-Time) as of {end_local:{DATE_FMT}}"
-        if cfg.lookback_days == 0
-        else f"Reporting Window: {since_local:{DATE_FMT}} to {end_local:{DATE_FMT}} ({cfg.lookback_days} days)"
-    )
-    summary["A2"] = (
-        f"{window_str} | Generated: {end_local:{DATE_FMT} %H:%M} {LOCAL_TZ_NAME} | Duration: {duration_str}"
-    )
-    summary["A2"].font = Font(italic=True, color="595959")
 
     total_runners = len(runner_rows)
     online_count = sum(1 for r in runner_rows if len(r) > 9 and str(r[9]).capitalize() == "Online")
@@ -72,6 +63,23 @@ def write_runners_workbook(
         fleet_metrics = RunnerJobMetrics()
         for om in org_runner_metrics.values():
             fleet_metrics.merge(om)
+
+    activity_dates: List[Any] = []
+    if fleet_metrics and fleet_metrics.first_job_time:
+        activity_dates.append(fleet_metrics.first_job_time)
+    for r in runner_rows:
+        if len(r) > 27 and r[27] and r[27] not in ("-", "None", "No activity"):
+            activity_dates.append(r[27])
+    if job_rows:
+        for j in job_rows:
+            if len(j) > 12 and j[12] and j[12] not in ("-", "None", "No activity"):
+                activity_dates.append(j[12])
+
+    window_str = resolve_reporting_window(cfg.lookback_days, since, end, activity_dates)
+    summary["A2"] = (
+        f"Reporting Window: {window_str} | Generated: {end_local:{DATE_FMT} %H:%M} {LOCAL_TZ_NAME} | Duration: {duration_str}"
+    )
+    summary["A2"].font = Font(italic=True, color="595959")
 
     if fleet_metrics is not None:
         total_jobs_run = fleet_metrics.total_jobs

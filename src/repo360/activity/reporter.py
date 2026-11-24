@@ -27,6 +27,7 @@ from .models import (
     TOTAL_IDX,
     USER_HEADERS,
     ActivityConfig,
+    resolve_reporting_window,
 )
 
 logger = logging.getLogger("repo360.reporter")
@@ -347,10 +348,25 @@ def write_activity_workbook(
     summary["A1"] = "Repo360 Contributor & Platform Activity Intelligence"
     summary["A1"].font = Font(bold=True, size=16, color=NAVY)
 
+    activity_dates: List[Any] = []
+    first_act_idx = (
+        USER_HEADERS.index(f"First Activity ({LOCAL_TZ_NAME})")
+        if f"First Activity ({LOCAL_TZ_NAME})" in USER_HEADERS
+        else -1
+    )
+    if first_act_idx >= 0:
+        for r in user_rows:
+            if len(r) > first_act_idx and r[first_act_idx]:
+                activity_dates.append(r[first_act_idx])
+    for r in repo_rows:
+        if len(r) > 6 and r[6]:
+            activity_dates.append(r[6])
+
     since_local, end_local = since.astimezone(LOCAL_TZ), end.astimezone(LOCAL_TZ)
     duration_str = f"{execution_duration:.1f}s" if execution_duration else "N/A"
+    window_str = resolve_reporting_window(cfg.lookback_days, since, end, activity_dates)
     summary["A2"] = (
-        f"Reporting Window: {since_local:{DATE_FMT}} to {end_local:{DATE_FMT}} ({cfg.lookback_days} days) "
+        f"Reporting Window: {window_str} "
         f"| Generated: {end_local:{DATE_FMT} %H:%M} {LOCAL_TZ_NAME} | Duration: {duration_str}"
     )
     summary["A2"].font = Font(italic=True, color="595959")

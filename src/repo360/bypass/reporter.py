@@ -9,7 +9,7 @@ from typing import Any, List, Optional, Tuple
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 
-from ..common.timezones import DATE_FMT, LOCAL_TZ, LOCAL_TZ_NAME
+from ..common.timezones import DATE_FMT, LOCAL_TZ, LOCAL_TZ_NAME, resolve_reporting_window
 from ..activity.reporter import (
     NAVY,
     autofit,
@@ -57,13 +57,20 @@ def write_bypass_workbook(
     summary["A1"] = "Repo360 Consolidated Push Protection & Ruleset Bypass Ledger"
     summary["A1"].font = Font(bold=True, size=16, color=NAVY)
 
-    window_str = (
-        f"Reporting Window: Full History (All-Time) as of {end_local:{DATE_FMT}}"
-        if cfg.lookback_days == 0
-        else f"Reporting Window: {since_local:{DATE_FMT}} to {end_local:{DATE_FMT}} ({cfg.lookback_days} days)"
-    )
+    activity_dates: List[Any] = []
+    for r in push_rows:
+        if len(r) > 5 and r[5] and r[5] not in ("-", "None", "No activity"):
+            activity_dates.append(r[5])
+    for r in ruleset_rows:
+        if len(r) > 11 and r[11] and r[11] not in ("-", "None", "No activity"):
+            activity_dates.append(r[11])
+    for r in actor_rows:
+        if len(r) > 8 and r[8] and r[8] not in ("-", "None", "No activity"):
+            activity_dates.append(r[8])
+
+    window_str = resolve_reporting_window(cfg.lookback_days, since, end, activity_dates)
     summary["A2"] = (
-        f"{window_str} | "
+        f"Reporting Window: {window_str} | "
         f"Generated: {end_local:{DATE_FMT} %H:%M} {LOCAL_TZ_NAME} | Duration: {duration_str}"
     )
     summary["A2"].font = Font(italic=True, color="595959")

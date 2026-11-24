@@ -637,7 +637,9 @@ def test_bypass_unconstrained_lookback_and_full_history(tmp_path: Path):
     wb = load_workbook(out_file)
     exec_ws = wb["Executive Summary"]
     a2_val = str(exec_ws["A2"].value)
-    assert "Full History (All-Time)" in a2_val
+    assert "Full History" in a2_val
+    assert "1970" not in a2_val
+    assert "(0 days)" not in a2_val
     kpis = {r[0].value: r[1].value for r in exec_ws.iter_rows() if len(r) > 1 and r[0].value}
     assert kpis["Push Protection Secret Bypasses"] == 1
 

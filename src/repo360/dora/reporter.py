@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 
-from ..common.timezones import DATE_FMT, LOCAL_TZ, LOCAL_TZ_NAME
+from ..common.timezones import DATE_FMT, LOCAL_TZ, LOCAL_TZ_NAME, resolve_reporting_window
 from ..activity.reporter import (
     NAVY,
     autofit,
@@ -90,32 +90,15 @@ def write_dora_workbook(
     summary["A1"] = "Repo360 DORA & Engineering Delivery Flow Metrics"
     summary["A1"].font = Font(bold=True, size=16, color=NAVY)
 
-    if cfg.lookback_days == 0:
-        earliest_dt: Optional[datetime] = None
-        for r in deployment_rows:
-            if len(r) > 7 and r[7] and r[7] != "-":
-                try:
-                    dt = datetime.strptime(r[7], "%d-%m-%Y %H:%M")
-                    if earliest_dt is None or dt < earliest_dt:
-                        earliest_dt = dt
-                except Exception:
-                    pass
-        for inc in recovery_rows:
-            if len(inc) > 3 and inc[3] and inc[3] != "-":
-                try:
-                    dt = datetime.strptime(inc[3], "%d-%m-%Y %H:%M")
-                    if earliest_dt is None or dt < earliest_dt:
-                        earliest_dt = dt
-                except Exception:
-                    pass
+    activity_dates: List[Any] = []
+    for r in deployment_rows:
+        if len(r) > 7 and r[7] and r[7] != "-":
+            activity_dates.append(r[7])
+    for inc in recovery_rows:
+        if len(inc) > 3 and inc[3] and inc[3] != "-":
+            activity_dates.append(inc[3])
 
-        if earliest_dt:
-            days_span = max(1, (end_local.date() - earliest_dt.date()).days)
-            window_str = f"Full History ({earliest_dt:{DATE_FMT}} to {end_local:{DATE_FMT}}, {days_span:,} days)"
-        else:
-            window_str = f"Full History (All-Time) as of {end_local:{DATE_FMT}}"
-    else:
-        window_str = f"{since_local:{DATE_FMT}} to {end_local:{DATE_FMT}} ({cfg.lookback_days} days)"
+    window_str = resolve_reporting_window(cfg.lookback_days, since, end, activity_dates)
 
     summary["A2"] = (
         f"Reporting Window: {window_str} | "
