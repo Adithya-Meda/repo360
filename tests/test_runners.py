@@ -889,6 +889,7 @@ def test_runners_artifact_retention_purge_duration_protection(tmp_path):
 def test_active_repositories_nowrap_and_compact_row_height(tmp_path):
     """Verify that multiple repositories listed in a cell do not expand row height and preserve full content."""
     from openpyxl import load_workbook
+    from openpyxl.utils import get_column_letter
     from repo360.runners.reporter import write_runners_workbook
     from repo360.runners.models import RunnersConfig, RunnerInfo, RunnerJobMetrics, RUNNER_HEADERS, ORG_RUNNER_HEADERS
     from repo360.runners.collector import build_runner_rows
@@ -942,6 +943,72 @@ def test_active_repositories_nowrap_and_compact_row_height(tmp_path):
     assert "repo-microservice-000" in cell_val
     assert "repo-microservice-099" in cell_val
     assert len(cell_val.split(", ")) == 100
+
+
+def test_job_url_nowrap_left_aligned_and_wide_column(tmp_path):
+    """Verify that Job URLs in Workflow Job History do not wrap or overlap and are properly left-aligned."""
+    from openpyxl import load_workbook
+    from openpyxl.utils import get_column_letter
+    from repo360.runners.reporter import write_runners_workbook
+    from repo360.runners.models import RunnersConfig, RunnerJobRecord, RUNNER_JOB_HEADERS
+    from repo360.runners.collector import build_runner_job_rows
+
+    test_url = "https://github.com/CanarysPlayground/developer-workflow/actions/runs/45145094997/job/137592313452"
+    job = RunnerJobRecord(
+        org="CanarysPlayground",
+        repo="developer-workflow",
+        workflow_name="CI Build",
+        run_id=45145094997,
+        job_id=137592313452,
+        job_name="build-job",
+        runner_id=0,
+        runner_name="GitHub-Hosted (Linux)",
+        runner_type="GitHub-Hosted (Standard)",
+        conclusion="Success",
+        duration_seconds=12.0,
+        queue_seconds=2.0,
+        sla_breached=False,
+        started_at=datetime(2026, 11, 23, 10, 0, tzinfo=timezone.utc),
+        completed_at=datetime(2026, 11, 23, 10, 0, 12, tzinfo=timezone.utc),
+        actor="dev-user",
+        html_url=test_url,
+    )
+    job_rows = build_runner_job_rows([job])
+
+    out_file = tmp_path / "job_url_runners.xlsx"
+    write_runners_workbook(
+        out_file,
+        RunnersConfig(output_dir=str(tmp_path)),
+        datetime(2026, 1, 1, tzinfo=timezone.utc),
+        datetime(2026, 11, 23, tzinfo=timezone.utc),
+        runner_rows=[],
+        org_runner_rows=[],
+        failures=[],
+        job_rows=job_rows,
+    )
+
+    wb = load_workbook(out_file)
+    job_ws = wb["Workflow Job History"]
+    url_col_idx = RUNNER_JOB_HEADERS.index("Job URL") + 1
+    url_cell = job_ws.cell(row=2, column=url_col_idx)
+
+    # 1. wrap_text MUST be False (no multi-line wrapping or vertical collisions)
+    assert not url_cell.alignment.wrap_text
+
+    # 2. Alignment must be left-aligned and vertically centered
+    assert url_cell.alignment.horizontal == "left"
+    assert url_cell.alignment.vertical == "center"
+
+    # 3. Row height must be locked at 20pt
+    assert job_ws.row_dimensions[2].height == 20
+
+    # 4. Column width must expand up to 64 for URLs (not capped at 48)
+    col_letter = get_column_letter(url_col_idx)
+    assert job_ws.column_dimensions[col_letter].width >= 60
+
+    # 5. Full URL preserved in cell
+    assert url_cell.value == test_url
+
 
 
 

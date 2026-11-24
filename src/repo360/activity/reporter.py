@@ -7,7 +7,7 @@ from collections import Counter, defaultdict
 from copy import copy
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from openpyxl import Workbook
 from openpyxl.formatting.rule import DataBarRule
@@ -82,6 +82,19 @@ NOWRAP_HEADERS = {
     "Repositories Served",
     "Repos Served",
     "Repository List",
+    "Job URL",
+    "Job Link",
+    "Alert URL",
+    "Audit / Commit URL",
+    "Official Documentation URL",
+    "Documentation URL",
+    "HTML URL",
+    "URL",
+    "Run URL",
+    "Workflow URL",
+    "PR URL",
+    "Commit URL",
+    "Repository URL",
 }
 
 CENTER_HEADERS = {
@@ -232,7 +245,14 @@ def write_table(
             header = headers[col_idx - 1] if col_idx - 1 < len(headers) else ""
             cell = ws.cell(row=row_idx, column=col_idx, value=safe_cell(value, header))
             val_str = str(value).strip() if value is not None else ""
-            if header in NOWRAP_HEADERS:
+            h_lower = header.lower()
+            val_lower = val_str.lower()
+            is_url_or_link = (
+                "url" in h_lower
+                or "link" in h_lower
+                or val_lower.startswith(("http://", "https://", "ftp://"))
+            )
+            if header in NOWRAP_HEADERS or is_url_or_link:
                 alignment = LEFT_NOWRAP
             elif header in LEFT_HEADERS:
                 alignment = LEFT
@@ -270,14 +290,20 @@ def write_table(
 def autofit(ws, skip_rows: int = 0) -> None:
     """Automatically fit column widths based on content length."""
     widths: Dict[int, int] = defaultdict(int)
-    # Widths are capped at 48, so a bounded sample keeps autofit O(1) for very large sheets
+    url_cols: Set[int] = set()
+    # Widths are capped at 48 (or 64 for URLs/links), so a bounded sample keeps autofit O(1) for very large sheets
     sample_end = min(ws.max_row, skip_rows + AUTOFIT_SAMPLE_ROWS)
     for row in ws.iter_rows(min_row=skip_rows + 1, max_row=sample_end):
         for cell in row:
             if cell.value is not None:
-                widths[cell.column] = max(widths[cell.column], len(str(cell.value)))
+                val_str = str(cell.value)
+                widths[cell.column] = max(widths[cell.column], len(val_str))
+                val_lower = val_str.lower()
+                if "url" in val_lower or "link" in val_lower or val_lower.startswith(("http://", "https://", "ftp://")):
+                    url_cols.add(cell.column)
     for col, width in widths.items():
-        ws.column_dimensions[get_column_letter(col)].width = min(max(width + 3, 12), 48)
+        max_col_w = 64 if col in url_cols else 48
+        ws.column_dimensions[get_column_letter(col)].width = min(max(width + 3, 12), max_col_w)
 
 
 def finalize_sheet(ws, header_row: int, last_row: int, columns: int, freeze: str) -> None:
