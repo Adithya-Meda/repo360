@@ -78,6 +78,9 @@ AI_NOT_ENABLED_MESSAGE = (
     "AI was not enabled for this run. Re-run with '--require-ai yes' "
     "to generate AI remediation suggestions."
 )
+AI_DISCLAIMER_NOTE = (
+    "Note: AI recommendations can make mistakes. Review before using or setting them up."
+)
 
 
 def is_ai_live(ai_engine: Optional[Any]) -> bool:

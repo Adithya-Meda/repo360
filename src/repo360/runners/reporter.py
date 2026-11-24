@@ -20,7 +20,7 @@ from ..activity.reporter import (
     write_table,
 )
 from ..common.concurrency import AI_NOT_ENABLED_MESSAGE, is_ai_disabled, is_ai_live
-from ..common.ai_sheet import AI_REC_HEADERS, render_ai_recommendations_sheet
+from ..common.ai_sheet import AI_DISCLAIMER_NOTE, AI_REC_HEADERS, render_ai_recommendations_sheet
 from ..common.text import pluralize
 from .models import ORG_RUNNER_HEADERS, RUNNER_HEADERS, RUNNER_JOB_HEADERS, RunnersConfig
 
@@ -316,6 +316,10 @@ def write_runners_workbook(
         "See dedicated 'AI Recommendations' sheet for actionable runner capacity, queue SLA, and fleet hygiene advisories.",
     )
     summary.cell(curr_row, 1).font = Font(name="Calibri", size=9, bold=True, color=NAVY)
+    curr_row += 1
+    summary.cell(curr_row, 1, AI_DISCLAIMER_NOTE)
+    summary.cell(curr_row, 1).font = Font(name="Calibri", size=9, italic=True, color="595959")
+    summary.row_dimensions[curr_row].height = 20
     curr_row += 2
 
 

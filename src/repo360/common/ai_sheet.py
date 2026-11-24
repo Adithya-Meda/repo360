@@ -15,6 +15,10 @@ AI_REC_HEADERS: Tuple[str, ...] = (
     "Expected Impact",
 )
 
+AI_DISCLAIMER_NOTE: str = (
+    "Note: AI recommendations can make mistakes. Review before using or setting them up."
+)
+
 PRIORITY_STYLES = {
     "High": ("FFC7CE", "9C0006"),
     "Medium": ("FFEB9C", "9C6500"),

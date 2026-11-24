@@ -19,7 +19,7 @@ from ..activity.reporter import (
     write_table,
 )
 from ..common.concurrency import AI_NOT_ENABLED_MESSAGE, is_ai_disabled
-from ..common.ai_sheet import AI_REC_HEADERS, render_ai_recommendations_sheet
+from ..common.ai_sheet import AI_DISCLAIMER_NOTE, AI_REC_HEADERS, render_ai_recommendations_sheet
 from ..common.text import pluralize
 from .models import (
     BYPASS_ACTOR_HEADERS,
@@ -218,6 +218,10 @@ def write_bypass_workbook(
         "See dedicated 'AI Recommendations' sheet for actionable credential remediation, ruleset governance, and access control advisories.",
     )
     summary.cell(curr_row, 1).font = Font(name="Calibri", size=9, bold=True, color=NAVY)
+    curr_row += 1
+    summary.cell(curr_row, 1, AI_DISCLAIMER_NOTE)
+    summary.cell(curr_row, 1).font = Font(name="Calibri", size=9, italic=True, color="595959")
+    summary.row_dimensions[curr_row].height = 20
     curr_row += 2
 
     curr_row = section_title(summary, curr_row, "Organization Bypass & Compliance Summary")

@@ -12,7 +12,7 @@ from openpyxl.utils import get_column_letter
 from .base_reporter import BaseReporter
 from ..activity.reporter import EXCEL_MAX_ROWS, CellStyler
 from ..checks.base import CheckResult, CheckSeverity, CheckStatus, Persona
-from ..common.concurrency import AI_NOT_ENABLED_MESSAGE
+from ..common.concurrency import AI_DISCLAIMER_NOTE, AI_NOT_ENABLED_MESSAGE
 from ..common.text import pluralize
 
 logger = logging.getLogger("repo360.reporter")
@@ -414,7 +414,7 @@ class ExcelReporter(BaseReporter):
             c_notice = ws.cell(
                 row=notice_row,
                 column=2,
-                value="AI Safety Notice: All AI-synthesized remediation snippets and summaries are advisory only. Review and validate in non-production environments before deployment.",
+                value=AI_DISCLAIMER_NOTE,
             )
             c_notice.font = self.font_italic
             c_notice.alignment = Alignment(wrap_text=True, vertical="center")

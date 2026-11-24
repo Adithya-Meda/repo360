@@ -14,7 +14,12 @@ from openpyxl.formatting.rule import DataBarRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from ..common.concurrency import AI_NOT_ENABLED_MESSAGE, is_ai_disabled, is_ai_live
+from ..common.concurrency import (
+    AI_DISCLAIMER_NOTE,
+    AI_NOT_ENABLED_MESSAGE,
+    is_ai_disabled,
+    is_ai_live,
+)
 from .models import (
     AI_REC_HEADERS,
     DATE_FMT,
@@ -501,6 +506,10 @@ def write_activity_workbook(
         "See dedicated 'AI Recommendations' sheet for actionable engineering governance, review velocity, and seat optimization advisories.",
     )
     summary.cell(curr_row, 1).font = Font(name="Calibri", size=9, bold=True, color=NAVY)
+    curr_row += 1
+    summary.cell(curr_row, 1, AI_DISCLAIMER_NOTE)
+    summary.cell(curr_row, 1).font = Font(name="Calibri", size=9, italic=True, color="595959")
+    summary.row_dimensions[curr_row].height = 20
     curr_row += 2
 
     curr_row = section_title(summary, curr_row, "Organization Governance & Activity Overview")
