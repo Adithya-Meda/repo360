@@ -259,7 +259,7 @@ def test_build_management_tables_and_sheets(tmp_path):
     assert inv_rows[0][0] == "test-org"
     assert inv_rows[0][1] == "repo-active"
     assert inv_rows[0][2] == "private"
-    assert inv_rows[0][4] == "Yes"
+    assert inv_rows[0][4] == "New"
     assert inv_rows[0][7] == "main"
     assert inv_rows[0][8] == "Yes"
     assert inv_rows[0][11] == 3
@@ -1235,8 +1235,119 @@ def test_ai_recommendations_sheet_and_cell_fitting(tmp_path):
         assert len(action) < 300
 
 
+def test_repository_age_six_month_threshold(tmp_path):
+    """Verify that repositories created within 180 days (~6 months) are 'New' and older are 'Old' irrespective of lookback."""
+    from repo360.activity.collector import build_management_tables
+    from repo360.activity.models import ActivityConfig, REPO_INVENTORY_HEADERS, RepositoryReport
+
+    now = datetime(2026, 11, 24, 12, 0, tzinfo=timezone.utc)
+    lookback_since = now - timedelta(days=30)
+
+    # Repo 1: created 60 days ago (<= 180 days -> "New")
+    rep_new = RepositoryReport(
+        metadata={"created_at": (now - timedelta(days=60)).strftime("%Y-%m-%dT%H:%M:%SZ")},
+        activity_complete=True,
+    )
+    # Repo 2: created 210 days ago (> 180 days -> "Old")
+    rep_old = RepositoryReport(
+        metadata={"created_at": (now - timedelta(days=210)).strftime("%Y-%m-%dT%H:%M:%SZ")},
+        activity_complete=True,
+    )
+
+    reports = {
+        ("test-org", "service-new"): rep_new,
+        ("test-org", "service-old"): rep_old,
+    }
+
+    tables = build_management_tables(
+        reports=reports,
+        members={"test-org": set()},
+        since=lookback_since,
+        end=now,
+        organization_status={"test-org": True},
+        cfg=ActivityConfig(lookback_days=30),
+    )
+
+    inv_headers, inv_rows = tables["Repository Inventory"]
+    assert "Repository Age" in inv_headers
+    age_idx = inv_headers.index("Repository Age")
+
+    row_by_repo = {r[1]: r for r in inv_rows}
+    assert row_by_repo["service-new"][age_idx] == "New"
+    assert row_by_repo["service-old"][age_idx] == "Old"
+
+    # Also verify under Full History (lookback_days=0)
+    tables_full = build_management_tables(
+        reports=reports,
+        members={"test-org": set()},
+        since=datetime(1970, 1, 1, tzinfo=timezone.utc),
+        end=now,
+        organization_status={"test-org": True},
+        cfg=ActivityConfig(lookback_days=0),
+    )
+    _, inv_rows_full = tables_full["Repository Inventory"]
+    row_full_by_repo = {r[1]: r for r in inv_rows_full}
+    assert row_full_by_repo["service-new"][age_idx] == "New"
+    assert row_full_by_repo["service-old"][age_idx] == "Old"
 
 
+def test_fork_exclusion_and_workflow_summary_specification(tmp_path, monkeypatch):
+    """Verify forked repos exclusion is explicitly documented in Executive Summary, CLI, and workflow summary."""
+    from repo360.activity.cli import print_activity_scorecard
+    from repo360.activity.models import ActivityConfig, RepositoryReport
+    from repo360.activity.reporter import write_activity_workbook
+    from openpyxl import load_workbook
+
+    summary_file = tmp_path / "step_summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary_file))
+
+    now = datetime(2026, 11, 24, 12, 0, tzinfo=timezone.utc)
+    since = now - timedelta(days=90)
+    xlsx_path = tmp_path / "fork_spec_test.xlsx"
+
+    write_activity_workbook(
+        path=xlsx_path,
+        cfg=ActivityConfig(lookback_days=90),
+        since=since,
+        end=now,
+        user_rows=[["test-org", "alice", "Active", 10, 50, 40, 5, 5, 0, 0, 0, 0, 0, 4.0, 1, "2026-09-01", "2026-11-20", 4, "Yes", "None"]],
+        repo_rows=[["test-org", "core-repo", 50, 1, 40, 5, 5, 0, 0, 0, 0, 0, "2026-11-20"]],
+        org_rows=[["test-org", 1, 1, 1, 0, 0, 0, 50]],
+        failures=[],
+        repos_scanned=1,
+        execution_duration=1.5,
+    )
+
+    wb = load_workbook(xlsx_path)
+    summary_ws = wb["Executive Summary"]
+
+    # 1. Verify A2 subtitle notes scope
+    a2_val = str(summary_ws["A2"].value)
+    assert "forked repos excluded" in a2_val
+
+    # 2. Verify KPI table includes scope
+    kpi_rows = [
+        (summary_ws.cell(r, 1).value, summary_ws.cell(r, 2).value)
+        for r in range(4, 25)
+        if summary_ws.cell(r, 1).value
+    ]
+    kpi_dict = dict(kpi_rows)
+    assert "Repository Scope" in kpi_dict
+    assert "forked repositories excluded" in kpi_dict["Repository Scope"]
+
+    # 3. Verify CLI scorecard and GitHub Step Summary emission
+    print_activity_scorecard(
+        user_rows=[["test-org", "alice", "Active", 10, 50, 40, 5, 5, 0, 0, 0, 0, 0]],
+        org_rows=[["test-org", 1, 1, 1, 0, 0, 0, 50]],
+        repos_count=1,
+        xlsx_path=xlsx_path,
+        elapsed_seconds=1.5,
+    )
+
+    assert summary_file.exists()
+    summary_content = summary_file.read_text(encoding="utf-8")
+    assert "forked repositories are excluded" in summary_content
+    assert "Repository Age Rule" in summary_content
 
 
 

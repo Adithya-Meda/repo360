@@ -849,7 +849,8 @@ def build_management_tables(
 
         created_dt = created_dates.get((org, repo))
         created_str = fmt_timestamp(created_dt) if created_dt else "Unknown"
-        new_in_period = "Yes" if created_dt and since <= created_dt <= end else "No"
+        is_new_repo = bool(created_dt and (end - created_dt) <= timedelta(days=180))
+        repo_age = "New" if is_new_repo else ("Old" if created_dt else "Unknown")
         archived = "Yes" if meta.get("archived") else "No"
         default_branch = meta.get("default_branch", "")
 
@@ -933,7 +934,7 @@ def build_management_tables(
             repo,
             visibility,
             created_str,
-            new_in_period,
+            repo_age,
             archived,
             default_branch,
             protected_branches_str,
@@ -1062,17 +1063,17 @@ def build_management_tables(
             "Repository Landscape",
             "Repositories hosted (selected scope)",
             len(selected),
-            "Repositories selected in inventory that this App can access. This may not include every repository in the enterprise.",
+            "Repositories selected in inventory that this App can access (source repositories only; forked repositories are excluded). This may not include every repository in the enterprise.",
         )
         add(
             "Repository Landscape",
-            "New repositories created",
+            "New repositories (<= 6 months)",
             sum(
-                bool(created and since <= created <= end)
+                bool(created and (end - created) <= timedelta(days=180))
                 for (owner, _), created in created_dates.items()
                 if owner.casefold() == org.casefold()
             ),
-            "Selected repositories created during this period that still exist here. Deleted or transferred repositories are not counted.",
+            "Repositories created within the last 180 days (6-month industry standard). Forked repositories are excluded.",
         )
         for visibility in ("private", "internal", "public"):
             add(

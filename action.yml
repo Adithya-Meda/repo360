@@ -211,6 +211,19 @@ runs:
 
         if [ "$FEATURE_COUNT" -eq 0 ]; then
           echo "INFO: No collection features enabled. Set at least one feature flag to 'true' (e.g. collect_audit: 'true')."
+        elif [ -n "$GITHUB_STEP_SUMMARY" ]; then
+          {
+            echo "## Repo360 Platform Execution Summary"
+            echo ""
+            echo "| Scope Parameter | Calculation Policy |"
+            echo "| :--- | :--- |"
+            echo "| **Repository Scope** | **Source repositories only** (*forked repositories are excluded from calculations by default*) |"
+            echo "| **Contributor Scope** | **Organization members only** (*external contributor activities are excluded*) |"
+            echo "| **Repository Age Standard** | **New** ($\le$ 180 days / ~6 months) vs **Old** (> 180 days) |"
+            echo "| **Output Directory** | \`$INPUT_OUTPUT_DIR\` |"
+            echo ""
+            echo "All audit reports generated and saved to artifact \`${INPUT_ARTIFACT_NAME:-repo360-audit-reports}\`."
+          } >> "$GITHUB_STEP_SUMMARY"
         fi
 
     - name: "Publish Audit Reports Artifact"

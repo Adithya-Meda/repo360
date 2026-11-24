@@ -120,6 +120,7 @@ CENTER_HEADERS = {
     "Coverage",
     "Protected Branches",
     "CODEOWNERS Present",
+    "Repository Age",
     "New in Period",
     "Archived",
     "Activity Last 7 Days",
@@ -391,7 +392,8 @@ def write_activity_workbook(
     window_str = resolve_reporting_window(cfg.lookback_days, since, end, activity_dates)
     summary["A2"] = (
         f"Reporting Window: {window_str} "
-        f"| Generated: {end_local:{DATE_FMT} %H:%M} {LOCAL_TZ_NAME} | Duration: {duration_str}"
+        f"| Generated: {end_local:{DATE_FMT} %H:%M} {LOCAL_TZ_NAME} | Duration: {duration_str} "
+        f"| Scope: Source repos only (forked repos excluded)"
     )
     summary["A2"].font = Font(italic=True, color="595959")
 
@@ -456,6 +458,8 @@ def write_activity_workbook(
         ["Total Duration", duration_str],
         ["Organizations Scanned", len(org_rows)],
         ["Repositories Scanned", repos_scanned],
+        ["Repository Scope", "Source repositories only (forked repositories excluded)"],
+        ["Contributor Scope", "Organization members only (external contributors excluded)"],
         ["Active Contributors", active_contributors],
         ["Total Users Reported", len(user_rows)],
         *([f"{s} Users", status_counts[s]] for s in STATUSES),
@@ -495,6 +499,8 @@ def write_activity_workbook(
         ["Moderate", f"Contributed on {cfg.moderate_min_days} to {cfg.active_min_days - 1} distinct days"],
         ["Low", f"Contributed on 1 to {cfg.moderate_min_days - 1} distinct days"],
         ["Inactive", "Organization member or assigned seat with zero recorded contributions"],
+        ["Repository Age", "New: created <= 180 days ago (~6 months); Old: created > 180 days ago"],
+        ["Fork Exclusion", "Forked repositories are excluded from all metric rollups and inventory"],
     ]
     curr_row = write_table(summary, curr_row, ("Status", "Definition"), definitions, status_col=0) + 2
 

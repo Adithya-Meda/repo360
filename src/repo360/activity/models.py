@@ -99,7 +99,7 @@ REPO_INVENTORY_HEADERS = (
     "Repository",
     "Visibility",
     f"Created ({LOCAL_TZ_NAME})",
-    "New in Period",
+    "Repository Age",
     "Archived",
     "Default Branch",
     "Protected Branches",

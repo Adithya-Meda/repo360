@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
@@ -68,8 +69,8 @@ def print_activity_scorecard(
     print(f"{B}{C}   REPO360 CONTRIBUTOR & USER ACTIVITY SCORECARD{X}")
     print(f"{C}{'=' * 76}{X}")
     print(f"   {B}Organizations Scanned :{X} {len(org_rows)}")
-    print(f"   {B}Repositories Scanned  :{X} {repos_count}")
-    print(f"   {B}Total Users Tracked   :{X} {len(user_rows)}")
+    print(f"   {B}Repositories Scanned  :{X} {repos_count} (source repos; forked repos excluded)")
+    print(f"   {B}Total Users Tracked   :{X} {len(user_rows)} (organization members only)")
     print(f"   {B}Active Users          :{X} {G}{active_count:<5} Active (>= threshold){X}")
     print(f"   {B}Moderate Users        :{X} {Y}{moderate_count:<5} Moderate{X}")
     print(f"   {B}Low Users             :{X} {low_count:<5} Low")
@@ -77,12 +78,30 @@ def print_activity_scorecard(
     print(f"   {B}Total Activities      :{X} {B}{total_activities:,}{X}")
     if failures:
         print(f"   {B}Warnings / Errors     :{X} {Y}{len(failures)} items (see workbook Summary){X}")
+    print(f"   {B}Scope & Filters       :{X} Org members only; forked repositories excluded")
     print(f"   {B}AI Insights Engine    :{X} {format_ai_scorecard_status(ai_engine)}")
     print(f"   {B}Duration              :{X} {elapsed_str}")
     print(f"{C}{'-' * 76}{X}")
     print(f"   {B}Executive Workbook (XLSX) :{X} {xlsx_path}")
     print(f"{C}{'=' * 76}{X}")
     print(f"{G}{B}   [SUCCESS] Activity analysis completed across {len(user_rows)} users in {elapsed_str}.{X}\n")
+
+    step_summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if step_summary_path:
+        try:
+            with open(step_summary_path, "a", encoding="utf-8") as f:
+                f.write(
+                    f"### Repo360 Contributor & Activity Scorecard\n\n"
+                    f"- **Organizations Scanned**: {len(org_rows)}\n"
+                    f"- **Repositories Scanned**: {repos_count} *(source repositories only; forked repositories are excluded)*\n"
+                    f"- **Tracked Users**: {len(user_rows)} *(organization members only; external contributors excluded)*\n"
+                    f"- **Active Contributors**: {active_count}\n"
+                    f"- **Total Activities**: {total_activities:,}\n"
+                    f"- **Repository Age Rule**: New (<= 180 days / ~6 months) vs Old (> 180 days)\n"
+                    f"- **Workbook Artifact**: `{xlsx_path.name}`\n\n"
+                )
+        except Exception:
+            pass
 
 
 def run_activity_cli(argv: Optional[List[str]] = None) -> int:
@@ -183,7 +202,9 @@ def run_activity_cli(argv: Optional[List[str]] = None) -> int:
 
     org_list_str = ", ".join(discovered_orgs)
     print(f"\033[96m[INFO]\033[0m Discovered {pluralize(len(discovered_orgs), 'organization', include_count=True)} with GitHub App installed: {org_list_str}")
-    print("\033[96m[INFO]\033[0m Auto-discovering repositories directly from GitHub App installations...")
+    fork_note = "forks included" if cfg.include_forks else "forked repos excluded"
+    arch_note = "archived included" if cfg.include_archived else "archived excluded"
+    print(f"\033[96m[INFO]\033[0m Auto-discovering repositories directly from GitHub App installations ({fork_note}, {arch_note})...")
     targets, metadata_cache = resolve_scan_targets(
         auth=auth,
         client=client,
@@ -199,7 +220,7 @@ def run_activity_cli(argv: Optional[List[str]] = None) -> int:
             "Check the GitHub App's repository access settings."
         )
 
-    print(f"\033[96m[INFO]\033[0m Scanning {pluralize(len(targets), 'repository', 'repositories', include_count=True)} across {pluralize(len(orgs), 'organization', include_count=True)}...")
+    print(f"\033[96m[INFO]\033[0m Scanning {pluralize(len(targets), 'repository', 'repositories', include_count=True)} across {pluralize(len(orgs), 'organization', include_count=True)} (source repos; forked repos excluded)...")
 
     for org_name in orgs:
         perms = auth.get_installation_permissions(org_name)
