@@ -588,6 +588,12 @@ def test_ruleset_bifurcation_org_vs_repo(tmp_path: Path):
     assert kpis["  ↳ Organization Rulesets"] == 17
     assert kpis["  ↳ Repository Rulesets"] == 8
 
+    # Verify Top Bypassing Actors table is removed from Executive Summary (dedicated sheet exists)
+    exec_text = "\n".join(str(c.value) for row in exec_ws.iter_rows() for c in row if c.value is not None)
+    assert "Top Bypassing Actors Across Enterprise" not in exec_text
+    assert "Actor Accountability Ledger" in wb.sheetnames
+    assert wb["Actor Accountability Ledger"].max_row >= 2
+
     # Ruleset Bypasses sheet headers check
     rule_ws = wb["Ruleset Bypasses"]
     headers = [cell.value for cell in rule_ws[1]]

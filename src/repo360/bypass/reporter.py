@@ -227,10 +227,6 @@ def write_bypass_workbook(
     curr_row = section_title(summary, curr_row, "Organization Bypass & Compliance Summary")
     curr_row = write_table(summary, curr_row, BYPASS_ORG_HEADERS, org_rows, bar_col=6) + 2
 
-    if actor_rows:
-        curr_row = section_title(summary, curr_row, "Top Bypassing Actors Across Enterprise")
-        write_table(summary, curr_row, BYPASS_ACTOR_HEADERS, actor_rows[:15])
-
     autofit(summary, skip_rows=2)
     summary.sheet_view.showGridLines = False
 
