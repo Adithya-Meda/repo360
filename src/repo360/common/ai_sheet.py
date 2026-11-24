@@ -16,7 +16,8 @@ AI_REC_HEADERS: Tuple[str, ...] = (
 )
 
 AI_DISCLAIMER_NOTE: str = (
-    "Note: AI recommendations can make mistakes. Review before using or setting them up."
+    "Note: AI recommendations are advisory and may contain inaccuracies. "
+    "Review and validate all suggestions before applying or configuring them."
 )
 
 PRIORITY_STYLES = {

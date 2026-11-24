@@ -26,7 +26,10 @@ from repo360.runners.reporter import write_runners_workbook
 
 def test_ai_disclaimer_constant_consistency():
     """Verify AI disclaimer constant is uniform and consistent across modules."""
-    expected = "Note: AI recommendations can make mistakes. Review before using or setting them up."
+    expected = (
+        "Note: AI recommendations are advisory and may contain inaccuracies. "
+        "Review and validate all suggestions before applying or configuring them."
+    )
     assert NOTE_AI_SHEET == expected
     assert NOTE_CONCURRENCY == expected
 

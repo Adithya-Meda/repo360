@@ -79,7 +79,8 @@ AI_NOT_ENABLED_MESSAGE = (
     "to generate AI remediation suggestions."
 )
 AI_DISCLAIMER_NOTE = (
-    "Note: AI recommendations can make mistakes. Review before using or setting them up."
+    "Note: AI recommendations are advisory and may contain inaccuracies. "
+    "Review and validate all suggestions before applying or configuring them."
 )
 
 
