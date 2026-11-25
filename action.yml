@@ -78,7 +78,7 @@ inputs:
     required: false
     default: "false"
   lookback_days:
-    description: "Lookback window in days for user activity and runner metrics"
+    description: "Lookback window in days for activity, runners, dora, and bypass metrics (>=1, or 0 for full history)"
     required: false
     default: "90"
   include_archived:
@@ -89,6 +89,46 @@ inputs:
     description: "Concurrent worker thread pool count (0 for auto, 1-32)"
     required: false
     default: "0"
+  active_min_days:
+    description: "Minimum active days for 'Active' contributor tier in activity analysis (1-365)"
+    required: false
+    default: "8"
+  moderate_min_days:
+    description: "Minimum active days for 'Moderate' contributor tier in activity analysis (1-365)"
+    required: false
+    default: "3"
+  include_bots:
+    description: "Include bot accounts in activity analysis ('true' or 'false')"
+    required: false
+    default: "false"
+  include_forks:
+    description: "Include forked repositories in activity analysis ('true' or 'false')"
+    required: false
+    default: "false"
+  include_external:
+    description: "Include external/third-party contributors who are not org members in activity analysis ('true' or 'false')"
+    required: false
+    default: "false"
+  prod_envs:
+    description: "Optional comma-separated production environment filter for DORA metrics (default: all active deployment environments)"
+    required: false
+    default: ""
+  include_non_prod:
+    description: "Include lower/staged deployment environments in DORA metrics ('true' or 'false')"
+    required: false
+    default: "false"
+  incident_labels:
+    description: "Optional comma-separated incident issue labels for DORA MTTR (default: built-in incident labels)"
+    required: false
+    default: ""
+  max_runs:
+    description: "Max workflow runs per repository to inspect in runners analysis (0 for unlimited full lookback, or 1-1000)"
+    required: false
+    default: "0"
+  timezone:
+    description: "Optional timezone name for report timestamps (e.g. 'UTC', 'Asia/Kolkata', 'America/New_York'). Defaults to runner timezone."
+    required: false
+    default: ""
   gemini_api_key:
     description: "Legacy alias for ai_api_key"
     required: false
@@ -132,6 +172,7 @@ runs:
       run: |
         python -m pip install --upgrade pip
         pip install "${{ github.action_path }}"
+        repo360 version
 
     - name: "Execute Repo360 Telemetry"
       shell: bash
@@ -140,6 +181,7 @@ runs:
         REPO360_APP_PRIVATE_KEY: ${{ inputs.private_key }}
         REPO360_APP_INSTALLATION_ID: ${{ inputs.installation_id }}
         REPO360_API_BASE_URL: ${{ inputs.api_base_url }}
+        REPO360_TIMEZONE: ${{ inputs.timezone }}
         AI_API_KEY: ${{ inputs.ai_api_key || inputs.gemini_api_key || inputs.openai_api_key || inputs.anthropic_api_key || inputs.llm_api_key }}
         AI_MODEL: ${{ inputs.ai_model || inputs.llm_model }}
         AI_PROVIDER: ${{ inputs.llm_provider }}
@@ -156,7 +198,21 @@ runs:
         INPUT_COLLECT_BYPASS: ${{ inputs.collect_bypass }}
         INPUT_INCLUDE_ARCHIVED: ${{ inputs.include_archived }}
         INPUT_WORKERS: ${{ inputs.workers }}
+        INPUT_ACTIVE_MIN_DAYS: ${{ inputs.active_min_days }}
+        INPUT_MODERATE_MIN_DAYS: ${{ inputs.moderate_min_days }}
+        INPUT_INCLUDE_BOTS: ${{ inputs.include_bots }}
+        INPUT_INCLUDE_FORKS: ${{ inputs.include_forks }}
+        INPUT_INCLUDE_EXTERNAL: ${{ inputs.include_external }}
+        INPUT_PROD_ENVS: ${{ inputs.prod_envs }}
+        INPUT_INCLUDE_NON_PROD: ${{ inputs.include_non_prod }}
+        INPUT_INCIDENT_LABELS: ${{ inputs.incident_labels }}
+        INPUT_MAX_RUNS: ${{ inputs.max_runs }}
+        INPUT_ARTIFACT_NAME: ${{ inputs.artifact_name }}
       run: |
+        is_true() {
+          [ "$(printf '%s' "${1:-false}" | tr '[:upper:]' '[:lower:]')" = "true" ]
+        }
+
         REQUIRE_AI_VAL="$(printf '%s' "${INPUT_REQUIRE_AI:-no}" | tr '[:upper:]' '[:lower:]')"
         case "$REQUIRE_AI_VAL" in
           yes|no) ;;
@@ -170,7 +226,7 @@ runs:
         if [ -n "$INPUT_ORG" ]; then
           COMMON_ARGS+=(--org "$INPUT_ORG")
         fi
-        if [ "$INPUT_INCLUDE_ARCHIVED" = "true" ]; then
+        if is_true "$INPUT_INCLUDE_ARCHIVED"; then
           COMMON_ARGS+=(--include-archived)
         fi
         if [ -n "$INPUT_WORKERS" ] && [ "$INPUT_WORKERS" != "0" ]; then
@@ -179,32 +235,65 @@ runs:
 
         FEATURE_COUNT=0
 
-        if [ "$INPUT_COLLECT_AUDIT" = "true" ] || [ "$INPUT_RUN_AUDIT" = "true" ]; then
+        if is_true "$INPUT_COLLECT_AUDIT" || is_true "$INPUT_RUN_AUDIT"; then
           FEATURE_COUNT=$((FEATURE_COUNT + 1))
           repo360 audit "${COMMON_ARGS[@]}"
         fi
 
-        if [ "$INPUT_COLLECT_ACTIVITY" = "true" ]; then
+        if is_true "$INPUT_COLLECT_ACTIVITY"; then
           FEATURE_COUNT=$((FEATURE_COUNT + 1))
-          repo360 activity "${COMMON_ARGS[@]}" --lookback-days "$INPUT_LOOKBACK_DAYS"
+          ACTIVITY_ARGS=(
+            "${COMMON_ARGS[@]}"
+            --lookback-days "$INPUT_LOOKBACK_DAYS"
+            --active-min-days "${INPUT_ACTIVE_MIN_DAYS:-8}"
+            --moderate-min-days "${INPUT_MODERATE_MIN_DAYS:-3}"
+          )
+          if is_true "$INPUT_INCLUDE_BOTS"; then
+            ACTIVITY_ARGS+=(--include-bots)
+          fi
+          if is_true "$INPUT_INCLUDE_FORKS"; then
+            ACTIVITY_ARGS+=(--include-forks)
+          fi
+          if is_true "$INPUT_INCLUDE_EXTERNAL"; then
+            ACTIVITY_ARGS+=(--include-external)
+          fi
+          repo360 activity "${ACTIVITY_ARGS[@]}"
         fi
 
-        if [ "$INPUT_COLLECT_RUNNERS" = "true" ]; then
+        if is_true "$INPUT_COLLECT_RUNNERS"; then
           FEATURE_COUNT=$((FEATURE_COUNT + 1))
-          repo360 runners "${COMMON_ARGS[@]}" --lookback-days "$INPUT_LOOKBACK_DAYS"
+          RUNNERS_ARGS=(
+            "${COMMON_ARGS[@]}"
+            --lookback-days "$INPUT_LOOKBACK_DAYS"
+            --max-runs "${INPUT_MAX_RUNS:-0}"
+          )
+          repo360 runners "${RUNNERS_ARGS[@]}"
         fi
 
-        if [ "$INPUT_COLLECT_FINOPS" = "true" ]; then
+        if is_true "$INPUT_COLLECT_FINOPS"; then
           FEATURE_COUNT=$((FEATURE_COUNT + 1))
           repo360 finops "${COMMON_ARGS[@]}"
         fi
 
-        if [ "$INPUT_COLLECT_DORA" = "true" ]; then
+        if is_true "$INPUT_COLLECT_DORA"; then
           FEATURE_COUNT=$((FEATURE_COUNT + 1))
-          repo360 dora "${COMMON_ARGS[@]}" --lookback-days "$INPUT_LOOKBACK_DAYS"
+          DORA_ARGS=(
+            "${COMMON_ARGS[@]}"
+            --lookback-days "$INPUT_LOOKBACK_DAYS"
+          )
+          if [ -n "$INPUT_PROD_ENVS" ]; then
+            DORA_ARGS+=(--prod-envs "$INPUT_PROD_ENVS")
+          fi
+          if is_true "$INPUT_INCLUDE_NON_PROD"; then
+            DORA_ARGS+=(--include-non-prod)
+          fi
+          if [ -n "$INPUT_INCIDENT_LABELS" ]; then
+            DORA_ARGS+=(--incident-labels "$INPUT_INCIDENT_LABELS")
+          fi
+          repo360 dora "${DORA_ARGS[@]}"
         fi
 
-        if [ "$INPUT_COLLECT_BYPASS" = "true" ]; then
+        if is_true "$INPUT_COLLECT_BYPASS"; then
           FEATURE_COUNT=$((FEATURE_COUNT + 1))
           repo360 bypass "${COMMON_ARGS[@]}" --lookback-days "$INPUT_LOOKBACK_DAYS"
         fi

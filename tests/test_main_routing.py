@@ -470,6 +470,27 @@ def test_action_yml_defines_require_ai_input_default_no() -> None:
         assert f"repo360 {subcmd}" in action_text
 
 
+def test_action_yml_exposes_all_feature_cli_flags() -> None:
+    """Verify action.yml exposes and wires all feature-specific CLI flags and timezone support."""
+    from pathlib import Path
+
+    action_text = Path(__file__).resolve().parent.parent.joinpath("action.yml").read_text(encoding="utf-8")
+    expected_flags = (
+        "--active-min-days",
+        "--moderate-min-days",
+        "--include-bots",
+        "--include-forks",
+        "--include-external",
+        "--prod-envs",
+        "--include-non-prod",
+        "--incident-labels",
+        "--max-runs",
+        "REPO360_TIMEZONE",
+    )
+    for flag in expected_flags:
+        assert flag in action_text
+
+
 @pytest.mark.parametrize(
     "subcmd,has_lookback",
     [
