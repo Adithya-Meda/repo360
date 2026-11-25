@@ -25,6 +25,11 @@ jobs:
           app_id: ${{ vars.REPO360_APP_ID }}
           private_key: ${{ secrets.REPO360_APP_PRIVATE_KEY }}
           collect_audit: "true"
+          collect_activity: "true"
+          collect_runners: "true"
+          collect_finops: "true"
+          collect_dora: "true"
+          collect_bypass: "true"
           require_ai: "yes"
           ai_api_key: ${{ secrets.AI_API_KEY }}
           ai_model: ${{ vars.AI_MODEL }}
