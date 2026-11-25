@@ -765,3 +765,93 @@ def test_run_upgrade_cli_latest_commit_and_ref_modes(capsys) -> None:
         run_upgrade_cli(["--tag", "v1.0.0", "--latest-commit"])
     assert exc.value.code == 2
 
+
+def test_find_wheel_asset_and_download_caching(tmp_path: Path) -> None:
+    """Verify release asset parser extracts wheel URL and download caching avoids duplicate network requests."""
+    from repo360.upgrade import _download_release_asset, _find_wheel_asset
+
+    assets = [
+        {"name": "repo360-1.3.0.tar.gz", "browser_download_url": "https://example.com/repo360-1.3.0.tar.gz"},
+        {"name": "repo360-1.3.0-py3-none-any.whl", "browser_download_url": "https://example.com/repo360-1.3.0-py3-none-any.whl"},
+    ]
+    url, name = _find_wheel_asset(assets)
+    assert url == "https://example.com/repo360-1.3.0-py3-none-any.whl"
+    assert name == "repo360-1.3.0-py3-none-any.whl"
+
+    assert _find_wheel_asset([]) == (None, None)
+    assert _find_wheel_asset([{"name": "other-1.0.whl", "browser_download_url": "https://example.com/o.whl"}]) == (None, None)
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.iter_content.return_value = [b"PK\x03\x04" + b"x" * 2000]
+    mock_resp.__enter__.return_value = mock_resp
+    mock_resp.__exit__.return_value = None
+
+    with patch("requests.get", return_value=mock_resp) as mock_get:
+        # First download writes file
+        dl1 = _download_release_asset("https://example.com/repo360-1.3.0-py3-none-any.whl", target_dir=tmp_path)
+        assert dl1 is not None
+        assert dl1.is_file()
+        assert dl1.stat().st_size > 1024
+        assert mock_get.call_count == 1
+
+        # Second download reuses cached file without calling requests.get
+        dl2 = _download_release_asset("https://example.com/repo360-1.3.0-py3-none-any.whl", target_dir=tmp_path)
+        assert dl2 == dl1
+        assert mock_get.call_count == 1
+
+
+def test_get_upgrade_commands_with_wheel_path() -> None:
+    """Verify get_upgrade_commands with wheel_path prioritizes local wheel install and includes VCS fallbacks."""
+    from repo360.upgrade import get_upgrade_commands
+
+    fake_wheel = "C:\\cache\\repo360-1.3.0-py3-none-any.whl"
+    with patch("repo360.upgrade._is_uv_tool_install", return_value=False), \
+         patch.object(sys, "prefix", "C:\\Python312"), \
+         patch("repo360.upgrade._pip_available_for_python", return_value=True), \
+         patch("repo360.upgrade.find_uv_executable", return_value="C:\\bin\\uv.exe"):
+        cmds = get_upgrade_commands(
+            force=True,
+            target_ref="v1.3.0",
+            wheel_path=fake_wheel,
+        )
+        labels = [label for label, _ in cmds]
+        assert "uv" in labels
+        assert "pip" in labels
+        assert "uv-fallback" in labels
+        assert "pip-fallback" in labels
+
+        uv_cmd = dict(cmds)["uv"]
+        assert uv_cmd[-1] == fake_wheel
+
+        pip_cmd = dict(cmds)["pip"]
+        assert pip_cmd[-1] == fake_wheel
+        assert "--no-deps" in pip_cmd
+
+        uv_fallback = dict(cmds)["uv-fallback"]
+        assert "git+https://" in uv_fallback[-1]
+
+
+def test_resolve_release_target_extracts_wheel_metadata() -> None:
+    """Verify resolve_release_target attaches wheel_url and wheel_name when assets are present."""
+    api_ok = MagicMock(status_code=200)
+    api_ok.json.return_value = {
+        "tag_name": "v1.3.0",
+        "draft": False,
+        "prerelease": False,
+        "assets": [
+            {
+                "name": "repo360-1.3.0-py3-none-any.whl",
+                "browser_download_url": "https://github.com/Adithya-Meda/repo360/releases/download/v1.3.0/repo360-1.3.0-py3-none-any.whl",
+            }
+        ],
+    }
+    with patch("requests.get", return_value=api_ok), \
+         patch("repo360.upgrade._list_remote_tags", return_value={"v1.3.0": "7df36e6982da"}):
+        res = resolve_release_target("https://github.com/Adithya-Meda/repo360.git")
+        assert res.tag == "v1.3.0"
+        assert res.commit == "7df36e6982da"
+        assert res.wheel_url == "https://github.com/Adithya-Meda/repo360/releases/download/v1.3.0/repo360-1.3.0-py3-none-any.whl"
+        assert res.wheel_name == "repo360-1.3.0-py3-none-any.whl"
+
+

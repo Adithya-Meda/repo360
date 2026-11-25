@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import sysconfig
+import tempfile
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -26,6 +27,8 @@ from .common.interrupts import run_interruptible_subprocess
 from .common.text import pluralize
 
 logger = logging.getLogger("repo360.upgrade")
+
+_RELEASE_PAYLOAD_CACHE: Dict[str, Dict[str, Any]] = {}
 
 DEFAULT_REPO_URL = "https://github.com/Adithya-Meda/repo360.git"
 _VALID_GIT_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
@@ -182,27 +185,36 @@ def get_upgrade_commands(
     installer_override: Optional[str] = None,
     force: bool = False,
     target_ref: Optional[str] = None,
+    wheel_path: Optional[str] = None,
 ) -> List[Tuple[str, List[str]]]:
     """Generate prioritized upgrade command candidates for resilient execution across platforms.
 
     Returns:
         List of (strategy_name, command_tokens).
     """
-    target_spec = _build_target_spec(repo_url, target_ref=target_ref)
+    vcs_target_spec = _build_target_spec(repo_url, target_ref=target_ref)
+    target_spec = wheel_path if wheel_path else vcs_target_spec
     commands: List[Tuple[str, List[str]]] = []
 
     prefix = sys.prefix.lower()
     pipx_bin = find_pipx_executable()
     uv_bin = find_uv_executable()
+    is_wheel = bool(wheel_path)
 
     if installer_override == "pip":
-        pip_flags = ["--upgrade", "--force-reinstall", "--no-cache-dir"] if force else ["--upgrade"]
+        if is_wheel:
+            pip_flags = ["--upgrade", "--force-reinstall", "--no-deps"] if force else ["--upgrade"]
+        else:
+            pip_flags = ["--upgrade", "--force-reinstall", "--no-cache-dir"] if force else ["--upgrade"]
         commands.append(("pip", [sys.executable, "-m", "pip", "install", *pip_flags, target_spec]))
         if force:
             # Skip dependencies on retry so locked C extensions like cryptography don't block upgrade
             commands.append(
                 ("pip-isolated", [sys.executable, "-m", "pip", "install", "--force-reinstall", "--no-deps", "--no-cache-dir", target_spec])
             )
+        if is_wheel:
+            vcs_flags = ["--upgrade", "--force-reinstall", "--no-cache-dir"] if force else ["--upgrade"]
+            commands.append(("pip-vcs-fallback", [sys.executable, "-m", "pip", "install", *vcs_flags, vcs_target_spec]))
         return commands
 
     if _is_uv_tool_install() and uv_bin and installer_override != "pipx":
@@ -222,7 +234,10 @@ def get_upgrade_commands(
                 else ["--upgrade", "--refresh-package=repo360"]
             )
         else:
-            pipx_flags = ["--upgrade", "--force-reinstall", "--no-cache-dir"] if force else ["--upgrade"]
+            if is_wheel:
+                pipx_flags = ["--upgrade", "--force-reinstall", "--no-deps"] if force else ["--upgrade"]
+            else:
+                pipx_flags = ["--upgrade", "--force-reinstall", "--no-cache-dir"] if force else ["--upgrade"]
         commands.append(("pipx", [pipx_bin, "runpip", venv_name, "install", *pipx_flags, target_spec]))
         if backend == "pip" and force:
             commands.append(
@@ -239,12 +254,28 @@ def get_upgrade_commands(
         commands.append(("uv", [uv_bin, "pip", "install", "--python", sys.executable, *uv_flags, target_spec]))
 
     if _pip_available_for_python() or not commands:
-        pip_flags = ["--upgrade", "--force-reinstall", "--no-cache-dir"] if force else ["--upgrade"]
+        if is_wheel:
+            pip_flags = ["--upgrade", "--force-reinstall", "--no-deps"] if force else ["--upgrade"]
+        else:
+            pip_flags = ["--upgrade", "--force-reinstall", "--no-cache-dir"] if force else ["--upgrade"]
         commands.append(("pip", [sys.executable, "-m", "pip", "install", *pip_flags, target_spec]))
         if force:
             commands.append(
                 ("pip-isolated", [sys.executable, "-m", "pip", "install", "--force-reinstall", "--no-deps", "--no-cache-dir", target_spec])
             )
+
+    if is_wheel:
+        # Fallback to VCS source commands if local wheel installation fails
+        if uv_bin:
+            uv_vcs_flags = (
+                ["--refresh-package", "repo360", "--reinstall-package", "repo360"]
+                if force
+                else ["--upgrade", "--refresh-package", "repo360"]
+            )
+            commands.append(("uv-fallback", [uv_bin, "pip", "install", "--python", sys.executable, *uv_vcs_flags, vcs_target_spec]))
+        if _pip_available_for_python():
+            pip_vcs_flags = ["--upgrade", "--force-reinstall", "--no-cache-dir"] if force else ["--upgrade"]
+            commands.append(("pip-fallback", [sys.executable, "-m", "pip", "install", *pip_vcs_flags, vcs_target_spec]))
 
     return commands
 
@@ -317,6 +348,66 @@ class ReleaseTarget:
     tag: Optional[str] = None
     commit: Optional[str] = None
     source: str = ""
+    wheel_url: Optional[str] = None
+    wheel_name: Optional[str] = None
+
+
+def _find_wheel_asset(assets: Sequence[Dict[str, Any]]) -> Tuple[Optional[str], Optional[str]]:
+    """Extract browser_download_url and asset name for repo360 wheel package."""
+    for asset in assets:
+        name = str(asset.get("name") or "")
+        url = str(asset.get("browser_download_url") or "")
+        if name.endswith(".whl") and name.startswith("repo360") and url:
+            return url, name
+    return None, None
+
+
+def _download_release_asset(
+    url: str,
+    target_dir: Optional[Path] = None,
+    timeout: float = 15.0,
+) -> Optional[Path]:
+    """Download a release wheel asset to a local temporary or cache directory.
+
+    Returns the Path to the downloaded file on success, or None on failure.
+    """
+    if not url or not url.lower().startswith(("http://", "https://")):
+        return None
+
+    dest_dir = target_dir or (Path(tempfile.gettempdir()) / "repo360_upgrade")
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    filename = Path(urllib.parse.urlparse(url).path).name or "repo360_downloaded.whl"
+    dest_file = dest_dir / filename
+
+    if dest_file.is_file() and dest_file.stat().st_size > 1024:
+        logger.debug("Reusing cached release wheel asset %s", dest_file)
+        return dest_file
+
+    try:
+        headers = {"User-Agent": "Repo360-Upgrade/1.0"}
+        token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+        if token and "api.github.com" in url:
+            headers["Authorization"] = f"token {token}"
+            headers["Accept"] = "application/octet-stream"
+
+        with requests.get(url, headers=headers, stream=True, timeout=timeout) as resp:
+            if resp.status_code != 200:
+                logger.debug("Failed to download release asset from %s (HTTP %s)", url, resp.status_code)
+                return None
+            temp_target = dest_dir / f"{filename}.tmp_{os.getpid()}"
+            with open(temp_target, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=65536):
+                    if chunk:
+                        f.write(chunk)
+            temp_target.replace(dest_file)
+
+        if dest_file.is_file() and dest_file.stat().st_size > 1024:
+            logger.debug("Downloaded release asset %s (%d bytes)", dest_file.name, dest_file.stat().st_size)
+            return dest_file
+    except Exception as exc:
+        logger.debug("Best-effort wheel download skipped: %s", exc)
+
+    return None
 
 
 def normalize_release_tag(raw_tag: str) -> str:
@@ -412,6 +503,8 @@ def _resolve_latest_github_release_tag(
     except Exception:
         return None, resp.status_code
 
+    _RELEASE_PAYLOAD_CACHE[api_url] = data
+
     if data.get("draft") or data.get("prerelease"):
         return None, resp.status_code
 
@@ -438,13 +531,22 @@ def _check_github_release_tag(
     api_url = f"https://api.github.com/repos/{owner}/{repo_name}/releases/tags/{encoded}"
     try:
         resp = requests.get(api_url, headers=_build_github_api_headers(), timeout=timeout)
+        if resp.status_code == 200:
+            try:
+                _RELEASE_PAYLOAD_CACHE[api_url] = resp.json() or {}
+            except Exception:
+                pass
         return resp.status_code == 200, resp.status_code
     except Exception:
         return False, None
 
 
 def _resolve_tag_commit_sha(repo_url: str, tag_name: str) -> Optional[str]:
-    """Resolve the underlying commit SHA for a release tag via git ls-remote or GitHub API."""
+    """Resolve the underlying commit SHA for a release tag via GitHub API or git ls-remote."""
+    summary = _fetch_commit_summary(repo_url, tag_name, timeout=4.0)
+    if summary and summary.get("sha"):
+        return summary["sha"]
+
     tag_map = _list_remote_tags(
         repo_url,
         ref_patterns=(f"refs/tags/{tag_name}", f"refs/tags/{tag_name}^{{}}"),
@@ -452,9 +554,6 @@ def _resolve_tag_commit_sha(repo_url: str, tag_name: str) -> Optional[str]:
     if tag_map and tag_map.get(tag_name):
         return tag_map[tag_name]
 
-    summary = _fetch_commit_summary(repo_url, tag_name, timeout=5.0)
-    if summary and summary.get("sha"):
-        return summary["sha"]
     return None
 
 
@@ -486,10 +585,23 @@ def resolve_release_target(
             exists, status_code = _check_github_release_tag(repo_url, cand)
             if exists:
                 summary = _fetch_commit_summary(repo_url, cand, timeout=5.0)
+                wheel_url: Optional[str] = None
+                wheel_name: Optional[str] = None
+                parsed = _parse_github_owner_repo(repo_url)
+                if parsed:
+                    owner, repo_name = parsed
+                    encoded = urllib.parse.quote(cand, safe="")
+                    cached = _RELEASE_PAYLOAD_CACHE.get(
+                        f"https://api.github.com/repos/{owner}/{repo_name}/releases/tags/{encoded}"
+                    )
+                    if cached:
+                        wheel_url, wheel_name = _find_wheel_asset(cached.get("assets", []))
                 return ReleaseTarget(
                     tag=cand,
                     commit=summary.get("sha") if summary else None,
                     source="github-release",
+                    wheel_url=wheel_url,
+                    wheel_name=wheel_name,
                 )
             if status_code == 404:
                 saw_not_found = True
@@ -503,7 +615,23 @@ def resolve_release_target(
     latest_tag, _ = _resolve_latest_github_release_tag(repo_url)
     if latest_tag:
         commit_sha = _resolve_tag_commit_sha(repo_url, latest_tag)
-        return ReleaseTarget(tag=latest_tag, commit=commit_sha, source="github-release")
+        wheel_url: Optional[str] = None
+        wheel_name: Optional[str] = None
+        parsed = _parse_github_owner_repo(repo_url)
+        if parsed:
+            owner, repo_name = parsed
+            cached = _RELEASE_PAYLOAD_CACHE.get(
+                f"https://api.github.com/repos/{owner}/{repo_name}/releases/latest"
+            )
+            if cached:
+                wheel_url, wheel_name = _find_wheel_asset(cached.get("assets", []))
+        return ReleaseTarget(
+            tag=latest_tag,
+            commit=commit_sha,
+            source="github-release",
+            wheel_url=wheel_url,
+            wheel_name=wheel_name,
+        )
 
     # Fall back to highest SemVer tag via git ls-remote when Releases API is unavailable
     all_tags = _list_remote_tags(repo_url)
@@ -1231,10 +1359,27 @@ def run_upgrade_cli(argv: Optional[List[str]] = None) -> int:
         or not target.commit
         or not _commits_match(local_sha, target.commit)
     )
+
+    wheel_file: Optional[Path] = None
+    if not use_commit_mode and target.tag:
+        wheel_url_to_download = target.wheel_url
+        if not wheel_url_to_download:
+            clean_ver = target.tag.lstrip("v")
+            parsed_owner_repo = _parse_github_owner_repo(DEFAULT_REPO_URL)
+            if parsed_owner_repo:
+                owner, repo_name = parsed_owner_repo
+                wheel_url_to_download = (
+                    f"https://github.com/{owner}/{repo_name}/releases/download/"
+                    f"{target.tag}/repo360-{clean_ver}-py3-none-any.whl"
+                )
+        if wheel_url_to_download:
+            wheel_file = _download_release_asset(wheel_url_to_download)
+
     candidates = get_upgrade_commands(
         DEFAULT_REPO_URL,
         force=force,
         target_ref=install_ref,
+        wheel_path=str(wheel_file) if wheel_file else None,
     )
     if requested_tag or requested_ref:
         print(f"Installing Repo360 {target_label}...")
