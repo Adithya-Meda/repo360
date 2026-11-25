@@ -129,7 +129,7 @@ def format_ai_scorecard_status(
         getattr(ai_engine, "is_fallback", False)
         or (
             getattr(ai_engine, "configured_model", "")
-            and getattr(ai_engine, "configured_model") != getattr(ai_engine, "model_name", "")
+            and ai_engine.configured_model != getattr(ai_engine, "model_name", "")
         )
     )
     fallback_suffix = " - rate limit fallback" if is_fallback else ""

@@ -645,10 +645,12 @@ def test_repository_inventory_pr_metrics_breakdown():
         activity_complete=True,
     )
 
+    from repo360.common.timezones import parse_ts
+
     events = []
     def record_fn(author, metric, ts):
         if ts:
-            events.append((author.get("login") if author else None, metric, datetime.fromisoformat(ts)))
+            events.append((author.get("login") if author else None, metric, parse_ts(ts)))
 
     success = collect_pull_requests_graphql(
         client=MockClient(),
@@ -702,7 +704,7 @@ def test_repository_inventory_pr_metrics_breakdown():
 def test_repository_inventory_issue_and_comment_breakdown():
     """Verify issues breakdown (Total=20, Open=15, Closed=5, Active=0) and isolated PR/Issue comments."""
     from repo360.activity.collector import build_management_tables, collect_repo_events
-    from repo360.activity.models import REPO_INVENTORY_HEADERS, TOP_REPOS_HEADERS, RepositoryReport
+    from repo360.activity.models import RepositoryReport
 
     now = datetime(2026, 11, 24, 12, 0, tzinfo=timezone.utc)
     since = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
@@ -767,10 +769,12 @@ def test_repository_inventory_issue_and_comment_breakdown():
 
     from repo360.activity.collector import collect_pull_requests_graphql
 
+    from repo360.common.timezones import parse_ts
+
     events = []
     def record_fn(author, metric, ts):
         if ts:
-            events.append((author.get("login") if author else None, metric, datetime.fromisoformat(ts)))
+            events.append((author.get("login") if author else None, metric, parse_ts(ts)))
 
     collect_pull_requests_graphql(
         client=MockIssueClient(),
@@ -788,7 +792,7 @@ def test_repository_inventory_issue_and_comment_breakdown():
     assert report.issues_open == 15
     assert report.issues_closed == 5
 
-    users = collect_repo_events(
+    collect_repo_events(
         client=MockIssueClient(),
         org="CanarysPlayground",
         repo="TaskManager-DemoApp",
@@ -885,7 +889,7 @@ def test_org_members_only_filtering_and_external_exclusion(tmp_path):
         collect_repo_events,
         collect_repository,
     )
-    from repo360.activity.models import Activity, ActivityConfig, RepositoryReport
+    from repo360.activity.models import ActivityConfig, RepositoryReport
     from repo360.activity.reporter import write_activity_workbook
     from openpyxl import load_workbook
 
@@ -1243,7 +1247,7 @@ def test_ai_recommendations_sheet_and_cell_fitting(tmp_path):
 def test_repository_age_six_month_threshold(tmp_path):
     """Verify that repositories created within 180 days (~6 months) are 'New' and older are 'Old' irrespective of lookback."""
     from repo360.activity.collector import build_management_tables
-    from repo360.activity.models import ActivityConfig, REPO_INVENTORY_HEADERS, RepositoryReport
+    from repo360.activity.models import ActivityConfig, RepositoryReport
 
     now = datetime(2026, 11, 24, 12, 0, tzinfo=timezone.utc)
     lookback_since = now - timedelta(days=30)
@@ -1299,7 +1303,7 @@ def test_repository_age_six_month_threshold(tmp_path):
 def test_fork_exclusion_and_workflow_summary_specification(tmp_path, monkeypatch):
     """Verify forked repos exclusion is explicitly documented in Executive Summary, CLI, and workflow summary."""
     from repo360.activity.cli import print_activity_scorecard
-    from repo360.activity.models import ActivityConfig, RepositoryReport
+    from repo360.activity.models import ActivityConfig
     from repo360.activity.reporter import write_activity_workbook
     from openpyxl import load_workbook
 
@@ -1360,7 +1364,6 @@ def test_dynamic_fork_and_archived_scope_specification(tmp_path, monkeypatch):
     from repo360.activity.cli import print_activity_scorecard
     from repo360.activity.models import ActivityConfig
     from repo360.activity.reporter import write_activity_workbook
-    from repo360.activity.collector import build_management_tables
     from openpyxl import load_workbook
 
     summary_file = tmp_path / "step_summary_dynamic.md"
@@ -1423,7 +1426,7 @@ def test_dynamic_fork_and_archived_scope_specification(tmp_path, monkeypatch):
 
 def test_fork_identification_in_inventory_and_kpis(tmp_path):
     """Verify that forked repositories are explicitly tagged with Fork == 'Yes' and accounted for in Management KPIs."""
-    from repo360.activity.models import ActivityConfig, REPO_INVENTORY_HEADERS, RepositoryReport
+    from repo360.activity.models import ActivityConfig, RepositoryReport
     from repo360.activity.collector import build_management_tables
     from repo360.activity.reporter import write_activity_workbook
     from openpyxl import load_workbook

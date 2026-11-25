@@ -2,7 +2,6 @@
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import MagicMock
 import openpyxl
 
 from repo360.activity.models import ActivityConfig

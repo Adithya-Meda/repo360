@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
@@ -19,7 +19,7 @@ from ..activity.reporter import (
     write_table,
 )
 from ..common.concurrency import AI_NOT_ENABLED_MESSAGE, is_ai_disabled
-from ..common.ai_sheet import AI_DISCLAIMER_NOTE, AI_REC_HEADERS, render_ai_recommendations_sheet
+from ..common.ai_sheet import AI_DISCLAIMER_NOTE, render_ai_recommendations_sheet
 from .models import (
     FINOPS_ARTIFACT_HEADERS,
     FINOPS_BILLING_HEADERS,

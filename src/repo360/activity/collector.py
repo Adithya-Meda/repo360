@@ -12,11 +12,9 @@ from ..common.client import ResilientGitHubClient
 from ..common.concurrency import is_ai_live, map_concurrent
 from ..common.timezones import fmt_timestamp, parse_ts
 from .models import (
-    AI_REC_HEADERS,
     LOCAL_TZ,
     LOCAL_TZ_NAME,
     METRIC_KEYS,
-    METRIC_LABELS,
     MGMT_KPI_HEADERS,
     REPO_INVENTORY_HEADERS,
     REPO_INVENTORY_METRICS,

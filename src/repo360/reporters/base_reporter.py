@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Optional
 
 from ..activity.reporter import clamp_cell_text
 from ..checks.base import CheckResult, Persona
@@ -169,7 +169,7 @@ class BaseReporter(ABC):
     @classmethod
     def build_remediation_clusters(cls, results: List[CheckResult]) -> List[Dict[str, Any]]:
         """Cluster actionable WARN/FAIL findings strictly by check ID for consolidated, centralized fleet playbooks."""
-        from ..checks.base import CheckStatus, Persona
+        from ..checks.base import CheckStatus
 
         clusters: Dict[str, Dict[str, Any]] = {}
 

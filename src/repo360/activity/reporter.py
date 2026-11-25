@@ -392,7 +392,7 @@ def write_activity_workbook(
             if len(r) > repo_act_idx and r[repo_act_idx]:
                 activity_dates.append(r[repo_act_idx])
 
-    since_local, end_local = since.astimezone(LOCAL_TZ), end.astimezone(LOCAL_TZ)
+    end_local = end.astimezone(LOCAL_TZ)
     duration_str = f"{execution_duration:.1f}s" if execution_duration else "N/A"
     window_str = resolve_reporting_window(cfg.lookback_days, since, end, activity_dates)
     fork_scope_txt = "forks included" if cfg.include_forks else "forked repos excluded"

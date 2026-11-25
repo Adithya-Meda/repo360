@@ -1414,8 +1414,6 @@ def test_all_time_multi_repo_per_repo_cadence_isolation():
 
     A 4-year-old repo with 1 deploy must NOT distort a newly-created repo with 20 deploys in 4 weeks.
     """
-    now = datetime(2026, 11, 23, 12, 0, 0, tzinfo=timezone.utc)
-
     # Repo A: 1 deploy 4 years ago (May 2022)
     d_old = DeploymentRecord(
         event_type="Deployment",

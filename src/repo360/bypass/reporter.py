@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any, List, Optional, Sequence, Tuple
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
@@ -19,7 +19,7 @@ from ..activity.reporter import (
     write_table,
 )
 from ..common.concurrency import AI_NOT_ENABLED_MESSAGE, is_ai_disabled
-from ..common.ai_sheet import AI_DISCLAIMER_NOTE, AI_REC_HEADERS, render_ai_recommendations_sheet
+from ..common.ai_sheet import AI_DISCLAIMER_NOTE, render_ai_recommendations_sheet
 from ..common.text import pluralize
 from .models import (
     BYPASS_ACTOR_HEADERS,
@@ -135,7 +135,7 @@ def write_bypass_workbook(
     path.parent.mkdir(parents=True, exist_ok=True)
     wb = Workbook()
 
-    since_local, end_local = since.astimezone(LOCAL_TZ), end.astimezone(LOCAL_TZ)
+    end_local = end.astimezone(LOCAL_TZ)
     duration_str = f"{execution_duration:.1f}s" if execution_duration else "N/A"
 
     summary = wb.active

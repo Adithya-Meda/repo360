@@ -889,13 +889,11 @@ def test_runners_artifact_retention_purge_duration_protection(tmp_path):
 def test_active_repositories_nowrap_and_compact_row_height(tmp_path):
     """Verify that multiple repositories listed in a cell do not expand row height and preserve full content."""
     from openpyxl import load_workbook
-    from openpyxl.utils import get_column_letter
     from repo360.runners.reporter import write_runners_workbook
     from repo360.runners.models import RunnersConfig, RunnerInfo, RunnerJobMetrics, RUNNER_HEADERS, ORG_RUNNER_HEADERS
     from repo360.runners.collector import build_runner_rows
 
     many_repos = [f"repo-microservice-{i:03d}" for i in range(100)]
-    repos_str = ", ".join(many_repos)
 
     runner = RunnerInfo(
         id=1, name="hosted-linux", os="Linux", status="Hosted", busy=False,

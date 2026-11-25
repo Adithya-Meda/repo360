@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
@@ -20,7 +20,7 @@ from ..activity.reporter import (
     write_table,
 )
 from ..common.concurrency import AI_NOT_ENABLED_MESSAGE, is_ai_disabled, is_ai_live
-from ..common.ai_sheet import AI_DISCLAIMER_NOTE, AI_REC_HEADERS, render_ai_recommendations_sheet
+from ..common.ai_sheet import AI_DISCLAIMER_NOTE, render_ai_recommendations_sheet
 from ..common.text import pluralize
 from .models import ORG_RUNNER_HEADERS, RUNNER_HEADERS, RUNNER_JOB_HEADERS, RunnersConfig
 
@@ -139,7 +139,7 @@ def write_runners_workbook(
     summary["A1"] = "Repo360 Actions Runner Fleet Performance & Utilization Report"
     summary["A1"].font = Font(bold=True, size=16, color=NAVY)
 
-    since_local, end_local = since.astimezone(LOCAL_TZ), end.astimezone(LOCAL_TZ)
+    end_local = end.astimezone(LOCAL_TZ)
     duration_str = f"{execution_duration:.1f}s" if execution_duration else "N/A"
 
     total_runners = len(runner_rows)

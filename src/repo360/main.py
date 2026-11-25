@@ -32,10 +32,32 @@ def _configure_utf8_stdio() -> None:
 _configure_utf8_stdio()
 
 if TYPE_CHECKING:
-    from .ai import AIEngine
-    from .checks import CheckResult
+    import concurrent.futures
+    import threading
+    from .ai import AIEngine, resolve_ai_cli_flag
+    from .auth.github_app_auth import GitHubAppAuth
+    from .checks import (
+        ALL_CONTRIBUTOR_CHECKS,
+        ALL_ORG_CHECKS,
+        ALL_REPO_CHECKS,
+        CheckResult,
+        CheckStatus,
+    )
+    from .collector.client import Repo360Client
     from .collector.repo_inspector import RepoInspector
-    from .validator import RepoTarget
+    from .common.concurrency import (
+        format_ai_scorecard_status,
+        is_ai_disabled,
+        is_ai_live,
+        map_concurrent,
+        resolve_worker_count,
+        run_concurrent_ai,
+    )
+    from .common.interrupts import is_shutting_down, iter_completed
+    from .common.text import pluralize
+    from .common.timezones import file_timestamp
+    from .reporters.excel_reporter import ExcelReporter
+    from .validator import ConfigValidator, RepoTarget
 
 _AUDIT_DEPS_LOADED = False
 

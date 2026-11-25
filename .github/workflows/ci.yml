@@ -73,6 +73,7 @@ jobs:
 
   cli-lifecycle:
     name: "CLI Install & Uninstall (${{ matrix.os }})"
+    needs: test
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
