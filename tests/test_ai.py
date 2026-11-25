@@ -1078,4 +1078,34 @@ def test_verify_openai_preserves_primary_model_error_over_fallback_404(monkeypat
     assert "gpt-4-turbo" not in reason
 
 
+def test_verify_anthropic_preserves_primary_model_error_over_fallback_404(monkeypatch) -> None:
+    """When primary Anthropic model hits 429 and fallbacks return 404, surface the primary model's error."""
+    from unittest.mock import MagicMock
+
+    engine = AIEngine(provider="anthropic", api_key="sk-ant-test", model_name="claude-haiku-4-5", enabled=True)
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        model = (json or {}).get("model")
+        resp = MagicMock()
+        if model == "claude-haiku-4-5":
+            resp.status_code = 429
+            resp.headers = {}
+            resp.text = '{"error":{"type":"rate_limit_error","message":"Rate limit exceeded"}}'
+            resp.json.return_value = {"error": {"type": "rate_limit_error", "message": "Rate limit exceeded"}}
+        else:
+            resp.status_code = 404
+            resp.headers = {}
+            resp.text = f'{{"error":{{"type":"not_found_error","message":"model: {model}"}}}}'
+            resp.json.return_value = {"error": {"type": "not_found_error", "message": f"model: {model}"}}
+        return resp
+
+    monkeypatch.setattr("requests.post", _fake_post)
+    ok, reason = engine.verify_connection()
+    assert ok is False
+    assert engine.enabled is False
+    assert "claude-haiku-4-5" in reason
+    assert "rate_limit_error" in reason
+    assert "claude-haiku-5-5" not in reason
+
+
 
