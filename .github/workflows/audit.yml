@@ -3,10 +3,14 @@ name: "Repo360 Platform Audit"
 on:
   workflow_dispatch:
     inputs:
-      os_matrix:
-        description: "JSON array of runner OS labels (e.g. '[\"ubuntu-latest\"]' or '[\"windows-latest\",\"macos-latest\"]')"
-        required: false
-        default: '["ubuntu-latest"]'
+      os_target:
+        description: "Runner OS targets"
+        type: choice
+        options:
+          - ubuntu-latest
+          - windows-and-macos
+          - all
+        default: ubuntu-latest
   schedule:
     - cron: "0 6 * * 1" # Weekly: Mondays at 06:00 UTC
 
@@ -14,13 +18,31 @@ permissions:
   contents: read
 
 jobs:
+  prepare:
+    name: "Select Runner OS Matrix"
+    runs-on: ubuntu-latest
+    outputs:
+      os_matrix: ${{ steps.set_matrix.outputs.os_matrix }}
+    steps:
+      - id: set_matrix
+        shell: bash
+        env:
+          OS_TARGET: ${{ inputs.os_target || 'ubuntu-latest' }}
+        run: |
+          case "$OS_TARGET" in
+            windows-and-macos) echo 'os_matrix=["windows-latest","macos-latest"]' >> "$GITHUB_OUTPUT" ;;
+            all)               echo 'os_matrix=["ubuntu-latest","windows-latest","macos-latest"]' >> "$GITHUB_OUTPUT" ;;
+            *)                 echo 'os_matrix=["ubuntu-latest"]' >> "$GITHUB_OUTPUT" ;;
+          esac
+
   governance-audit:
     name: "Execute Advisory Audit (${{ matrix.os }})"
+    needs: prepare
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(github.event.inputs.os_matrix || '["ubuntu-latest"]') }}
+        os: ${{ fromJSON(needs.prepare.outputs.os_matrix) }}
 
     steps:
       - name: "Checkout Repository"
