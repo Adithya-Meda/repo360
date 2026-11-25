@@ -14,6 +14,6 @@ warnings.filterwarnings("ignore", message=".*automatic function calling.*")
 warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"google(\..*)?$")
 warnings.filterwarnings("ignore", category=UserWarning, module=r"google(\..*)?$")
 
-__version__ = "1.3.1"
+__version__ = "1.3.2"
 __author__ = "Adithya Meda"
 
