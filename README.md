@@ -66,9 +66,26 @@ All core permissions are read-only by default. Note that for organization-level 
 
 ### Method 1: Local CLI
 
-#### 1. Install
+#### 1. Install (Latest Release)
+
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/Adithya-Meda/repo360/main/install.ps1 | iex
+```
+
+**macOS / Linux:**
 ```bash
-pipx install git+https://github.com/Adithya-Meda/repo360.git
+curl -fsSL https://raw.githubusercontent.com/Adithya-Meda/repo360/main/install.sh | bash
+```
+
+**Or directly with `pipx` (resolves latest release tag):**
+```bash
+# macOS / Linux
+pipx install "git+https://github.com/Adithya-Meda/repo360.git@$(curl -fsSL https://api.github.com/repos/Adithya-Meda/repo360/releases/latest | grep -m1 '"tag_name"' | cut -d'"' -f4)"
+```
+```powershell
+# Windows (PowerShell)
+pipx install "git+https://github.com/Adithya-Meda/repo360.git@$((irm https://api.github.com/repos/Adithya-Meda/repo360/releases/latest).tag_name)"
 ```
 
 #### 2. Setup (One-Time)
