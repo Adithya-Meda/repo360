@@ -58,6 +58,7 @@ All core permissions are read-only by default. Note that for organization-level 
 | `administration: read` | Organization | `audit` |
 | `administration: write` | Organization | `audit` (required for Organization Rulesets; manually provide this permission if org-level rulesets are required) |
 | `members: read` | Organization | `audit`, `activity` |
+| `plan: read` | Organization | `finops` (Enhanced Billing Platform usage & compute metrics) |
 | `self_hosted_runners: read` | Organization | `audit`, `runners` |
 
 ---
