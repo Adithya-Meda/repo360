@@ -918,11 +918,21 @@ def execute_uninstall(
                 exit_code = 1
 
         bin_shim: Optional[Path] = plan.get("bin_shim")
-        if bin_shim and bin_shim.is_file() and not _is_protected_path(bin_shim):
+        if bin_shim and (bin_shim.is_file() or bin_shim.is_symlink()) and not _is_protected_path(bin_shim):
             try:
                 bin_shim.unlink()
             except OSError as exc:
                 print(f"\033[93m[WARN]\033[0m Could not remove CLI executable {bin_shim}: {exc}")
+
+        for s_dir in script_dirs:
+            if not s_dir.is_dir():
+                continue
+            cand = s_dir / "repo360"
+            if (cand.is_file() or cand.is_symlink()) and not _is_protected_path(cand):
+                try:
+                    cand.unlink()
+                except OSError as exc:
+                    print(f"\033[93m[WARN]\033[0m Could not remove CLI executable {cand}: {exc}")
 
         _purge_orphaned_site_packages(site_dirs)
 

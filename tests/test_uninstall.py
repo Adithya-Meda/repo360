@@ -420,3 +420,43 @@ def test_requires_deferred_windows_cleanup_conditions(tmp_path: Path, monkeypatc
         empty_dir = tmp_path / "empty"
         empty_dir.mkdir()
         assert _requires_deferred_windows_cleanup(None, None, [empty_dir]) is False
+
+
+def test_posix_uninstall_removes_all_shims_and_dangling_symlinks(tmp_path: Path, monkeypatch) -> None:
+    """Verify POSIX uninstall removes both primary bin_shim (even if dangling symlink) and extra script_dir shims."""
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.chdir(tmp_path)
+
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    usr_bin = tmp_path / "usr" / "local" / "bin"
+    usr_bin.mkdir(parents=True)
+
+    # Simulate a dangling symlink for primary bin_shim (target does not exist)
+    dangling_shim = local_bin / "repo360"
+    try:
+        dangling_shim.symlink_to(tmp_path / "nonexistent" / "repo360")
+    except (OSError, NotImplementedError):
+        # Windows without developer mode may disallow symlinks; write a regular file fallback
+        dangling_shim.write_text("#!/usr/bin/env python3", encoding="utf-8")
+
+    extra_shim = usr_bin / "repo360"
+    extra_shim.write_text("#!/usr/bin/env python3", encoding="utf-8")
+
+    plan = {
+        "config_dir": tmp_path / "nonexistent_cfg",
+        "scripts_dir": usr_bin,
+        "script_dirs": [local_bin, usr_bin],
+        "site_dirs": [],
+        "bin_shim": dangling_shim,
+        "pipx_venv_dir": None,
+        "deferred_windows": False,
+        "package_cmd": ["echo", "uninstalled"],
+    }
+
+    with patch("repo360.uninstall.run_interruptible_subprocess", return_value=MagicMock(returncode=0, stdout="", stderr="")):
+        rc = execute_uninstall(plan, dry_run=False, keep_config=True, delay_seconds=0)
+
+    assert rc == 0
+    assert not dangling_shim.exists() and not dangling_shim.is_symlink()
+    assert not extra_shim.exists()
