@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(inputs.os_matrix || '["ubuntu-latest"]') }}
+        os: ${{ fromJSON(github.event.inputs.os_matrix || '["ubuntu-latest"]') }}
 
     steps:
       - name: "Checkout Repository"
