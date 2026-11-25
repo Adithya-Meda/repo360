@@ -177,6 +177,8 @@ runs:
     - name: "Execute Repo360 Telemetry"
       shell: bash
       env:
+        PYTHONUTF8: "1"
+        PYTHONIOENCODING: "utf-8"
         REPO360_APP_ID: ${{ inputs.app_id }}
         REPO360_APP_PRIVATE_KEY: ${{ inputs.private_key }}
         REPO360_APP_INSTALLATION_ID: ${{ inputs.installation_id }}

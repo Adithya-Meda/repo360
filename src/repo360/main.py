@@ -17,6 +17,20 @@ from .common.interrupts import (
 # Arm Ctrl+C handlers and silent excepthook before importing heavy SDKs
 install_signal_handlers()
 
+
+def _configure_utf8_stdio() -> None:
+    """Ensure stdout/stderr never fail with UnicodeEncodeError on Windows cp1252 consoles."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (OSError, ValueError):
+                pass
+
+
+_configure_utf8_stdio()
+
 if TYPE_CHECKING:
     from .ai import AIEngine
     from .checks import CheckResult
