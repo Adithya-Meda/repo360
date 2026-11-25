@@ -70,3 +70,40 @@ jobs:
         run: |
           python -m build
           twine check dist/*
+
+  cli-lifecycle:
+    name: "CLI Install & Uninstall (${{ matrix.os }})"
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: "Checkout Repository"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: "Set up Python"
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: "Verify pipx Install, Mock Audit, and Clean Uninstall"
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --user pipx
+          export PATH="$HOME/.local/bin:$PATH"
+          pipx install .
+          repo360 version
+          repo360 audit --mock-mode --require-ai no --output-dir "$RUNNER_TEMP/repo360-e2e"
+          ls -lh "$RUNNER_TEMP/repo360-e2e"/*.xlsx
+          repo360 uninstall --yes
+          hash -r
+          if command -v repo360 >/dev/null 2>&1; then
+            echo "Error: repo360 still present on PATH after uninstall: $(command -v repo360)" >&2
+            exit 1
+          fi
+          echo "Verified clean uninstall: repo360 removed from PATH."
