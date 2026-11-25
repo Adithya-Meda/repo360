@@ -310,3 +310,113 @@ def test_uninstall_never_rmtrees_custom_config_dir_named_repo360(tmp_path: Path,
     monkeypatch.setenv("REPO360_CONFIG_DIR", str(checkout))
 
     assert _config_purge_targets(checkout) == [checkout / "config.json"]
+
+
+def test_discover_script_and_site_dirs() -> None:
+    """Verify script and site-packages discovery returns non-empty existing paths."""
+    from repo360.uninstall import _discover_script_dirs, _discover_site_packages_dirs
+
+    s_dirs = _discover_script_dirs()
+    assert isinstance(s_dirs, list)
+    for p in s_dirs:
+        assert p.is_dir()
+
+    site_dirs = _discover_site_packages_dirs()
+    assert isinstance(site_dirs, list)
+    for p in site_dirs:
+        assert p.is_dir()
+
+
+def test_stage_rename_windows_binaries(tmp_path: Path, monkeypatch) -> None:
+    """Test immediate unlinking when unlocked and stage-renaming when locked by Windows NT."""
+    from repo360.uninstall import _stage_rename_windows_binaries
+
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    # Case 1: Unlocked binary is unlinked immediately
+    bin_file = tmp_path / "repo360.exe"
+    bin_file.write_text("binary", encoding="utf-8")
+    script_file = tmp_path / "repo360-script.py"
+    script_file.write_text("script", encoding="utf-8")
+
+    staged = _stage_rename_windows_binaries([tmp_path])
+    assert staged == []
+    assert not bin_file.exists()
+    assert not script_file.exists()
+
+    # Case 2: Locked binary raises PermissionError on unlink and is stage-renamed
+    locked_bin = tmp_path / "repo360.exe"
+    locked_bin.write_text("running_binary", encoding="utf-8")
+
+    orig_unlink = Path.unlink
+
+    def mock_unlink(self, *args, **kwargs):
+        if self.name.lower() == "repo360.exe":
+            raise PermissionError("[WinError 5] Access is denied")
+        return orig_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", mock_unlink)
+    with patch("repo360.uninstall._schedule_windows_delete_on_reboot", return_value=True) as mock_reboot:
+        staged_locked = _stage_rename_windows_binaries([tmp_path])
+
+    assert len(staged_locked) == 1
+    assert not locked_bin.exists()
+    assert staged_locked[0].is_file()
+    assert ".old_" in staged_locked[0].name
+    assert mock_reboot.called
+
+
+def test_purge_orphaned_site_packages(tmp_path: Path) -> None:
+    """Ensure site-packages cleaner wipes repo360 packages and .pth files while keeping others."""
+    from repo360.uninstall import _purge_orphaned_site_packages
+
+    pkg_dir = tmp_path / "repo360"
+    pkg_dir.mkdir()
+    (pkg_dir / "__init__.py").write_text("", encoding="utf-8")
+
+    dist_info = tmp_path / "repo360-1.2.0.dist-info"
+    dist_info.mkdir()
+    (dist_info / "METADATA").write_text("", encoding="utf-8")
+
+    pth_file = tmp_path / "__editable__.repo360-1.2.0.pth"
+    pth_file.write_text("c:\\dev\\repo360", encoding="utf-8")
+
+    keep_pkg = tmp_path / "otherpkg"
+    keep_pkg.mkdir()
+    (keep_pkg / "__init__.py").write_text("", encoding="utf-8")
+    keep_pth = tmp_path / "other.pth"
+    keep_pth.write_text("other", encoding="utf-8")
+
+    removed = _purge_orphaned_site_packages([tmp_path])
+
+    assert str(pkg_dir) in removed
+    assert str(dist_info) in removed
+    assert str(pth_file) in removed
+    assert not pkg_dir.exists()
+    assert not dist_info.exists()
+    assert not pth_file.exists()
+    assert keep_pkg.is_dir()
+    assert keep_pth.is_file()
+
+
+def test_requires_deferred_windows_cleanup_conditions(tmp_path: Path, monkeypatch) -> None:
+    """Verify deferred cleanup is selected whenever Windows locks or shims are present."""
+    from repo360.uninstall import _requires_deferred_windows_cleanup
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert _requires_deferred_windows_cleanup(None, None, [tmp_path]) is False
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    shim = tmp_path / "repo360.exe"
+    shim.write_text("shim", encoding="utf-8")
+
+    assert _requires_deferred_windows_cleanup(None, shim, [tmp_path]) is True
+
+    monkeypatch.setattr(sys, "argv", ["C:/path/repo360.exe", "uninstall"])
+    assert _requires_deferred_windows_cleanup(None, None, [tmp_path]) is True
+
+    monkeypatch.setattr(sys, "argv", ["python.exe", "other.py"])
+    with patch("shutil.which", return_value=None):
+        empty_dir = tmp_path / "empty"
+        empty_dir.mkdir()
+        assert _requires_deferred_windows_cleanup(None, None, [empty_dir]) is False

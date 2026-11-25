@@ -17,7 +17,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from .common.interrupts import interruptible_input, run_interruptible_subprocess
 from .credentials import resolve_user_config_dir
@@ -73,12 +73,21 @@ def _is_safe_purge_target(target: Path) -> bool:
 
 
 def main() -> None:
+    if len(sys.argv) < 6:
+        return
     parent_pid = int(sys.argv[1])
     pipx_bin = sys.argv[2]
     venv_arg = sys.argv[3]
     shim_arg = sys.argv[4]
     config_arg = sys.argv[5]
-    cmd = sys.argv[6:]
+    if len(sys.argv) >= 8 and (";" in sys.argv[6] or sys.argv[6] == "" or Path(sys.argv[6]).is_dir()):
+        script_dirs_arg = sys.argv[6]
+        site_dirs_arg = sys.argv[7]
+        cmd = sys.argv[8:]
+    else:
+        script_dirs_arg = ""
+        site_dirs_arg = ""
+        cmd = sys.argv[6:]
 
     # Wait until the parent repo360 Python process terminates cleanly so Windows unlocks executables.
     k32 = ctypes.windll.kernel32
@@ -86,7 +95,7 @@ def main() -> None:
     if handle:
         k32.WaitForSingleObject(handle, 15000)
         k32.CloseHandle(handle)
-    time.sleep(0.35)
+    time.sleep(0.5)
 
     si = subprocess.STARTUPINFO()
     si.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0x00000001)
@@ -120,6 +129,59 @@ def main() -> None:
                 break
         time.sleep(0.4)
 
+    # Purge all repo360 binaries and stale staged files across all script directories
+    for s_dir_str in script_dirs_arg.split(";"):
+        if not s_dir_str.strip():
+            continue
+        s_dir = Path(s_dir_str)
+        if not s_dir.is_dir():
+            continue
+        for pattern in (
+            "repo360*.exe",
+            "repo360*.exe.old_*",
+            "repo360*.old_*",
+            "repo360*.cmd",
+            "repo360*.bat",
+            "repo360*.ps1",
+            "repo360-script.py",
+        ):
+            for f in s_dir.glob(pattern):
+                for _ in range(5):
+                    try:
+                        os.chmod(f, stat.S_IWRITE)
+                        f.unlink(missing_ok=True)
+                        break
+                    except OSError:
+                        time.sleep(0.2)
+
+    # Purge site-packages leftovers (__editable__.repo360*, dist-info, etc.)
+    for site_dir_str in site_dirs_arg.split(";"):
+        if not site_dir_str.strip():
+            continue
+        site_dir = Path(site_dir_str)
+        if not site_dir.is_dir():
+            continue
+        for pattern in (
+            "repo360",
+            "repo360.egg-link",
+            "repo360*.dist-info",
+            "repo360*.egg-info",
+            "__editable__.repo360*.pth",
+            "__editable___repo360_*.pth",
+            "repo360.pth",
+        ):
+            for target in site_dir.glob(pattern):
+                for _ in range(5):
+                    try:
+                        if target.is_dir():
+                            _rmtree(target)
+                        else:
+                            os.chmod(target, stat.S_IWRITE)
+                            target.unlink(missing_ok=True)
+                        break
+                    except OSError:
+                        time.sleep(0.2)
+
     if venv_arg:
         venv_dir = Path(venv_arg)
         if venv_dir.exists() and _is_safe_purge_target(venv_dir):
@@ -134,11 +196,16 @@ def main() -> None:
 
     if shim_arg:
         shim_path = Path(shim_arg)
-        if shim_path.is_file() and shim_path.stem.lower() == "repo360":
-            try:
-                shim_path.unlink()
-            except OSError:
-                pass
+        if shim_path.parent.is_dir():
+            for p in (shim_path, *shim_path.parent.glob(f"{shim_path.stem}*")):
+                if p.is_file() and p.stem.lower().startswith("repo360"):
+                    for _ in range(5):
+                        try:
+                            os.chmod(p, stat.S_IWRITE)
+                            p.unlink(missing_ok=True)
+                            break
+                        except OSError:
+                            time.sleep(0.2)
 
     if config_arg:
         cfg_dir = Path(config_arg)
@@ -360,30 +427,263 @@ def _resolve_package_uninstall_command(
     return "pip", [sys.executable, "-m", "pip", "uninstall", "-y", "repo360"]
 
 
-def _requires_deferred_windows_cleanup(pipx_venv_dir: Optional[Path]) -> bool:
+def _discover_script_dirs() -> List[Path]:
+    """Discover all standard and environment script directories where CLI executables may reside."""
+    dirs: List[Path] = []
+    py_dir = Path(sys.executable).parent
+    dirs.append(py_dir)
+    dirs.append(py_dir / "Scripts")
+
+    base_dir = Path(sys.base_prefix)
+    dirs.append(base_dir)
+    dirs.append(base_dir / "Scripts")
+
+    try:
+        import sysconfig
+
+        s_def = sysconfig.get_path("scripts")
+        if s_def:
+            dirs.append(Path(s_def))
+        if f"{os.name}_user" in sysconfig.get_scheme_names():
+            s_user = sysconfig.get_path("scripts", f"{os.name}_user")
+            if s_user:
+                dirs.append(Path(s_user))
+    except Exception as exc:
+        logger.debug("sysconfig script discovery skipped: %s", exc)
+
+    try:
+        import site
+
+        if hasattr(site, "USER_BASE") and site.USER_BASE:
+            dirs.append(Path(site.USER_BASE) / "Scripts")
+            dirs.append(Path(site.USER_BASE) / "bin")
+    except Exception as exc:
+        logger.debug("site USER_BASE discovery skipped: %s", exc)
+
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    if local_appdata:
+        dirs.append(Path(local_appdata) / "pipx" / "pipx")
+        dirs.append(Path(local_appdata) / "Programs" / "Python")
+
+    which_bin = shutil.which("repo360")
+    if which_bin:
+        dirs.append(Path(which_bin).parent)
+
+    if sys.argv and "repo360" in Path(sys.argv[0]).name.casefold():
+        dirs.append(Path(sys.argv[0]).parent)
+
+    for env_path in os.environ.get("PATH", "").split(os.pathsep):
+        if env_path.strip():
+            p = Path(env_path.strip())
+            if p.is_dir():
+                try:
+                    if any(p.glob("repo360*")):
+                        dirs.append(p)
+                except OSError:
+                    pass
+
+    unique: List[Path] = []
+    seen = set()
+    for d in dirs:
+        try:
+            resolved = d.resolve()
+            if resolved not in seen and resolved.is_dir():
+                seen.add(resolved)
+                unique.append(resolved)
+        except OSError:
+            pass
+    return unique
+
+
+def _discover_site_packages_dirs() -> List[Path]:
+    """Discover all standard and user site-packages directories."""
+    dirs: List[Path] = []
+    try:
+        import site
+
+        if hasattr(site, "getsitepackages"):
+            for p in site.getsitepackages():
+                dirs.append(Path(p))
+        if hasattr(site, "getusersitepackages"):
+            dirs.append(Path(site.getusersitepackages()))
+    except Exception as exc:
+        logger.debug("site-packages discovery skipped: %s", exc)
+
+    try:
+        import sysconfig
+
+        for key in ("purelib", "platlib"):
+            p = sysconfig.get_path(key)
+            if p:
+                dirs.append(Path(p))
+            if f"{os.name}_user" in sysconfig.get_scheme_names():
+                p_user = sysconfig.get_path(key, f"{os.name}_user")
+                if p_user:
+                    dirs.append(Path(p_user))
+    except Exception as exc:
+        logger.debug("sysconfig site-packages discovery skipped: %s", exc)
+
+    unique: List[Path] = []
+    seen = set()
+    for d in dirs:
+        try:
+            resolved = d.resolve()
+            if resolved not in seen and resolved.is_dir():
+                seen.add(resolved)
+                unique.append(resolved)
+        except OSError:
+            pass
+    return unique
+
+
+def _schedule_windows_delete_on_reboot(path: Path) -> bool:
+    """Register a file with the Windows NT kernel to be deleted automatically on reboot."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+
+        # MOVEFILE_DELAY_UNTIL_REBOOT = 0x00000004
+        return bool(ctypes.windll.kernel32.MoveFileExW(str(path), None, 0x00000004))
+    except Exception as exc:
+        logger.debug("MoveFileExW delay until reboot skipped: %s", exc)
+        return False
+
+
+def _stage_rename_windows_binaries(
+    script_dirs: Optional[List[Path]] = None,
+    bin_shim: Optional[Path] = None,
+) -> List[Path]:
+    """Rename or delete active Windows CLI binaries to prevent in-use locking during uninstallation.
+
+    Windows NT does not allow unlinking a running executable, but it permits renaming within
+    the same volume. Renaming removes the executable from PATH immediately so that subsequent
+    CLI invocations cleanly fail with standard command-not-found errors, and package managers
+    do not encounter permission errors.
+    """
+    if sys.platform != "win32":
+        return []
+
+    targets: List[Path] = []
+    dirs_to_scan = list(script_dirs or [])
+    if bin_shim and bin_shim.parent.is_dir():
+        dirs_to_scan.append(bin_shim.parent)
+        if bin_shim.is_file():
+            targets.append(bin_shim)
+
+    for s_dir in dirs_to_scan:
+        if not s_dir.is_dir():
+            continue
+        for pattern in (
+            "repo360.exe",
+            "repo360.cmd",
+            "repo360.bat",
+            "repo360.ps1",
+            "repo360-script.py",
+            "repo360",
+        ):
+            targets.extend(s_dir.glob(pattern))
+
+    staged_list: List[Path] = []
+    seen = set()
+    for binary_path in targets:
+        try:
+            resolved = binary_path.resolve()
+            if resolved in seen or not resolved.is_file() or _is_protected_path(resolved):
+                continue
+            seen.add(resolved)
+        except OSError:
+            continue
+
+        # Attempt immediate unlinking first (works cleanly if binary is not currently running)
+        try:
+            os.chmod(resolved, stat.S_IWRITE)
+            resolved.unlink()
+            continue
+        except (PermissionError, OSError):
+            pass
+
+        # If locked by an active process, rename to .old_<pid>_<timestamp>
+        staged = resolved.with_name(f"{resolved.name}.old_{os.getpid()}_{int(time.time() * 1000)}")
+        try:
+            resolved.rename(staged)
+            _schedule_windows_delete_on_reboot(staged)
+            staged_list.append(staged)
+        except OSError as exc:
+            logger.debug("Could not stage-rename locked binary %s: %s", resolved, exc)
+
+    return staged_list
+
+
+def _cleanup_stale_staged_binaries(scripts_dirs: Union[Path, List[Path]]) -> List[str]:
+    """Remove leftover *.exe.old_* and repo360*.old_* files across script directories."""
+    removed: List[str] = []
+    dirs = [scripts_dirs] if isinstance(scripts_dirs, Path) else list(scripts_dirs)
+    for s_dir in dirs:
+        if not s_dir.is_dir():
+            continue
+        for old_file in list(s_dir.glob("*.exe.old_*")) + list(s_dir.glob("repo360*.old_*")):
+            try:
+                os.chmod(old_file, stat.S_IWRITE)
+                old_file.unlink()
+                removed.append(str(old_file))
+            except OSError:
+                pass
+    return removed
+
+
+def _purge_orphaned_site_packages(site_dirs: Optional[List[Path]] = None) -> List[str]:
+    """Remove any orphaned repo360 packages, editable .pth files, or dist-info directories."""
+    removed: List[str] = []
+    dirs = site_dirs or _discover_site_packages_dirs()
+    for s_dir in dirs:
+        if not s_dir.is_dir():
+            continue
+        for pattern in (
+            "repo360",
+            "repo360.egg-link",
+            "repo360*.dist-info",
+            "repo360*.egg-info",
+            "__editable__.repo360*.pth",
+            "__editable___repo360_*.pth",
+            "repo360.pth",
+        ):
+            for target in s_dir.glob(pattern):
+                try:
+                    if target.is_dir():
+                        ok, _ = _safe_rmtree(target)
+                        if ok:
+                            removed.append(str(target))
+                    elif target.is_file():
+                        os.chmod(target, stat.S_IWRITE)
+                        target.unlink()
+                        removed.append(str(target))
+                except OSError as exc:
+                    logger.debug("Could not remove site-packages target %s: %s", target, exc)
+    return removed
+
+
+def _requires_deferred_windows_cleanup(
+    pipx_venv_dir: Optional[Path] = None,
+    bin_shim: Optional[Path] = None,
+    script_dirs: Optional[List[Path]] = None,
+) -> bool:
     """Determine whether active executable locking on Windows requires post-exit removal."""
     if sys.platform != "win32":
         return False
     if _is_running_inside_dir(pipx_venv_dir):
         return True
     argv0 = Path(sys.argv[0]).name.casefold() if sys.argv else ""
-    if "repo360" in argv0 and Path(sys.executable).parent.joinpath("repo360.exe").is_file():
+    if "repo360" in argv0:
         return True
+    if bin_shim and bin_shim.is_file():
+        return True
+    if shutil.which("repo360"):
+        return True
+    for s_dir in (script_dirs or _discover_script_dirs()):
+        if any(s_dir.glob("repo360*")):
+            return True
     return False
-
-
-def _cleanup_stale_staged_binaries(scripts_dir: Path) -> List[str]:
-    """Remove any leftover *.exe.old_* files created during prior Windows upgrades."""
-    removed: List[str] = []
-    if not scripts_dir.is_dir():
-        return removed
-    for old_file in scripts_dir.glob("*.exe.old_*"):
-        try:
-            old_file.unlink()
-            removed.append(str(old_file))
-        except OSError:
-            pass
-    return removed
 
 
 def _config_purge_targets(config_dir: Path) -> List[Path]:
@@ -411,6 +711,9 @@ def build_uninstall_plan(keep_config: bool = False) -> Dict[str, Any]:
     details = get_installation_details()
     strategy, package_cmd = _resolve_package_uninstall_command(pipx_bin, pipx_venv_dir, details)
 
+    script_dirs = _discover_script_dirs()
+    site_dirs = _discover_site_packages_dirs()
+
     which_repo360 = shutil.which("repo360")
     bin_shim = Path(which_repo360) if which_repo360 else None
     if bin_shim and bin_shim.stem.casefold() != "repo360":
@@ -432,6 +735,8 @@ def build_uninstall_plan(keep_config: bool = False) -> Dict[str, Any]:
     if keep_config and config_dir.exists():
         preserved_dirs.append(config_dir)
 
+    primary_scripts_dir = script_dirs[0] if script_dirs else Path(sys.executable).parent
+
     return {
         "config_dir": config_dir,
         "config_targets": config_targets,
@@ -440,10 +745,12 @@ def build_uninstall_plan(keep_config: bool = False) -> Dict[str, Any]:
         "strategy": strategy,
         "package_cmd": package_cmd,
         "bin_shim": bin_shim,
-        "scripts_dir": Path(sys.executable).parent,
+        "scripts_dir": primary_scripts_dir,
+        "script_dirs": script_dirs,
+        "site_dirs": site_dirs,
         "dirs_to_delete": dirs_to_delete,
         "preserved_dirs": preserved_dirs,
-        "deferred_windows": _requires_deferred_windows_cleanup(pipx_venv_dir),
+        "deferred_windows": _requires_deferred_windows_cleanup(pipx_venv_dir, bin_shim, script_dirs),
     }
 
 
@@ -466,6 +773,12 @@ def _spawn_windows_deferred_uninstall(plan: Dict[str, Any], keep_config: bool = 
         si.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0x00000001)
         si.wShowWindow = 0
         config_arg = "" if keep_config else str(plan.get("config_dir") or "")
+        script_dirs_str = ";".join(
+            str(p)
+            for p in (plan.get("script_dirs") or ([plan.get("scripts_dir")] if plan.get("scripts_dir") else []))
+            if p
+        )
+        site_dirs_str = ";".join(str(p) for p in plan.get("site_dirs", []) if p)
         cmd = [
             external_python,
             script_path,
@@ -474,6 +787,8 @@ def _spawn_windows_deferred_uninstall(plan: Dict[str, Any], keep_config: bool = 
             str(pipx_venv_dir) if pipx_venv_dir else "",
             str(plan["bin_shim"]) if plan.get("bin_shim") else "",
             config_arg,
+            script_dirs_str,
+            site_dirs_str,
             *plan["package_cmd"],
         ]
         subprocess.Popen(
@@ -563,9 +878,19 @@ def execute_uninstall(
                 except OSError:
                     logger.debug("Kept non-empty directory %s", leftover)
 
-    _cleanup_stale_staged_binaries(plan["scripts_dir"])
+    script_dirs = list(plan.get("script_dirs") or [])
+    if plan.get("scripts_dir") and plan["scripts_dir"] not in script_dirs:
+        script_dirs.append(plan["scripts_dir"])
+    site_dirs = plan.get("site_dirs")
+
+    # On Windows, stage-rename active/locked binaries first so repo360 is immediately removed from PATH
+    if sys.platform == "win32":
+        _stage_rename_windows_binaries(script_dirs, bin_shim=plan.get("bin_shim"))
+
+    _cleanup_stale_staged_binaries(script_dirs)
 
     if plan.get("deferred_windows"):
+        _purge_orphaned_site_packages(site_dirs)
         ok, info = _spawn_windows_deferred_uninstall(plan, keep_config=keep_config)
         if not ok:
             print(f"\033[91m[FAIL]\033[0m Could not schedule Windows package removal: {info}")
@@ -580,7 +905,10 @@ def execute_uninstall(
         )
         if res.returncode != 0:
             err = (res.stderr or res.stdout or "").strip()
-            print(f"\033[93m[WARN]\033[0m Installer returned code {res.returncode}: {err}")
+            # If the package was already not installed, treat as successful idempotent uninstallation
+            if "not installed" not in err.lower() and "skipping" not in err.lower():
+                print(f"\033[93m[WARN]\033[0m Installer returned code {res.returncode}: {err}")
+                exit_code = 1
 
         venv_dir: Optional[Path] = plan.get("pipx_venv_dir")
         if venv_dir and venv_dir.exists():
@@ -595,6 +923,8 @@ def execute_uninstall(
                 bin_shim.unlink()
             except OSError as exc:
                 print(f"\033[93m[WARN]\033[0m Could not remove CLI executable {bin_shim}: {exc}")
+
+        _purge_orphaned_site_packages(site_dirs)
 
     if delay_seconds > 0:
         time.sleep(delay_seconds)
