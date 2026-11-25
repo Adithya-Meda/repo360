@@ -102,6 +102,8 @@ def test_run_uninstall_cli_removes_related_dirs_and_preserves_reports(tmp_path: 
         patch("repo360.uninstall._find_pipx_venv_dir", return_value=mock_venv),
         patch("repo360.uninstall.get_installation_details", return_value={"installer": "uv"}),
         patch("repo360.uninstall.shutil.which", return_value=str(mock_shim)),
+        patch("repo360.uninstall._discover_script_dirs", return_value=[mock_scripts]),
+        patch("repo360.uninstall._discover_site_packages_dirs", return_value=[]),
         patch("repo360.uninstall._requires_deferred_windows_cleanup", return_value=False),
         patch("repo360.uninstall.subprocess.run", return_value=MagicMock(returncode=0, stdout="uninstalled", stderr="")),
     ):
@@ -142,6 +144,8 @@ def test_uninstall_never_wipes_custom_shared_config_dir(tmp_path: Path, monkeypa
         patch("repo360.uninstall._find_pipx_venv_dir", return_value=None),
         patch("repo360.uninstall.get_installation_details", return_value={"installer": "pip"}),
         patch("repo360.uninstall.shutil.which", return_value=None),
+        patch("repo360.uninstall._discover_script_dirs", return_value=[tmp_path / "scripts"]),
+        patch("repo360.uninstall._discover_site_packages_dirs", return_value=[]),
         patch("repo360.uninstall._requires_deferred_windows_cleanup", return_value=False),
         patch("repo360.uninstall.subprocess.run", return_value=MagicMock(returncode=0, stdout="", stderr="")),
     ):
@@ -168,6 +172,8 @@ def test_run_uninstall_cli_dry_run_and_keep_config_and_abort(tmp_path: Path, mon
         patch("repo360.uninstall._find_pipx_venv_dir", return_value=None),
         patch("repo360.uninstall.get_installation_details", return_value={"installer": "pip"}),
         patch("repo360.uninstall.shutil.which", return_value=None),
+        patch("repo360.uninstall._discover_script_dirs", return_value=[tmp_path / "scripts"]),
+        patch("repo360.uninstall._discover_site_packages_dirs", return_value=[]),
         patch("repo360.uninstall._requires_deferred_windows_cleanup", return_value=False),
     ):
         assert run_uninstall_cli(["--dry-run"]) == 0
