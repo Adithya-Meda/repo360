@@ -3,23 +3,92 @@
 from __future__ import annotations
 
 import argparse
-import concurrent.futures
 import logging
 import os
 import sys
-import threading
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 from .common.interrupts import (
     finalize_interrupt_exit,
     install_signal_handlers,
-    is_shutting_down,
-    iter_completed,
 )
 
 # Arm Ctrl+C handlers and silent excepthook before importing heavy SDKs
 install_signal_handlers()
+
+if TYPE_CHECKING:
+    from .ai import AIEngine
+    from .checks import CheckResult
+    from .collector.repo_inspector import RepoInspector
+    from .validator import RepoTarget
+
+_AUDIT_DEPS_LOADED = False
+
+
+def _load_audit_dependencies() -> None:
+    """Lazily load heavy audit, AI, HTTP, and Excel dependencies only when needed."""
+    global _AUDIT_DEPS_LOADED
+    if _AUDIT_DEPS_LOADED:
+        return
+
+    import concurrent.futures
+    import threading
+    from .ai import AIEngine, resolve_ai_cli_flag
+    from .auth.github_app_auth import GitHubAppAuth
+    from .checks import (
+        ALL_CONTRIBUTOR_CHECKS,
+        ALL_ORG_CHECKS,
+        ALL_REPO_CHECKS,
+        CheckResult,
+        CheckStatus,
+    )
+    from .collector.client import Repo360Client
+    from .collector.repo_inspector import RepoInspector
+    from .common.cli import add_common_scan_arguments
+    from .common.concurrency import (
+        format_ai_scorecard_status,
+        is_ai_disabled,
+        is_ai_live,
+        map_concurrent,
+        resolve_worker_count,
+        run_concurrent_ai,
+    )
+    from .common.interrupts import is_shutting_down, iter_completed
+    from .common.text import pluralize
+    from .common.timezones import file_timestamp
+    from .reporters.excel_reporter import ExcelReporter
+    from .validator import ConfigValidator, RepoTarget
+
+    globals().update({
+        "concurrent": concurrent,
+        "threading": threading,
+        "AIEngine": AIEngine,
+        "resolve_ai_cli_flag": resolve_ai_cli_flag,
+        "GitHubAppAuth": GitHubAppAuth,
+        "ALL_CONTRIBUTOR_CHECKS": ALL_CONTRIBUTOR_CHECKS,
+        "ALL_ORG_CHECKS": ALL_ORG_CHECKS,
+        "ALL_REPO_CHECKS": ALL_REPO_CHECKS,
+        "CheckResult": CheckResult,
+        "CheckStatus": CheckStatus,
+        "Repo360Client": Repo360Client,
+        "RepoInspector": RepoInspector,
+        "add_common_scan_arguments": add_common_scan_arguments,
+        "format_ai_scorecard_status": format_ai_scorecard_status,
+        "is_ai_disabled": is_ai_disabled,
+        "is_ai_live": is_ai_live,
+        "map_concurrent": map_concurrent,
+        "resolve_worker_count": resolve_worker_count,
+        "run_concurrent_ai": run_concurrent_ai,
+        "is_shutting_down": is_shutting_down,
+        "iter_completed": iter_completed,
+        "pluralize": pluralize,
+        "file_timestamp": file_timestamp,
+        "ExcelReporter": ExcelReporter,
+        "ConfigValidator": ConfigValidator,
+        "RepoTarget": RepoTarget,
+    })
+    _AUDIT_DEPS_LOADED = True
 
 
 def _load_local_env() -> None:
@@ -33,31 +102,6 @@ def _load_local_env() -> None:
 
 # Must run before importing modules that resolve settings at import time (e.g. REPO360_TIMEZONE)
 _load_local_env()
-
-from .ai import AIEngine, resolve_ai_cli_flag
-from .auth.github_app_auth import GitHubAppAuth
-from .checks import (
-    ALL_CONTRIBUTOR_CHECKS,
-    ALL_ORG_CHECKS,
-    ALL_REPO_CHECKS,
-    CheckResult,
-    CheckStatus,
-)
-from .collector.client import Repo360Client
-from .collector.repo_inspector import RepoInspector
-from .common.cli import add_common_scan_arguments
-from .common.text import pluralize
-from .common.concurrency import (
-    format_ai_scorecard_status,
-    is_ai_disabled,
-    is_ai_live,
-    map_concurrent,
-    resolve_worker_count,
-    run_concurrent_ai,
-)
-from .reporters.excel_reporter import ExcelReporter
-from .common.timezones import file_timestamp
-from .validator import ConfigValidator, RepoTarget
 
 try:
     import colorama
@@ -124,6 +168,7 @@ logger = setup_logger()
 
 def _log_finding(res: CheckResult) -> None:
     """Log individual check outcome under [INFO] with professional [EXISTS], [MISSING], or [REVIEW] badges."""
+    _load_audit_dependencies()
     dim = "\033[2m"
     bold = "\033[1m"
     green = "\033[92m"
@@ -171,6 +216,7 @@ def print_terminal_scorecard(
     orgs: Optional[List[str]] = None,
 ) -> None:
     """Print an executive color-coded scorecard to stdout."""
+    _load_audit_dependencies()
     total = len(results)
     passed = sum(1 for r in results if r.status == CheckStatus.PASS)
     warned = sum(1 for r in results if r.status == CheckStatus.WARN)
@@ -298,6 +344,7 @@ def _log_repo_banner(
 
 def _resolve_ai_pool_size(ai_engine: Optional[AIEngine], requested: int = 8) -> int:
     """Resolve provider-safe AI worker pool size consistent with concurrent collectors."""
+    _load_audit_dependencies()
     requested_safe = max(1, int(requested))
     if not is_ai_live(ai_engine):
         return 1
@@ -318,6 +365,7 @@ def run_audit(
     max_workers: Optional[int] = None,
 ) -> List[CheckResult]:
     """Execute all enabled checks across target organizations and repositories with high concurrency."""
+    _load_audit_dependencies()
     results: List[CheckResult] = []
     enabled_checks = advisory_config.get("enabled_checks", {})
     thresholds = advisory_config.get("policy_thresholds", {})
@@ -596,6 +644,7 @@ Run 'repo360 <command> --help' for details on a specific command (e.g. 'repo360 
 
 def _run_health_cli() -> int:
     """CLI handler for 'repo360 health' subcommand."""
+    _load_audit_dependencies()
     import json
     from .credentials import resolve_runtime_credentials
     from .auth.github_app_auth import GitHubAppAuth
@@ -741,6 +790,7 @@ def main() -> int:
 def _run_cli() -> int:
     """CLI orchestrator."""
     start_time = time.time()
+    from .common.cli import add_common_scan_arguments
 
     parser = argparse.ArgumentParser(
         prog="repo360 audit",
@@ -759,6 +809,7 @@ def _run_cli() -> int:
     )
 
     args = parser.parse_args()
+    _load_audit_dependencies()
     ai_enabled = resolve_ai_cli_flag(args, parser)
 
     app_config = ConfigValidator.get_default_app_config()
