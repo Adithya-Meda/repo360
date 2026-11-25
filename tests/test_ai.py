@@ -1048,3 +1048,34 @@ def test_remediation_canonical_caching_and_cooldown_restoration(monkeypatch):
     assert res_c.remediation_snippet_after == "* @org/python-team"
 
 
+def test_verify_openai_preserves_primary_model_error_over_fallback_404(monkeypatch) -> None:
+    """When primary model hits quota/429 and fallbacks return 404, surface the primary model's error."""
+    from unittest.mock import MagicMock
+
+    engine = AIEngine(provider="openai", api_key="sk-test-key", model_name="gpt-4o-mini", enabled=True)
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        model = (json or {}).get("model")
+        resp = MagicMock()
+        if model == "gpt-4o-mini":
+            resp.status_code = 429
+            resp.headers = {}
+            resp.text = '{"error":{"code":"insufficient_quota","message":"You exceeded your current quota"}}'
+            resp.json.return_value = {"error": {"code": "insufficient_quota", "message": "You exceeded your current quota"}}
+        else:
+            resp.status_code = 404
+            resp.headers = {}
+            resp.text = f'{{"error":{{"code":"model_not_found","message":"The model `{model}` does not exist"}}}}'
+            resp.json.return_value = {"error": {"code": "model_not_found", "message": f"The model `{model}` does not exist"}}
+        return resp
+
+    monkeypatch.setattr("requests.post", _fake_post)
+    ok, reason = engine.verify_connection()
+    assert ok is False
+    assert engine.enabled is False
+    assert "gpt-4o-mini" in reason
+    assert "insufficient_quota" in reason
+    assert "gpt-4-turbo" not in reason
+
+
+

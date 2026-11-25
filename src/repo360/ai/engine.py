@@ -61,7 +61,7 @@ class AIEngine:
         "openai": (
             "gpt-4o-mini",
             "gpt-4o",
-            "gpt-4-turbo",
+            "gpt-4.1-mini",
         ),
         "anthropic": (
             "claude-3-5-haiku-20241022",
@@ -453,10 +453,99 @@ class AIEngine:
         self.enabled = False
         return False, reason
 
-    def _verify_openai(self) -> tuple[bool, str]:
-        """Verify OpenAI connection and active model quota via REST API."""
+    @staticmethod
+    def _extract_rest_error_detail(resp: Any) -> str:
+        """Extract a concise error code or message from a REST error response."""
+        try:
+            body = resp.json()
+            if isinstance(body, dict):
+                err_obj = body.get("error")
+                if isinstance(err_obj, dict):
+                    code = str(err_obj.get("code") or err_obj.get("type") or "").strip()
+                    msg = str(err_obj.get("message") or "").strip()
+                    if code and msg:
+                        return f"{code}: {msg[:80]}"
+                    if msg:
+                        return msg[:80]
+                    if code:
+                        return code
+        except Exception:
+            pass
+        text = (getattr(resp, "text", "") or "").strip()
+        return text[:80] if text else ""
+
+    def _verify_rest_provider(
+        self,
+        *,
+        provider_key: str,
+        url: str,
+        headers: Dict[str, str],
+        payload_builder: Callable[[str], Dict[str, Any]],
+        rate_limit_statuses: Tuple[int, ...],
+        default_failure: str,
+    ) -> tuple[bool, str]:
+        """Verify a REST LLM provider across candidate models, preserving the primary model's error."""
         import requests
 
+        candidate_models = self._candidate_models(provider_key)
+        primary_error = ""
+        last_error = ""
+
+        for idx, candidate in enumerate(candidate_models):
+            try:
+                resp = requests.post(
+                    url,
+                    headers=headers,
+                    json=payload_builder(candidate),
+                    timeout=LLM_HEALTHCHECK_TIMEOUT_SECONDS,
+                )
+                if resp.status_code == 200:
+                    if candidate != self.model_name:
+                        logger.info(
+                            "Primary model '%s' unavailable. Seamlessly fell back to '%s'.",
+                            self.model_name,
+                            candidate,
+                        )
+                        self.model_name = candidate
+                        self.is_fallback = True
+                        self.fallback_reason = "rate limit fallback"
+                    return True, "OK"
+                if resp.status_code in (401, 403):
+                    self.enabled = False
+                    self.init_error = "API Key Invalid or Expired"
+                    return False, self.init_error
+
+                detail = self._extract_rest_error_detail(resp)
+                if resp.status_code in rate_limit_statuses:
+                    retry_after = self._extract_retry_after(
+                        getattr(resp, "headers", None),
+                        getattr(resp, "text", "") or "",
+                    )
+                    self._mark_model_rate_limited(candidate, retry_after or 60.0)
+                    err_msg = f"Quota exhausted / Rate limit reached on '{candidate}'" + (
+                        f" ({detail})" if detail else ""
+                    )
+                elif resp.status_code == 404:
+                    err_msg = f"Model '{candidate}' not found" + (f" ({detail})" if detail else "")
+                else:
+                    err_msg = f"HTTP {resp.status_code} on '{candidate}'" + (f": {detail}" if detail else "")
+
+                last_error = err_msg
+                if idx == 0 and not primary_error:
+                    primary_error = err_msg
+            except Exception as err:
+                err_msg = str(err)
+                last_error = err_msg
+                if idx == 0 and not primary_error:
+                    primary_error = err_msg
+
+        reason = primary_error or last_error or default_failure
+        self.init_error = reason
+        self.enabled = False
+        return False, reason
+
+    def _verify_openai(self) -> tuple[bool, str]:
+        """Verify OpenAI connection and active model quota via REST API."""
         url = self._provider_endpoint("OPENAI_BASE_URL", "https://api.openai.com/v1", "chat/completions")
         if not url:
             return False, "Insecure or invalid OPENAI_BASE_URL (HTTPS required)"
@@ -465,58 +554,21 @@ class AIEngine:
             "api-key": self.api_key,
             "Content-Type": "application/json",
         }
-        candidate_models = self._candidate_models("openai")
-        last_error = ""
-
-        for candidate in candidate_models:
-            try:
-                payload = {
-                    "model": candidate,
-                    "messages": [{"role": "user", "content": "ping"}],
-                    "max_tokens": 5,
-                }
-                resp = requests.post(url, headers=headers, json=payload, timeout=LLM_HEALTHCHECK_TIMEOUT_SECONDS)
-                if resp.status_code == 200:
-                    if candidate != self.model_name:
-                        logger.info(
-                            "Primary model '%s' unavailable. Seamlessly fell back to '%s'.",
-                            self.model_name,
-                            candidate,
-                        )
-                        self.model_name = candidate
-                        self.is_fallback = True
-                        self.fallback_reason = "rate limit fallback"
-                    return True, "OK"
-                elif resp.status_code in (401, 403):
-                    self.enabled = False
-                    self.init_error = "API Key Invalid or Expired"
-                    return False, self.init_error
-                elif resp.status_code in (429, 503):
-                    retry_after = self._extract_retry_after(
-                        getattr(resp, "headers", None),
-                        getattr(resp, "text", "") or "",
-                    )
-                    self._mark_model_rate_limited(candidate, retry_after or 60.0)
-                    last_error = "Quota exhausted / Rate limit reached on candidate models"
-                    continue
-                elif resp.status_code == 404:
-                    last_error = f"Model {candidate} not found"
-                    continue
-                else:
-                    last_error = f"HTTP {resp.status_code}: {resp.text[:50]}"
-            except Exception as err:
-                last_error = str(err)
-                continue
-
-        reason = last_error or "OpenAI connection failed"
-        self.init_error = reason
-        self.enabled = False
-        return False, reason
+        return self._verify_rest_provider(
+            provider_key="openai",
+            url=url,
+            headers=headers,
+            payload_builder=lambda model: {
+                "model": model,
+                "messages": [{"role": "user", "content": "ping"}],
+                "max_tokens": 5,
+            },
+            rate_limit_statuses=(429, 503),
+            default_failure="OpenAI connection failed",
+        )
 
     def _verify_anthropic(self) -> tuple[bool, str]:
         """Verify Anthropic connection and active model quota via REST API."""
-        import requests
-
         url = self._provider_endpoint("ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1", "messages")
         if not url:
             return False, "Insecure or invalid ANTHROPIC_BASE_URL (HTTPS required)"
@@ -525,53 +577,18 @@ class AIEngine:
             "anthropic-version": "2023-06-01",
             "Content-Type": "application/json",
         }
-        candidate_models = self._candidate_models("anthropic")
-        last_error = ""
-
-        for candidate in candidate_models:
-            try:
-                payload = {
-                    "model": candidate,
-                    "max_tokens": 5,
-                    "messages": [{"role": "user", "content": "ping"}],
-                }
-                resp = requests.post(url, headers=headers, json=payload, timeout=LLM_HEALTHCHECK_TIMEOUT_SECONDS)
-                if resp.status_code == 200:
-                    if candidate != self.model_name:
-                        logger.info(
-                            "Primary model '%s' unavailable. Seamlessly fell back to '%s'.",
-                            self.model_name,
-                            candidate,
-                        )
-                        self.model_name = candidate
-                        self.is_fallback = True
-                        self.fallback_reason = "rate limit fallback"
-                    return True, "OK"
-                elif resp.status_code in (401, 403):
-                    self.enabled = False
-                    self.init_error = "API Key Invalid or Expired"
-                    return False, self.init_error
-                elif resp.status_code in (429, 503, 529):
-                    retry_after = self._extract_retry_after(
-                        getattr(resp, "headers", None),
-                        getattr(resp, "text", "") or "",
-                    )
-                    self._mark_model_rate_limited(candidate, retry_after or 60.0)
-                    last_error = "Quota exhausted / Rate limit reached on candidate models"
-                    continue
-                elif resp.status_code == 404:
-                    last_error = f"Model {candidate} not found"
-                    continue
-                else:
-                    last_error = f"HTTP {resp.status_code}: {resp.text[:50]}"
-            except Exception as err:
-                last_error = str(err)
-                continue
-
-        reason = last_error or "Anthropic connection failed"
-        self.init_error = reason
-        self.enabled = False
-        return False, reason
+        return self._verify_rest_provider(
+            provider_key="anthropic",
+            url=url,
+            headers=headers,
+            payload_builder=lambda model: {
+                "model": model,
+                "max_tokens": 5,
+                "messages": [{"role": "user", "content": "ping"}],
+            },
+            rate_limit_statuses=(429, 503, 529),
+            default_failure="Anthropic connection failed",
+        )
 
     def _provider_endpoint(self, env_name: str, default_base: str, suffix: str) -> Optional[str]:
         """Build a provider endpoint URL, refusing to send API keys or audit data over plain HTTP."""
