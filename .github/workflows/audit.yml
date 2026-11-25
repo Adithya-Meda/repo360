@@ -2,6 +2,11 @@ name: "Repo360 Platform Audit"
 
 on:
   workflow_dispatch:
+    inputs:
+      os_matrix:
+        description: "JSON array of runner OS labels (e.g. '[\"ubuntu-latest\"]' or '[\"windows-latest\",\"macos-latest\"]')"
+        required: false
+        default: '["ubuntu-latest"]'
   schedule:
     - cron: "0 6 * * 1" # Weekly: Mondays at 06:00 UTC
 
@@ -10,8 +15,12 @@ permissions:
 
 jobs:
   governance-audit:
-    name: "Execute Advisory Audit"
-    runs-on: ubuntu-latest
+    name: "Execute Advisory Audit (${{ matrix.os }})"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(inputs.os_matrix || '["ubuntu-latest"]') }}
 
     steps:
       - name: "Checkout Repository"
@@ -24,6 +33,7 @@ jobs:
         with:
           app_id: ${{ vars.REPO360_APP_ID }}
           private_key: ${{ secrets.REPO360_APP_PRIVATE_KEY }}
+          artifact_name: repo360-audit-reports-${{ matrix.os }}
           collect_audit: "true"
           collect_activity: "true"
           collect_runners: "true"
